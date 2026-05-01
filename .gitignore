@@ -1,0 +1,27 @@
+# Local secrets and environment files
+.env
+.env.*
+!.env.example
+
+# Python/runtime artifacts
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.venv/
+venv/
+
+# Local/editor/OS state
+.DS_Store
+.claude/
+.megaplan/
+.megaplan-queue/
+
+# Operator outputs
+backups/
+*.dump
+*.log

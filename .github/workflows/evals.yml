@@ -1,0 +1,119 @@
+name: Prompt evals
+
+on:
+  pull_request:
+    paths:
+      - "app/services/prompts.py"
+      - "app/services/oob_check.py"
+      - "app/services/scoring.py"
+      - "app/services/charge.py"
+      - "app/services/tools/**"
+      - "tool_schemas.py"
+      - "evals/**"
+      - "tests/test_evals*.py"
+      - "tests/test_charge.py"
+      - "tests/test_oob_check.py"
+      - "migrations/0006_plan7_eval_results.sql"
+      - ".github/workflows/evals.yml"
+      - "pyproject.toml"
+  push:
+    branches: [main]
+    paths:
+      - "app/services/prompts.py"
+      - "app/services/oob_check.py"
+      - "app/services/scoring.py"
+      - "app/services/charge.py"
+      - "app/services/tools/**"
+      - "tool_schemas.py"
+      - "evals/**"
+      - "tests/test_evals*.py"
+      - "tests/test_charge.py"
+      - "tests/test_oob_check.py"
+      - "migrations/0006_plan7_eval_results.sql"
+      - ".github/workflows/evals.yml"
+      - "pyproject.toml"
+
+jobs:
+  evals:
+    name: Prompt eval harness
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:16
+        env:
+          POSTGRES_USER: postgres
+          POSTGRES_PASSWORD: postgres
+          POSTGRES_DB: postgres
+        ports:
+          - "5432:5432"
+        options: >-
+          --health-cmd "pg_isready -U postgres -d postgres"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+    env:
+      DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      EVAL_DATABASE_URL: postgresql://postgres:postgres@localhost:5432/postgres
+      SUPABASE_URL: https://example.supabase.co
+      SUPABASE_SERVICE_ROLE_KEY: dummy-service-role
+      ANTHROPIC_API_KEY: dummy-anthropic
+      OPENAI_API_KEY: dummy-openai
+      GROQ_API_KEY: dummy-groq
+      WHATSAPP_TOKEN: dummy-whatsapp
+      WHATSAPP_PHONE_NUMBER_ID: "12345"
+      WHATSAPP_VERIFY_TOKEN: dummy-verify
+      WHATSAPP_APP_SECRET: dummy-secret
+      ADMIN_PASSWORD: dummy-admin
+      PARTNER_PHONE_A: "15555550100"
+      PARTNER_PHONE_B: "15555550101"
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: python -m pip install -e ".[dev]"
+
+      - name: Prepare local Postgres
+        run: |
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN CREATE ROLE anon; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
+          for file in migrations/*.sql; do
+            if [ "$(basename "$file")" != "teardown.sql" ]; then
+              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
+            fi
+          done
+
+      - name: Parser and unit checks
+        run: |
+          python -m evals --help
+          pytest tests/test_evals_scenario.py tests/test_evals_corpus.py tests/test_evals_assertions.py tests/test_evals_db.py tests/test_evals_capture.py tests/test_evals_runner.py tests/test_evals_judge.py tests/test_evals_replay.py tests/test_charge.py tests/test_oob_check.py -q
+
+      - name: Detect live eval secrets
+        id: live-eval-secrets
+        env:
+          LIVE_ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          if [ -n "$LIVE_ANTHROPIC_API_KEY" ]; then
+            echo "run_live=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "run_live=false" >> "$GITHUB_OUTPUT"
+            echo "::notice title=Live evals skipped::ANTHROPIC_API_KEY is unavailable, so this job only ran parser/unit checks."
+            echo "Live prompt evals were skipped because Anthropic credentials are unavailable. Treat this as neutral coverage, not a full eval pass." >> "$GITHUB_STEP_SUMMARY"
+          fi
+
+      - name: Live eval suite
+        if: steps.live-eval-secrets.outputs.run_live == 'true'
+        env:
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: python -m evals run --cost-cap-usd 5 --prompt-version v1
+
+      - name: Missing live eval secrets are neutral
+        if: steps.live-eval-secrets.outputs.run_live != 'true'
+        run: |
+          echo "Live eval suite not run: missing Anthropic credentials."
+          echo "Parser/unit checks passed, but scenario regressions were not evaluated in this run."

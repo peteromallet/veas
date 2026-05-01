@@ -1,0 +1,1 @@
+"""Mediator bot application package."""

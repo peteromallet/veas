@@ -1,0 +1,38 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mediator-bot"
+version = "0.1.0"
+description = "FastAPI foundation for the mediator bot."
+requires-python = ">=3.11"
+dependencies = [
+    "anthropic>=0.40",
+    "fastapi",
+    "uvicorn[standard]",
+    "asyncpg",
+    "pydantic>=2",
+    "pydantic-settings",
+    "cryptography",
+    "httpx",
+    "python-multipart",
+    "websockets",
+    "PyYAML",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "anyio",
+]
+
+[tool.setuptools.packages.find]
+include = ["app*", "evals*"]
+
+[tool.setuptools]
+py-modules = ["tool_schemas"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"

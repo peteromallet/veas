@@ -1,0 +1,38 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "waba-1",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15551234567",
+              "phone_number_id": "12345"
+            },
+            "messages": [
+              {
+                "from": "15555550100",
+                "id": "wamid.text-1",
+                "timestamp": "1714480120",
+                "context": {
+                  "message_id": "wamid.text-1"
+                },
+                "type": "unsupported"
+              }
+            ],
+            "errors": [
+              {
+                "code": 131051,
+                "title": "Message deleted",
+                "message_id": "wamid.text-1"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}

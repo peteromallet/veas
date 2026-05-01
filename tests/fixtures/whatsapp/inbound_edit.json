@@ -1,0 +1,42 @@
+{
+  "object": "whatsapp_business_account",
+  "entry": [
+    {
+      "id": "waba-1",
+      "changes": [
+        {
+          "field": "messages",
+          "value": {
+            "messaging_product": "whatsapp",
+            "metadata": {
+              "display_phone_number": "15551234567",
+              "phone_number_id": "12345"
+            },
+            "contacts": [
+              {
+                "profile": {
+                  "name": "Maya"
+                },
+                "wa_id": "15555550100"
+              }
+            ],
+            "messages": [
+              {
+                "from": "15555550100",
+                "id": "wamid.text-1",
+                "timestamp": "1714480060",
+                "context": {
+                  "message_id": "wamid.text-1"
+                },
+                "text": {
+                  "body": "I need to talk this through carefully."
+                },
+                "type": "text"
+              }
+            ]
+          }
+        }
+      ]
+    }
+  ]
+}
