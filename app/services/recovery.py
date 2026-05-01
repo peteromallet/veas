@@ -73,6 +73,7 @@ async def recover_on_startup(pool: Any, coalescer: Any, *, now: datetime | None 
         SET failure_reason='crashed'
         WHERE completed_at IS NULL
           AND final_output_message_id IS NULL
+          AND failure_reason IS NULL
           AND started_at < now() - interval '5 minutes'
         RETURNING triggering_message_ids
         """
@@ -90,6 +91,7 @@ async def recover_on_startup(pool: Any, coalescer: Any, *, now: datetime | None 
         SET failure_reason='crashed_after_send'
         WHERE completed_at IS NULL
           AND final_output_message_id IS NOT NULL
+          AND failure_reason IS NULL
           AND started_at < now() - interval '5 minutes'
         """
     )

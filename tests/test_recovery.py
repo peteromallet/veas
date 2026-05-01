@@ -89,6 +89,26 @@ async def test_crashed_turn_marks_failed_and_requeues_full_burst(fake_pool) -> N
     assert coalescer.add_calls == []
 
 
+async def test_already_marked_crashed_turn_is_not_requeued_again(fake_pool) -> None:
+    user = _seed_user(fake_pool)
+    ids = [_seed_message(fake_pool, user)]
+    turn_id = uuid4()
+    fake_pool.bot_turns[turn_id] = {
+        "id": turn_id,
+        "triggering_message_ids": ids,
+        "started_at": datetime.now(UTC) - timedelta(minutes=6),
+        "completed_at": None,
+        "failure_reason": "crashed",
+        "reasoning": "",
+    }
+    coalescer = CoalescerRecorder()
+
+    await recover_on_startup(fake_pool, coalescer)
+
+    assert coalescer.add_burst_calls == []
+    assert coalescer.add_calls == []
+
+
 async def test_turn_that_crashed_after_send_is_not_requeued(fake_pool) -> None:
     user = _seed_user(fake_pool)
     ids = [_seed_message(fake_pool, user)]
