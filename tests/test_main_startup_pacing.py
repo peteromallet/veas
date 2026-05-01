@@ -81,8 +81,8 @@ async def test_configure_coalescer_attaches_discord_pacer_and_paced_callbacks(
         assert to == "15555550100"
         return "channel-1"
 
-    async def fake_perform_answer_typing(user, channel_id, answer_text):
-        typing_calls.append((user.id, channel_id, answer_text))
+    async def fake_perform_send_typing(user, channel_id, answer_text, *, send_kind="final", part_index=None):
+        typing_calls.append((user.id, channel_id, answer_text, send_kind, part_index))
         return 1.0
 
     async def fake_perform_thinking_typing_until_stopped(user, channel_id, stop_event):
@@ -102,7 +102,7 @@ async def test_configure_coalescer_attaches_discord_pacer_and_paced_callbacks(
     assert app.state.coalescer.on_paced_answer is not None
     assert app.state.coalescer.on_paced_reaction is not None
     assert app.state.coalescer.on_live_typing is not None
-    monkeypatch.setattr(app.state.discord_pacer, "perform_answer_typing", fake_perform_answer_typing)
+    monkeypatch.setattr(app.state.discord_pacer, "perform_send_typing", fake_perform_send_typing)
     monkeypatch.setattr(
         app.state.discord_pacer,
         "perform_thinking_typing_until_stopped",
@@ -127,7 +127,7 @@ async def test_configure_coalescer_attaches_discord_pacer_and_paced_callbacks(
     assert answer_calls[0][:4] == ([message_id], user, decision, None)
     assert answer_calls[0][4] is not None
     assert thinking_calls == [(user.id, "channel-1", False)]
-    assert typing_calls == [(user.id, "channel-1", "human-paced answer")]
+    assert typing_calls == [(user.id, "channel-1", "human-paced answer", "final", None)]
 
     reaction_decision = PacingDecision(action="react", reason="ack", reaction="👍")
     await app.state.coalescer.on_paced_reaction([message_id], user, reaction_decision)

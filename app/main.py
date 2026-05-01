@@ -18,7 +18,7 @@ from app.routers import admin, health, whatsapp as whatsapp_router
 from app.services import agentic, discord, hooks, whatsapp
 from app.services.agentic import run_agentic_turn, run_agentic_turn_with_metadata
 from app.services.debouncer import BurstCoalescer
-from app.services.pacer import DiscordPacer, PacingDecision
+from app.services.pacer import DiscordPacer, PacedSendKind, PacingDecision
 from app.services.recovery import recover_on_startup, run_recovery_forever
 from app.services.scheduled_job_handlers import ScheduledJobHandlers, seed_weekly_summaries
 from app.services.scheduled_jobs import ScheduledJobWorker, seed_heartbeat
@@ -75,12 +75,17 @@ async def _run_paced_agentic_turn(
         except Exception:
             logger.warning("failed to start paced thinking typing", exc_info=True)
 
-        async def before_paced_send(answer_text: str) -> None:
+        async def before_paced_send(
+            answer_text: str,
+            *,
+            send_kind: PacedSendKind = "final",
+            part_index: int | None = None,
+        ) -> None:
             nonlocal channel_id
             await stop_thinking_typing()
             if channel_id is None:
                 channel_id = await discord.get_dm_channel_id(user.phone)
-            await pacer.perform_answer_typing(user, channel_id, answer_text)
+            await pacer.perform_send_typing(user, channel_id, answer_text, send_kind=send_kind, part_index=part_index)
 
     try:
         await run_agentic_turn_with_metadata(

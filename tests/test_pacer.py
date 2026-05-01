@@ -21,6 +21,7 @@ def test_typing_defaults_start_quickly(app_env) -> None:
     assert settings.discord_pacing_initial_typing_max_s == 1.2
     assert settings.discord_pacing_thinking_typing_start_s == 0.4
     assert settings.discord_pacing_answer_typing_min_s == 0.4
+    assert settings.discord_pacing_incremental_typing_pulse_min_gap_s == 1.0
 
 
 def _seed_user(fake_pool, *, preferences: dict | None = None) -> User:
@@ -220,6 +221,34 @@ async def test_bot_typing_pulses_leave_visible_gaps(fake_pool) -> None:
     assert len(typing_sent_at) == 3
     assert typing_sent_at[1][1] - typing_sent_at[0][1] >= timedelta(seconds=11)
     assert typing_sent_at[2][1] - typing_sent_at[1][1] >= timedelta(seconds=11)
+
+
+async def test_incremental_followup_typing_uses_short_gap(fake_pool) -> None:
+    now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
+    user = _seed_user(fake_pool, preferences={"answer_typing_min_s": 0.4})
+    typing_sent_at = []
+
+    def current_time() -> datetime:
+        return now
+
+    async def sleep(seconds: float) -> None:
+        nonlocal now
+        now += timedelta(seconds=seconds)
+
+    async def send_typing(channel_id: str) -> None:
+        typing_sent_at.append((channel_id, now))
+
+    pacer = DiscordPacer(fake_pool, send_typing=send_typing, sleep=sleep, now=current_time)
+    await pacer.perform_send_typing(user, "channel-1", "Six.", send_kind="incremental_first", part_index=1)
+    await pacer.perform_send_typing(user, "channel-1", "Seven.", send_kind="incremental_next", part_index=2)
+
+    assert len(typing_sent_at) == 2
+    assert typing_sent_at[1][1] - typing_sent_at[0][1] < timedelta(seconds=11)
+    assert typing_sent_at[1][1] - typing_sent_at[0][1] >= timedelta(seconds=1)
+    events = list(fake_pool.pacing_events.values())
+    assert events[-1]["decision"] == "typing_start"
+    assert events[-1]["reason"] == "started paced incremental typing indicator"
+    assert events[-1]["signal_snapshot"]["send_kind"] == "incremental_next"
 
 
 async def test_llm_judgement_can_silence_ambiguous_live_burst_and_records_cost(fake_pool) -> None:

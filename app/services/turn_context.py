@@ -8,6 +8,9 @@ from datetime import datetime
 
 from app.models.user import User
 
+PacedSendKind = Literal["final", "incremental_first", "incremental_next"]
+BeforePacedSend = Callable[..., Awaitable[None]]
+
 
 @dataclass
 class TurnContext:
@@ -23,7 +26,7 @@ class TurnContext:
     incremental_sending_enabled: bool = False
     protected_owner_ids: list[UUID] | None = None
     send_typing_indicator: bool = True
-    before_paced_send: Callable[[str], Awaitable[None]] | None = None
+    before_paced_send: BeforePacedSend | None = None
     sent_message_parts: list[dict[str, Any]] | None = None
 
 

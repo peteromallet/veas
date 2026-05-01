@@ -7,7 +7,6 @@ import logging
 import re
 from datetime import UTC, datetime
 from datetime import timedelta
-from collections.abc import Awaitable, Callable
 from typing import Any, Mapping
 from uuid import UUID
 
@@ -22,7 +21,7 @@ from app.services.prompts import render_system_prompt
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.text_safety import clean_user_facing_text
 from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS, call_tool, to_anthropic_tools
-from app.services.turn_context import TurnContext, partner_of
+from app.services.turn_context import BeforePacedSend, TurnContext, partner_of
 
 logger = logging.getLogger(__name__)
 
@@ -545,7 +544,7 @@ async def _run_agentic(
     trigger_metadata: dict[str, Any] | None = None,
     pool: Any | None = None,
     prompt_version: str | None = None,
-    before_paced_send: Callable[[str], Awaitable[None]] | None = None,
+    before_paced_send: BeforePacedSend | None = None,
 ) -> None:
     active_pool = pool or _pool
     if active_pool is not None and await system_state.is_paused(active_pool):
@@ -667,7 +666,7 @@ async def _run_agentic(
                         protected_owner_ids=dyad_owner_ids,
                         send_typing_indicator=send_typing_indicator,
                         before_provider_send=(
-                            (lambda text=sendable_text: before_paced_send(text))
+                            (lambda text=sendable_text: before_paced_send(text, send_kind="final", part_index=None))
                             if before_paced_send is not None and not send_typing_indicator
                             else None
                         ),
@@ -732,7 +731,13 @@ async def _run_agentic(
                     bot_turn_id=turn_id,
                     send_typing_indicator=send_typing_indicator,
                     before_provider_send=(
-                        (lambda: before_paced_send("I'm running into limits today, will catch up tomorrow."))
+                        (
+                            lambda: before_paced_send(
+                                "I'm running into limits today, will catch up tomorrow.",
+                                send_kind="final",
+                                part_index=None,
+                            )
+                        )
                         if before_paced_send is not None and not send_typing_indicator
                         else None
                     ),
@@ -769,7 +774,7 @@ async def run_agentic_turn_with_metadata(
     *,
     pacing_context: Any | None = None,
     trigger_metadata: Mapping[str, Any] | None = None,
-    before_paced_send: Callable[[str], Awaitable[None]] | None = None,
+    before_paced_send: BeforePacedSend | None = None,
 ) -> None:
     if not triggering_message_ids:
         logger.warning("run_agentic_turn_with_metadata called without triggering messages for user_id=%s", user.id)

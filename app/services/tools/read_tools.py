@@ -60,6 +60,10 @@ from tool_schemas import (
 logger = logging.getLogger(__name__)
 
 
+class NewerInboundDuringPacedSend(Exception):
+    pass
+
+
 async def _newer_inbound_exists(ctx: TurnContext) -> bool:
     if ctx.turn_started_at is None:
         return False
@@ -121,7 +125,8 @@ async def send_message_part(ctx: TurnContext, args: SendMessagePartInput) -> Sen
     content = args.content.strip()
     part_index = len(sent_parts) + 1
     part_key = f"{ctx.turn_id}:{part_index}"
-    if sent_parts and settings.discord_multi_message_delay_s > 0:
+    paced_send_available = ctx.before_paced_send is not None and not ctx.send_typing_indicator
+    if sent_parts and settings.discord_multi_message_delay_s > 0 and not paced_send_available:
         await asyncio.sleep(settings.discord_multi_message_delay_s)
         if await _newer_inbound_exists(ctx):
             return SendMessagePartOutput(
@@ -132,20 +137,35 @@ async def send_message_part(ctx: TurnContext, args: SendMessagePartInput) -> Sen
                 reason="a newer inbound message arrived before the next message part",
             )
     before_provider_send = None
-    if ctx.before_paced_send is not None and not ctx.send_typing_indicator:
-        before_provider_send = lambda text=content: ctx.before_paced_send(text)
-    result = await send_outbound_part(
-        ctx.pool,
-        ctx.user,
-        content,
-        bot_turn_id=ctx.turn_id,
-        part_key=part_key,
-        part_index=part_index,
-        client_part_key=args.client_part_key,
-        protected_owner_ids=ctx.protected_owner_ids,
-        send_typing_indicator=ctx.send_typing_indicator,
-        before_provider_send=before_provider_send,
-    )
+    if paced_send_available:
+        send_kind = "incremental_first" if part_index == 1 else "incremental_next"
+
+        async def before_provider_send(text: str = content, kind: str = send_kind, index: int = part_index) -> None:
+            await ctx.before_paced_send(text, send_kind=kind, part_index=index)
+            if await _newer_inbound_exists(ctx):
+                raise NewerInboundDuringPacedSend()
+
+    try:
+        result = await send_outbound_part(
+            ctx.pool,
+            ctx.user,
+            content,
+            bot_turn_id=ctx.turn_id,
+            part_key=part_key,
+            part_index=part_index,
+            client_part_key=args.client_part_key,
+            protected_owner_ids=ctx.protected_owner_ids,
+            send_typing_indicator=ctx.send_typing_indicator,
+            before_provider_send=before_provider_send,
+        )
+    except NewerInboundDuringPacedSend:
+        return SendMessagePartOutput(
+            status="interrupted",
+            client_part_key=args.client_part_key,
+            visible_to_user=False,
+            sent_so_far=[part["content"] for part in sent_parts],
+            reason="a newer inbound message arrived before the next message part",
+        )
     output = SendMessagePartOutput.model_validate(result)
     if output.visible_to_user and output.message_id is not None and output.delivered_content:
         sent_parts.append(

@@ -22,6 +22,7 @@ from app.models.user import User, fetch_user_pacing_preferences, record_pacing_e
 from app.services.spend import is_under_cap, record_anthropic_haiku_text_response_cost
 
 PacingAction = Literal["wait", "react", "silence", "answer"]
+PacedSendKind = Literal["final", "incremental_first", "incremental_next"]
 STALE_SOURCES = {"catch_up", "recovery"}
 MEDIA_SOURCES = {"media"}
 ACK_REACTION = "👍"
@@ -298,12 +299,13 @@ class DiscordPacer:
             float(preferences["answer_typing_max_s"]),
         )
 
-    def _typing_gap_remaining_s(self, user_id: UUID) -> float:
+    def _typing_gap_remaining_s(self, user_id: UUID, *, min_gap_s: float | None = None) -> float:
         last = self._last_bot_typing_at.get(user_id)
         if last is None:
             return 0.0
         elapsed_s = (self._now() - last).total_seconds()
-        return max(0.0, self.settings.discord_pacing_typing_pulse_min_gap_s - elapsed_s)
+        gap_s = self.settings.discord_pacing_typing_pulse_min_gap_s if min_gap_s is None else min_gap_s
+        return max(0.0, gap_s - elapsed_s)
 
     async def _send_bot_typing_pulse(
         self,
@@ -313,11 +315,16 @@ class DiscordPacer:
         reason: str,
         pulse_s: float,
         preferences: Mapping[str, Any],
+        min_gap_s: float | None = None,
+        signal_snapshot: Mapping[str, Any] | None = None,
     ) -> bool:
-        if self._send_typing is None or self._typing_gap_remaining_s(user.id) > 0:
+        if self._send_typing is None or self._typing_gap_remaining_s(user.id, min_gap_s=min_gap_s) > 0:
             return False
         await self._send_typing(channel_id)
         self._last_bot_typing_at[user.id] = self._now()
+        snapshot = {"channel_id": channel_id, "pulse_s": pulse_s}
+        if signal_snapshot:
+            snapshot.update(signal_snapshot)
         await record_pacing_event(
             self.pool,
             user_id=user.id,
@@ -325,18 +332,57 @@ class DiscordPacer:
             source="live",
             decision="typing_start",
             reason=reason,
-            signal_snapshot={"channel_id": channel_id, "pulse_s": pulse_s},
+            signal_snapshot=snapshot,
             preference_snapshot=preferences,
             wait_ms=int(round(pulse_s * 1000)),
         )
         return True
 
     async def perform_answer_typing(self, user: User, channel_id: str, answer_text: str) -> float:
+        return await self.perform_send_typing(user, channel_id, answer_text, send_kind="final")
+
+    async def perform_send_typing(
+        self,
+        user: User,
+        channel_id: str,
+        answer_text: str,
+        *,
+        send_kind: PacedSendKind = "final",
+        part_index: int | None = None,
+    ) -> float:
         """Emit human-feeling typing pulses, suppressing them while the user types."""
         preferences = await fetch_user_pacing_preferences(self.pool, user.id)
         if not preferences["enabled"] or self._send_typing is None:
             return 0.0
 
+        waited_s = await self._wait_while_user_typing(user, channel_id, preferences)
+        if self.typing_state(user.id, preferences) is not None:
+            return waited_s
+
+        if send_kind == "incremental_next":
+            return waited_s + await self._perform_incremental_next_typing(
+                user,
+                channel_id,
+                answer_text,
+                preferences,
+                part_index=part_index,
+            )
+
+        return waited_s + await self._perform_answer_typing_after_user_wait(
+            user,
+            channel_id,
+            answer_text,
+            preferences,
+            send_kind=send_kind,
+            part_index=part_index,
+        )
+
+    async def _wait_while_user_typing(
+        self,
+        user: User,
+        channel_id: str,
+        preferences: Mapping[str, Any],
+    ) -> float:
         waited_s = 0.0
         max_typing_wait_s = float(preferences["max_typing_wait_s"])
         while self.typing_state(user.id, preferences) is not None and waited_s < max_typing_wait_s:
@@ -356,10 +402,19 @@ class DiscordPacer:
             )
             await self._sleep(wait_s)
             waited_s += wait_s
+        return waited_s
 
-        if self.typing_state(user.id, preferences) is not None:
-            return waited_s
-
+    async def _perform_answer_typing_after_user_wait(
+        self,
+        user: User,
+        channel_id: str,
+        answer_text: str,
+        preferences: Mapping[str, Any],
+        *,
+        send_kind: PacedSendKind,
+        part_index: int | None,
+    ) -> float:
+        waited_s = 0.0
         delay_s = self.answer_typing_delay_s(answer_text, preferences)
         remaining_s = delay_s
         visible_s = float(self.settings.discord_pacing_typing_visible_s)
@@ -381,6 +436,7 @@ class DiscordPacer:
                 reason="started paced answer typing indicator",
                 pulse_s=pulse_s,
                 preferences=preferences,
+                signal_snapshot={"send_kind": send_kind, "part_index": part_index},
             )
             await self._sleep(pulse_s)
             waited_s += pulse_s
@@ -401,6 +457,44 @@ class DiscordPacer:
                 await self._sleep(pause_s)
                 waited_s += pause_s
                 remaining_s -= pause_s
+        return waited_s
+
+    async def _perform_incremental_next_typing(
+        self,
+        user: User,
+        channel_id: str,
+        answer_text: str,
+        preferences: Mapping[str, Any],
+        *,
+        part_index: int | None,
+    ) -> float:
+        waited_s = 0.0
+        rhythm_s = float(self.settings.discord_multi_message_delay_s)
+        if rhythm_s > 0:
+            await self._sleep(rhythm_s)
+            waited_s += rhythm_s
+
+        min_gap_s = float(self.settings.discord_pacing_incremental_typing_pulse_min_gap_s)
+        if self._typing_gap_remaining_s(user.id, min_gap_s=min_gap_s) > 0:
+            return waited_s
+
+        pulse_s = min(
+            max(float(preferences["answer_typing_min_s"]), 0.25),
+            float(self.settings.discord_pacing_typing_visible_s),
+            1.6,
+        )
+        sent = await self._send_bot_typing_pulse(
+            user,
+            channel_id,
+            reason="started paced incremental typing indicator",
+            pulse_s=pulse_s,
+            preferences=preferences,
+            min_gap_s=min_gap_s,
+            signal_snapshot={"send_kind": "incremental_next", "part_index": part_index},
+        )
+        if sent:
+            await self._sleep(pulse_s)
+            waited_s += pulse_s
         return waited_s
 
     async def perform_thinking_typing_until_stopped(

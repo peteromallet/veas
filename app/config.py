@@ -67,6 +67,7 @@ class Settings(BaseSettings):
     discord_pacing_answer_chars_per_s: float = Field(default=18.0, ge=4.0, le=80.0)
     discord_pacing_thinking_typing_start_s: float = Field(default=0.4, ge=0.0, le=10.0)
     discord_pacing_typing_pulse_min_gap_s: float = Field(default=11.0, ge=1.0, le=30.0)
+    discord_pacing_incremental_typing_pulse_min_gap_s: float = Field(default=1.0, ge=0.0, le=10.0)
     discord_pacing_typing_visible_s: float = Field(default=8.0, ge=1.0, le=10.0)
     discord_pacing_typing_off_gap_s: float = Field(default=3.0, ge=0.0, le=10.0)
     discord_multi_message_enabled: bool = True
