@@ -98,8 +98,10 @@ async def test_configure_coalescer_attaches_discord_pacer_and_paced_callbacks(
 
     assert isinstance(app.state.discord_pacer, DiscordPacer)
     assert app.state.coalescer.pacer is app.state.discord_pacer
+    assert app.state.coalescer.debounce_seconds == settings.discord_pacing_burst_window_s
     assert app.state.coalescer.on_paced_answer is not None
     assert app.state.coalescer.on_paced_reaction is not None
+    assert app.state.coalescer.on_live_typing is not None
     monkeypatch.setattr(app.state.discord_pacer, "perform_answer_typing", fake_perform_answer_typing)
     monkeypatch.setattr(
         app.state.discord_pacer,

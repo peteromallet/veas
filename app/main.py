@@ -114,12 +114,18 @@ def _build_coalescer(pool: Any, settings: Settings) -> tuple[BurstCoalescer, Dis
     if _discord_provider_enabled(settings) and settings.discord_pacing_enabled:
         pacer = DiscordPacer(pool, settings=settings, send_typing=discord.send_typing)
 
+        async def on_live_typing(user: User, stop_event: asyncio.Event) -> None:
+            channel_id = await discord.get_dm_channel_id(user.phone)
+            await pacer.perform_initial_typing_until_stopped(user, channel_id, stop_event)
+
         async def on_paced_reaction(message_ids: list[UUID], user: User, decision: PacingDecision) -> None:
             await _send_paced_reaction(pool, message_ids, user, decision)
 
         return (
             BurstCoalescer(
                 on_burst_complete=run_agentic_turn,
+                debounce_seconds=settings.discord_pacing_burst_window_s,
+                max_seconds=max(settings.discord_pacing_burst_window_s, settings.discord_pacing_max_wait_s),
                 pacer=pacer,
                 on_paced_answer=lambda message_ids, user, decision: _run_paced_agentic_turn(
                     message_ids,
@@ -128,6 +134,7 @@ def _build_coalescer(pool: Any, settings: Settings) -> tuple[BurstCoalescer, Dis
                     pacer=pacer,
                 ),
                 on_paced_reaction=on_paced_reaction,
+                on_live_typing=on_live_typing,
             ),
             pacer,
         )

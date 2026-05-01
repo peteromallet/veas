@@ -55,6 +55,8 @@ class Settings(BaseSettings):
     scheduler_batch_size: int = 10
     discord_pacing_enabled: bool = True
     discord_pacing_burst_window_s: float = Field(default=2.75, ge=0.25, le=15.0)
+    discord_pacing_initial_typing_min_s: float = Field(default=0.5, ge=0.0, le=10.0)
+    discord_pacing_initial_typing_max_s: float = Field(default=2.5, ge=0.1, le=15.0)
     discord_pacing_min_wait_s: float = Field(default=0.8, ge=0.0, le=10.0)
     discord_pacing_max_wait_s: float = Field(default=12.0, ge=1.0, le=60.0)
     discord_pacing_typing_grace_s: float = Field(default=4.0, ge=0.5, le=30.0)

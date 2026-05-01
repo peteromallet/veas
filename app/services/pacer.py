@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import random
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any, Awaitable, Callable, Literal, Mapping
@@ -390,6 +391,45 @@ class DiscordPacer:
                     source="live",
                     decision="typing_start",
                     reason="started paced thinking typing indicator",
+                    signal_snapshot={"channel_id": channel_id, "pulse_s": pulse_interval_s},
+                    preference_snapshot=preferences,
+                    wait_ms=int(round(pulse_interval_s * 1000)),
+                )
+            try:
+                await asyncio.wait_for(stop_event.wait(), timeout=pulse_interval_s)
+            except TimeoutError:
+                pass
+
+    async def perform_initial_typing_until_stopped(
+        self,
+        user: User,
+        channel_id: str,
+        stop_event: asyncio.Event,
+    ) -> None:
+        """Emit the first visible typing cue while live messages coalesce."""
+        preferences = await fetch_user_pacing_preferences(self.pool, user.id)
+        if not preferences["enabled"] or self._send_typing is None:
+            return
+
+        min_s = self.settings.discord_pacing_initial_typing_min_s
+        max_s = max(min_s, self.settings.discord_pacing_initial_typing_max_s)
+        try:
+            await asyncio.wait_for(stop_event.wait(), timeout=random.uniform(min_s, max_s))
+            return
+        except TimeoutError:
+            pass
+
+        pulse_interval_s = 6.5
+        while not stop_event.is_set():
+            if self.typing_state(user.id, preferences) is None:
+                await self._send_typing(channel_id)
+                await record_pacing_event(
+                    self.pool,
+                    user_id=user.id,
+                    message_ids=[],
+                    source="live",
+                    decision="typing_start",
+                    reason="started paced initial typing indicator",
                     signal_snapshot={"channel_id": channel_id, "pulse_s": pulse_interval_s},
                     preference_snapshot=preferences,
                     wait_ms=int(round(pulse_interval_s * 1000)),

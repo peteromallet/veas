@@ -30,16 +30,20 @@ class BurstCoalescer:
         pacer: Any | None = None,
         on_paced_answer: Callable[[list[UUID], User, PacingDecision], Awaitable[None]] | None = None,
         on_paced_reaction: Callable[[list[UUID], User, PacingDecision], Awaitable[None]] | None = None,
+        on_live_typing: Callable[[User, asyncio.Event], Awaitable[None]] | None = None,
     ) -> None:
         self.on_burst_complete = on_burst_complete
         self.on_paced_answer = on_paced_answer
         self.on_paced_reaction = on_paced_reaction
+        self.on_live_typing = on_live_typing
         self.pacer = pacer
         self.debounce_seconds = debounce_seconds
         self.max_seconds = max_seconds
         self._bursts: dict[UUID, _Burst] = {}
         self._locks: dict[UUID, asyncio.Lock] = {}
         self._wait_tasks: dict[UUID, asyncio.Task] = {}
+        self._live_typing_tasks: dict[UUID, asyncio.Task[None]] = {}
+        self._live_typing_stops: dict[UUID, asyncio.Event] = {}
         self._coalescer: AsyncBurstCoalescer[UUID, UUID] = AsyncBurstCoalescer(
             self._fire_batch,
             idle_delay=debounce_seconds,
@@ -60,6 +64,10 @@ class BurstCoalescer:
             burst.message_ids.append(message_id)
             burst.user = user
             burst.source = self._merge_source(burst.source, source)
+            if source == "live" and self.on_live_typing is not None and user_id not in self._live_typing_tasks:
+                stop_event = asyncio.Event()
+                self._live_typing_stops[user_id] = stop_event
+                self._live_typing_tasks[user_id] = asyncio.create_task(self.on_live_typing(user, stop_event))
             await self._coalescer.submit(user_id, message_id)
 
     async def add_burst(self, user_id: UUID, message_ids: list[UUID], user: User) -> None:
@@ -81,6 +89,7 @@ class BurstCoalescer:
 
     async def _handle_ready_burst(self, user_id: UUID, burst: _Burst) -> None:
         message_ids = list(burst.message_ids)
+        await self._stop_live_typing(user_id)
         if self.pacer is None:
             # Runtime contract: on_burst_complete(triggering_message_ids: list[UUID], user).
             await self.on_burst_complete(message_ids, burst.user)
@@ -103,6 +112,17 @@ class BurstCoalescer:
             await self._mark_processed(message_ids)
             return
         await self._call_paced_answer(message_ids, burst.user, decision)
+
+    async def _stop_live_typing(self, user_id: UUID) -> None:
+        stop_event = self._live_typing_stops.pop(user_id, None)
+        task = self._live_typing_tasks.pop(user_id, None)
+        if stop_event is not None:
+            stop_event.set()
+        if task is not None:
+            try:
+                await task
+            except Exception:
+                pass
 
     async def _fire_after_wait(self, user_id: UUID, wait_s: float) -> None:
         try:

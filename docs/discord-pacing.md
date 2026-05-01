@@ -80,6 +80,8 @@ audit stream.
 | --- | --- | --- |
 | `DISCORD_PACING_ENABLED` | `true` | Enables Discord pacing when the provider is Discord. |
 | `DISCORD_PACING_BURST_WINDOW_S` | `2.75` | Base window for coalescing nearby messages. |
+| `DISCORD_PACING_INITIAL_TYPING_MIN_S` | `0.5` | Earliest live Discord typing cue after the first message in a burst. |
+| `DISCORD_PACING_INITIAL_TYPING_MAX_S` | `2.5` | Latest live Discord typing cue after the first message in a burst. |
 | `DISCORD_PACING_MIN_WAIT_S` | `0.8` | Lower bound for wait decisions. |
 | `DISCORD_PACING_MAX_WAIT_S` | `12` | Upper bound for ordinary wait decisions. |
 | `DISCORD_PACING_TYPING_GRACE_S` | `4` | How recently a user typing event counts as active composition. |

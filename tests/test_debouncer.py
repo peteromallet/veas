@@ -127,6 +127,41 @@ async def test_paced_answer_callback_receives_decision_and_source() -> None:
     assert pacer.calls == [(user, [message_id], "catch_up")]
 
 
+async def test_live_typing_starts_during_coalescing_and_stops_before_answer() -> None:
+    paced_calls = []
+    typing_calls = []
+
+    async def legacy_callback(message_ids, user):
+        raise AssertionError("paced answer callback should be used")
+
+    async def paced_answer(message_ids, user, decision):
+        paced_calls.append((message_ids, user, decision))
+
+    async def live_typing(user, stop_event):
+        typing_calls.append((user, stop_event.is_set()))
+        await stop_event.wait()
+        typing_calls.append((user, stop_event.is_set()))
+
+    user = User(id=uuid4(), name="Maya", phone="15555550100", timezone="UTC")
+    decision = PacingDecision(action="answer", reason="ready")
+    pacer = _FakePacer([decision])
+    coalescer = BurstCoalescer(
+        legacy_callback,
+        debounce_seconds=0.01,
+        max_seconds=0.1,
+        pacer=pacer,
+        on_paced_answer=paced_answer,
+        on_live_typing=live_typing,
+    )
+    message_id = uuid4()
+
+    await coalescer.add(user.id, message_id, user, source="live")
+    await asyncio.sleep(0.03)
+
+    assert typing_calls == [(user, False), (user, True)]
+    assert paced_calls == [([message_id], user, decision)]
+
+
 @pytest.mark.parametrize(
     ("sources", "expected_source"),
     [
