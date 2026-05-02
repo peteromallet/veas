@@ -265,12 +265,20 @@ async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> Search
         clauses.append(f"(sender_id = ANY(${len(params)}::uuid[]) OR recipient_id = ANY(${len(params)}::uuid[]))")
     if args.text_contains:
         params.append(f"%{args.text_contains}%")
-        clauses.append(f"content ILIKE ${len(params)}")
+        clauses.append(
+            f"""(
+                content ILIKE ${len(params)}
+                OR media_analysis->>'explanation' ILIKE ${len(params)}
+                OR media_analysis->>'description' ILIKE ${len(params)}
+                OR media_analysis->>'summary' ILIKE ${len(params)}
+            )"""
+        )
     add_date_range(clauses, params, "sent_at", args.date_range)
     params.append(args.limit)
     rows = await ctx.pool.fetch(
         f"""
-        SELECT id, sender_id, recipient_id, sent_at, content, COALESCE(charge, 'routine') AS charge, direction
+        SELECT id, sender_id, recipient_id, sent_at, content, media_type, media_analysis,
+               COALESCE(charge, 'routine') AS charge, direction
         FROM messages
         WHERE {' AND '.join(clauses)}
         ORDER BY sent_at DESC

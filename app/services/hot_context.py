@@ -15,6 +15,7 @@ from app.services.cross_thread_privacy import (
     raw_message_visibility,
 )
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
+from app.services.tools.common import media_analysis_text
 
 
 @dataclass
@@ -71,7 +72,7 @@ def _clip(text: Any, limit: int = 240) -> str:
 def _history_content(item: dict[str, Any], clip_limit: int) -> str:
     if item.get("raw_content_hidden"):
         return "[raw partner content hidden by sharing_default]"
-    content = item.get("content")
+    content = item.get("content") or media_analysis_text(item)
     if item.get("direction") == "outbound":
         raw_content = str(content or "")
         cleaned = clean_user_facing_text(raw_content)
@@ -254,7 +255,8 @@ async def build_hot_context(
     ]
     message_rows = await pool.fetch(
         """
-        SELECT id, direction, sender_id, recipient_id, content, sent_at, COALESCE(charge, 'routine') AS charge
+        SELECT id, direction, sender_id, recipient_id, content, media_type, media_analysis,
+               sent_at, COALESCE(charge, 'routine') AS charge
         FROM messages
         WHERE deleted_at IS NULL
           AND (sender_id = ANY($1::uuid[]) OR recipient_id = ANY($1::uuid[]))
@@ -278,6 +280,8 @@ async def build_hot_context(
                 thread_owner_user_id=_message_thread_owner_id(row),
                 thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
             ).visible else None,
+            "media_type": row["media_type"] if "media_type" in row else None,
+            "media_analysis": row["media_analysis"] if "media_analysis" in row else None,
             "raw_content_hidden": not raw_message_visibility(
                 viewer_user_id=user.id,
                 thread_owner_user_id=_message_thread_owner_id(row),
@@ -319,7 +323,8 @@ async def build_hot_context(
     latest_sent_at = max((row["sent_at"] for row in message_rows), default=None)
     trigger_rows = await pool.fetch(
         """
-        SELECT id, direction, sender_id, recipient_id, COALESCE(charge, 'routine') AS charge, sent_at, content
+        SELECT id, direction, sender_id, recipient_id, COALESCE(charge, 'routine') AS charge,
+               sent_at, content, media_type, media_analysis
         FROM messages
         WHERE id = ANY($1::uuid[])
         ORDER BY sent_at ASC
@@ -354,6 +359,8 @@ async def build_hot_context(
                         thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
                     ).visible
                     else None,
+                    "media_type": row["media_type"] if "media_type" in row else None,
+                    "media_analysis": row["media_analysis"] if "media_analysis" in row else None,
                 }
                 for row in trigger_rows
             ],

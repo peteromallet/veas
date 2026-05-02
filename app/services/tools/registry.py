@@ -18,7 +18,7 @@ ToolFn = Callable[[TurnContext, BaseModel], Awaitable[BaseModel]]
 
 
 TOOL_DESCRIPTIONS: dict[str, str] = {
-    "search_messages": "Search prior message text or dates when exact conversation history matters; avoid for broad summaries.",
+    "search_messages": "Search prior message text, saved media explanations, or dates when exact conversation history matters; avoid for broad summaries.",
     "search_emojis": "Search the Unicode emoji dataset by meaning/name before choosing a precise or unusual reaction.",
     "recent_activity": "Summarize recent thread activity by sender; avoid when a precise quote or row is needed.",
     "list_themes": "List known active or archived themes; avoid when one theme's full detail is needed.",
@@ -57,6 +57,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "edit_outbound_message": "Edit one already-sent bot outbound message when correcting wording is better than sending a follow-up; only works for delivered bot messages.",
     "delete_outbound_message": "Delete one already-sent bot outbound message when leaving it visible would be harmful or clearly wrong; only works for delivered bot messages.",
     "react_to_message": "Add one precise Unicode emoji reaction to a visible Discord message; prefer emotionally exact, non-obvious emoji over generic defaults.",
+    "explain_media_item": "Use OpenAI vision to explain a stored image message and persist the explanation into message memory for future search.",
     "log_feedback": "Record user feedback about a message, turn, or general behavior; avoid for inferred preferences.",
 }
 
@@ -101,6 +102,7 @@ TOOL_DISPATCH: dict[str, ToolFn] = {
     "edit_outbound_message": write_tools.edit_outbound_message,
     "delete_outbound_message": write_tools.delete_outbound_message,
     "react_to_message": write_tools.react_to_message,
+    "explain_media_item": write_tools.explain_media_item,
     "log_feedback": write_tools.log_feedback,
 }
 
@@ -147,6 +149,7 @@ WRITE_PHASE_TOOLS = {
     "edit_outbound_message",
     "delete_outbound_message",
     "react_to_message",
+    "explain_media_item",
     "log_feedback",
 }
 

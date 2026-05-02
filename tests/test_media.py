@@ -10,6 +10,7 @@ from app.services.deletion import purge_expired_deletions
 from app.services.inbound import process_inbound
 from app.services.transcription import handle_voice
 from app.services.vision import handle_image
+from app.services.vision import explain_stored_image
 
 
 pytestmark = pytest.mark.anyio
@@ -103,7 +104,10 @@ async def test_image_success_persists_analysis_and_enqueues_as_media(fake_pool, 
     await handle_image(fake_pool, message_id, "media-image", user, recorder)
     message = fake_pool.messages[message_id]
 
-    assert message["media_analysis"] == {"description": "image description"}
+    assert message["media_analysis"]["kind"] == "image"
+    assert message["media_analysis"]["provider"] == "openai"
+    assert message["media_analysis"]["explanation"] == "image description"
+    assert message["media_analysis"]["description"] == "image description"
     assert message["media_url"].endswith(f"image/{message_id}")
     assert recorder.calls == [(user.id, message_id, user, "media")]
 
@@ -195,7 +199,8 @@ async def test_image_spend_over_threshold_still_runs_vision(fake_pool, monkeypat
     message = fake_pool.messages[message_id]
 
     assert message["media_url"].endswith(f"image/{message_id}")
-    assert message["media_analysis"] == {"description": "still analyzed"}
+    assert message["media_analysis"]["explanation"] == "still analyzed"
+    assert message["media_analysis"]["description"] == "still analyzed"
     assert message["processing_state"] == "raw"
     assert recorder.calls == [(user.id, message_id, user, "media")]
 
@@ -229,6 +234,26 @@ async def test_image_vision_failure_retains_media_and_keeps_raw(fake_pool, monke
     assert message["media_analysis"] == {"error": "vision_failed"}
     assert message["processing_state"] == "expired"
     assert sent[0][2].name == "media_failure"
+
+
+async def test_explain_stored_image_downloads_analyzes_and_persists(fake_pool, monkeypatch) -> None:
+    user, message_id = _user_and_message(fake_pool)
+    fake_pool.messages[message_id]["media_type"] = "image"
+    fake_pool.messages[message_id]["media_url"] = f"mediator-media/image/{message_id}"
+
+    async def download_media(storage_path):
+        return b"image", "image/png"
+
+    async def analyze(image_bytes, content_type):
+        return {"explanation": "A screenshot of travel plans and a tense message bubble."}
+
+    monkeypatch.setattr("app.services.storage.download_media", download_media)
+    monkeypatch.setattr("app.services.vision._openai_analyze", analyze)
+
+    analysis = await explain_stored_image(fake_pool, message_id)
+
+    assert analysis["explanation"] == "A screenshot of travel plans and a tense message bubble."
+    assert fake_pool.messages[message_id]["media_analysis"]["description"] == analysis["explanation"]
 
 
 async def test_edit_runs_before_idempotent_insert(fake_pool) -> None:

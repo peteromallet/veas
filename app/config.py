@@ -40,6 +40,8 @@ class Settings(BaseSettings):
     discord_partner_name_b: str = "Partner B"
     supabase_storage_bucket: str = "mediator-media"
     media_fetch_timeout_s: int = 30
+    vision_model: str = "gpt-5.5"
+    vision_detail: str = Field(default="high", pattern="^(low|high|auto)$")
     default_user_timezone: str = "UTC"
     text_llm_daily_cap_usd: float = 10.0
     vision_daily_cap_usd: float = 2.0

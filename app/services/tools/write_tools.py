@@ -10,9 +10,10 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.services.checkins import schedule_checkin_record
-from app.services.cross_thread_privacy import normalize_sharing_default
+from app.services.cross_thread_privacy import normalize_sharing_default, raw_message_visibility
 from app.services.crypto import encrypt_value
 from app.config import get_settings
+from app.services.vision import explain_stored_image
 from app.services.messaging import send_outbound, _append_turn_reasoning, _call_oob_hook
 from app.services import discord, scoring
 from app.services.templates import TemplateCall
@@ -41,6 +42,8 @@ from tool_schemas import (
     EditOutboundMessageOutput,
     EscalateToPartnerInput,
     EscalateToPartnerOutput,
+    ExplainMediaItemInput,
+    ExplainMediaItemOutput,
     LiftOOBInput,
     LiftOOBOutput,
     LogFeedbackInput,
@@ -115,6 +118,14 @@ async def _log_tool_call(
 
 def _start() -> datetime:
     return datetime.now(UTC)
+
+
+def _message_thread_owner_id(row: Any) -> Any:
+    if row["direction"] == "inbound" and row["sender_id"] is not None:
+        return row["sender_id"]
+    if row["direction"] == "outbound" and row["recipient_id"] is not None:
+        return row["recipient_id"]
+    return row["sender_id"] or row["recipient_id"]
 
 
 async def _schedule_context_job(
@@ -1079,6 +1090,73 @@ async def react_to_message(ctx: TurnContext, args: ReactToMessageInput) -> React
         reason=args.reason,
     )
     await _log_tool_call(ctx, "react_to_message", args, started, result)
+    return result
+
+
+async def explain_media_item(ctx: TurnContext, args: ExplainMediaItemInput) -> ExplainMediaItemOutput:
+    started = _start()
+    row = await ctx.pool.fetchrow(
+        """
+        SELECT id, direction, sender_id, recipient_id, media_type, media_url, deleted_at
+        FROM messages
+        WHERE id=$1
+          AND (
+            sender_id = ANY($2::uuid[])
+            OR recipient_id = ANY($2::uuid[])
+          )
+        """,
+        args.message_id,
+        [ctx.user.id, ctx.partner.id],
+    )
+    if row is None or row["deleted_at"] is not None:
+        result = ExplainMediaItemOutput(action="not_found", message_id=args.message_id, reason="message not found")
+        await _log_tool_call(ctx, "explain_media_item", args, started, result)
+        return result
+    owner_id = _message_thread_owner_id(row)
+    sharing_default = ctx.user.cross_thread_sharing_default if owner_id == ctx.user.id else ctx.partner.cross_thread_sharing_default
+    if not raw_message_visibility(
+        viewer_user_id=ctx.user.id,
+        thread_owner_user_id=owner_id,
+        thread_owner_sharing_default=sharing_default,
+    ).visible:
+        result = ExplainMediaItemOutput(
+            action="blocked",
+            message_id=args.message_id,
+            media_type=row["media_type"],
+            reason="raw partner media hidden by sharing_default",
+        )
+        await _log_tool_call(ctx, "explain_media_item", args, started, result)
+        return result
+    if row["media_type"] != "image" or not row["media_url"]:
+        result = ExplainMediaItemOutput(
+            action="unsupported",
+            message_id=args.message_id,
+            media_type=row["media_type"],
+            reason="only stored image media can be explained right now",
+        )
+        await _log_tool_call(ctx, "explain_media_item", args, started, result)
+        return result
+
+    try:
+        analysis = await explain_stored_image(ctx.pool, args.message_id)
+    except Exception as exc:
+        result = ExplainMediaItemOutput(
+            action="unsupported",
+            message_id=args.message_id,
+            media_type=row["media_type"],
+            reason=f"media explanation failed: {exc}",
+        )
+        await _log_tool_call(ctx, "explain_media_item", args, started, result)
+        return result
+
+    result = ExplainMediaItemOutput(
+        action="explained",
+        message_id=args.message_id,
+        media_type=row["media_type"],
+        explanation=analysis.get("explanation") or analysis.get("description"),
+        reason=args.reason,
+    )
+    await _log_tool_call(ctx, "explain_media_item", args, started, result)
     return result
 
 

@@ -240,6 +240,23 @@ class FakePool:
                 "processing_state": row.get("processing_state"),
                 "whatsapp_message_id": row.get("whatsapp_message_id"),
             }
+        if compact.startswith("SELECT id, media_type, media_url FROM messages WHERE id=$1"):
+            row = self.messages.get(args[0])
+            if row is None or row.get("deleted_at") is not None:
+                return None
+            return {
+                "id": row["id"],
+                "media_type": row.get("media_type"),
+                "media_url": row.get("media_url"),
+            }
+        if compact.startswith("SELECT id, direction, sender_id, recipient_id, media_type, media_url, deleted_at FROM messages"):
+            message_id, user_ids = args
+            row = self.messages.get(message_id)
+            if row is None:
+                return None
+            if row.get("sender_id") not in user_ids and row.get("recipient_id") not in user_ids:
+                return None
+            return row
         if compact.startswith("INSERT INTO messages"):
             if "direction, recipient_id" in compact:
                 # Outbound: basic form is (recipient_id, content, content_encrypted, state).
@@ -1077,7 +1094,13 @@ class FakePool:
             for row in self.messages.values():
                 if row.get("deleted_at") is not None:
                     continue
-                if text_filter and text_filter not in (row.get("content") or "").lower():
+                analysis = row.get("media_analysis") or {}
+                analysis_text = " ".join(
+                    str(analysis.get(key) or "")
+                    for key in ("explanation", "description", "summary")
+                    if isinstance(analysis, dict)
+                )
+                if text_filter and text_filter not in f"{row.get('content') or ''} {analysis_text}".lower():
                     continue
                 if id_filters:
                     allowed = id_filters[0]
@@ -1092,6 +1115,8 @@ class FakePool:
                         "sender_id": row.get("sender_id"),
                         "sent_at": row["sent_at"],
                         "content": row.get("content"),
+                        "media_type": row.get("media_type"),
+                        "media_analysis": row.get("media_analysis"),
                         "charge": row.get("charge") or "routine",
                         "direction": row.get("direction"),
                         "recipient_id": row.get("recipient_id"),

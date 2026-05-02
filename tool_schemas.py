@@ -903,6 +903,25 @@ class ReactToMessageOutput(BaseModel):
     reason: str | None = None
 
 
+# --- media explanation ---
+
+
+class ExplainMediaItemInput(BaseModel):
+    message_id: UUID = Field(description="Internal id of an image message to explain and persist.")
+    reason: str | None = Field(
+        default=None,
+        description="Why this media item needs a fresh durable explanation now.",
+    )
+
+
+class ExplainMediaItemOutput(BaseModel):
+    action: Literal["explained", "not_found", "unsupported", "blocked"]
+    message_id: UUID
+    media_type: str | None = None
+    explanation: str | None = None
+    reason: str | None = None
+
+
 # --- feedback ---
 
 
@@ -1013,5 +1032,6 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "edit_outbound_message": (EditOutboundMessageInput, EditOutboundMessageOutput),
     "delete_outbound_message": (DeleteOutboundMessageInput, DeleteOutboundMessageOutput),
     "react_to_message": (ReactToMessageInput, ReactToMessageOutput),
+    "explain_media_item": (ExplainMediaItemInput, ExplainMediaItemOutput),
     "log_feedback": (LogFeedbackInput, LogFeedbackOutput),
 }

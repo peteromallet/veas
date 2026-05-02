@@ -38,12 +38,24 @@ def add_date_range(clauses: list[str], params: list[Any], column: str, date_rang
         clauses.append(f"{column} <= ${len(params)}")
 
 
+def media_analysis_text(row_or_analysis: Any) -> str:
+    analysis = value(row_or_analysis, "media_analysis", row_or_analysis)
+    if not isinstance(analysis, dict):
+        return ""
+    text = analysis.get("explanation") or analysis.get("description") or analysis.get("summary")
+    if not text:
+        return ""
+    media_type = analysis.get("kind") or value(row_or_analysis, "media_type", "media")
+    return f"[{media_type}] {text}"
+
+
 def message_hit(row: Any) -> MessageHit:
+    content = value(row, "content", "") or media_analysis_text(row)
     return MessageHit(
         id=row["id"],
         sender_id=row["sender_id"],
         sent_at=row["sent_at"],
-        content=value(row, "content", "") or "",
+        content=content,
         charge=value(row, "charge", "routine"),
         direction=row["direction"],
     )

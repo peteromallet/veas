@@ -30,6 +30,7 @@ from tool_schemas import (
     CreateThemeInput,
     CrossThreadSharingDefault,
     EscalateToPartnerInput,
+    ExplainMediaItemInput,
     FeedbackSentiment,
     GetOOBInput,
     ListBridgeCandidatesInput,
@@ -256,6 +257,7 @@ def _seed_message(pool, user_id, partner_id, *, direction="inbound", content="so
         ("schedule_checkin", lambda ctx: (write_tools.schedule_checkin, ScheduleCheckinInput(user_id=ctx.user.id, when=datetime.now(UTC) + timedelta(hours=2), about_what="talk", reason="follow up"))),
         ("cancel_scheduled_checkin", lambda ctx: (_seed_job(ctx.pool, ctx.user.id) and write_tools.cancel_scheduled_checkin, CancelScheduledCheckinInput(user_id=ctx.user.id))),
         ("escalate_to_partner", lambda ctx: (write_tools.escalate_to_partner, EscalateToPartnerInput(from_user_id=ctx.user.id, to_user_id=ctx.partner.id, content="body", reason="crisis charge", is_crisis=True))),
+        ("explain_media_item", lambda ctx: (write_tools.explain_media_item, ExplainMediaItemInput(message_id=_seed_message(ctx.pool, ctx.user.id, ctx.partner.id), reason="fresh explanation"))),
         ("log_feedback", lambda ctx: (write_tools.log_feedback, LogFeedbackInput(from_user_id=ctx.user.id, target_type="general", target_id=None, sentiment=FeedbackSentiment.positive, content="good"))),
     ],
 )
@@ -266,8 +268,15 @@ async def test_every_write_tool_inserts_tool_call(tool_ctx, monkeypatch, tool_na
         sent.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return uuid4()
 
+    async def fake_explain(pool, message_id):
+        return {"explanation": "image note"}
+
     monkeypatch.setattr(write_tools, "send_outbound", fake_send)
+    monkeypatch.setattr(write_tools, "explain_stored_image", fake_explain)
     fn, args = call_factory(tool_ctx)
+    if tool_name == "explain_media_item":
+        tool_ctx.pool.messages[args.message_id]["media_type"] = "image"
+        tool_ctx.pool.messages[args.message_id]["media_url"] = f"mediator-media/image/{args.message_id}"
     if tool_name == "escalate_to_partner":
         tool_ctx.trigger_charge = "crisis"
 
@@ -354,6 +363,21 @@ async def test_search_messages_hides_partner_raw_until_opt_in(tool_ctx):
     )
 
     assert {hit.id for hit in result.hits} == {user_message_id, partner_message_id}
+
+
+async def test_search_messages_finds_saved_media_explanations(tool_ctx):
+    tool_ctx.phase = "read"
+    message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id, content=None)
+    tool_ctx.pool.messages[message_id]["media_type"] = "image"
+    tool_ctx.pool.messages[message_id]["media_analysis"] = {
+        "kind": "image",
+        "explanation": "Screenshot of a calendar showing Hannah's family visit.",
+    }
+
+    result = await read_tools.search_messages(tool_ctx, SearchMessagesInput(text_contains="family visit", limit=10))
+
+    assert [hit.id for hit in result.hits] == [message_id]
+    assert "calendar" in result.hits[0].content
 
 
 async def test_recent_activity_hides_partner_latest_content_until_opt_in(tool_ctx):
