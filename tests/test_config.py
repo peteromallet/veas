@@ -23,6 +23,9 @@ def test_config_loads(monkeypatch) -> None:
         "VISION_DAILY_CAP_USD": "2.5",
         "TRANSCRIPTION_DAILY_CAP_USD": "1.5",
         "CONVERSATIONAL_MODEL": "claude-sonnet-test",
+        "CONSULT_MODEL": "claude-consult-test",
+        "CONSULT_MAX_TOOL_ITERATIONS": "4",
+        "CONSULT_TIMEOUT_S": "12.5",
         "OOB_CHECKER_MODEL": "claude-sonnet-oob-test",
         "SCORING_MODEL": "claude-haiku-test",
         "SCHEDULER_ENABLED": "true",
@@ -85,6 +88,9 @@ def test_config_loads(monkeypatch) -> None:
     assert settings.vision_daily_cap_usd == 2.5
     assert settings.transcription_daily_cap_usd == 1.5
     assert settings.conversational_model == env["CONVERSATIONAL_MODEL"]
+    assert settings.consult_model == env["CONSULT_MODEL"]
+    assert settings.consult_max_tool_iterations == 4
+    assert settings.consult_timeout_s == 12.5
     assert settings.oob_checker_model == env["OOB_CHECKER_MODEL"]
     assert settings.scoring_model == env["SCORING_MODEL"]
     assert settings.scheduler_enabled is True
@@ -123,3 +129,13 @@ def test_config_loads(monkeypatch) -> None:
     assert settings.log_destination == env["LOG_DESTINATION"]
 
     get_settings.cache_clear()
+
+
+def test_consult_model_defaults_to_conversational_model(app_env, monkeypatch) -> None:
+    monkeypatch.setenv("CONVERSATIONAL_MODEL", "claude-main-test")
+    monkeypatch.delenv("CONSULT_MODEL", raising=False)
+    get_settings.cache_clear()
+
+    settings = Settings()
+
+    assert settings.consult_model == "claude-main-test"

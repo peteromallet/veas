@@ -19,7 +19,7 @@ class TurnContext:
     user: User
     partner: User
     triggering_message_ids: list[UUID]
-    phase: Literal["read", "write"] = "read"
+    phase: Literal["read", "write", "consult"] = "read"
     trigger_charge: str | None = None
     explicit_partner_alert_requested: bool = False
     turn_started_at: datetime | None = None
@@ -28,6 +28,7 @@ class TurnContext:
     send_typing_indicator: bool = True
     before_paced_send: BeforePacedSend | None = None
     sent_message_parts: list[dict[str, Any]] | None = None
+    hot_context_rendered: str | None = None
 
 
 async def partner_of(pool: Any, user: User) -> User:

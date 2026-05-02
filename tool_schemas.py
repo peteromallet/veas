@@ -16,7 +16,7 @@ from enum import Enum
 from typing import Annotated, Literal
 from uuid import UUID
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 
 
 # ---------------------------------------------------------------------------
@@ -123,6 +123,14 @@ class BridgeCandidateSensitivity(str, Enum):
     low = "low"
     medium = "medium"
     high = "high"
+
+
+class PerspectiveTemplate(str, Enum):
+    nvc = "nvc"
+    gottman = "gottman"
+    ifs_parts = "ifs_parts"
+    reflective_listener = "reflective_listener"
+    devils_advocate = "devils_advocate"
 
 
 Significance = Annotated[int, Field(ge=1, le=5)]
@@ -982,6 +990,45 @@ class SendMessagePartOutput(BaseModel):
     suggested_rewrite: str | None = None
 
 
+# --- consult_perspective ---
+
+
+class ConsultPerspectiveInput(BaseModel):
+    template: PerspectiveTemplate | None = None
+    perspective: str | None = Field(default=None, min_length=1, max_length=1000)
+    focus: str = Field(min_length=1, max_length=1500)
+    proposed_response: str | None = Field(default=None, max_length=3000)
+
+    @model_validator(mode="after")
+    def require_one_perspective_source(self) -> "ConsultPerspectiveInput":
+        if (self.template is None) == (self.perspective is None):
+            raise ValueError("provide exactly one of template or perspective")
+        return self
+
+
+class ConsultPerspectiveOutput(BaseModel):
+    is_error: bool = False
+    error: str | None = None
+    summary: str | None = None
+    key_points: list[str] = Field(default_factory=list)
+    suggested_moves: list[str] = Field(default_factory=list)
+    caveats: list[str] = Field(default_factory=list)
+    confidence: Confidence | None = None
+    template_used: PerspectiveTemplate | str | None = None
+
+    @model_validator(mode="after")
+    def validate_result_shape(self) -> "ConsultPerspectiveOutput":
+        if self.is_error:
+            if not self.error:
+                raise ValueError("error is required when is_error is true")
+            return self
+        if not self.summary:
+            raise ValueError("summary is required when is_error is false")
+        if self.confidence is None:
+            raise ValueError("confidence is required when is_error is false")
+        return self
+
+
 # ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
@@ -1006,6 +1053,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "get_self_model": (GetSelfModelInput, GetSelfModelOutput),
     "get_bot_actions": (GetBotActionsInput, GetBotActionsOutput),
     "send_message_part": (SendMessagePartInput, SendMessagePartOutput),
+    "consult_perspective": (ConsultPerspectiveInput, ConsultPerspectiveOutput),
     "list_bridge_candidates": (ListBridgeCandidatesInput, ListBridgeCandidatesOutput),
     # write
     "update_user_style_notes": (UpdateUserStyleNotesInput, UpdateUserStyleNotesOutput),

@@ -688,6 +688,92 @@ async def test_check_oob_read_tool_passes_protected_owner_ids(tool_ctx, monkeypa
     assert calls == [(tool_ctx.pool, "draft", tool_ctx.partner.id, protected_owner_ids, "relay")]
 
 
+async def test_consult_phase_check_oob_inherits_protected_owner_ids(tool_ctx, monkeypatch):
+    calls = []
+
+    async def fake_check_oob_with_policy(pool, *, content, recipient_id, protected_owner_ids=None, sender_intent=None):
+        calls.append(protected_owner_ids)
+        return {
+            "verdict": "ok",
+            "reason": "checked",
+            "triggering_oob_ids": [],
+            "suggested_rewrite": None,
+            "checker_failed": False,
+        }
+
+    monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
+    tool_ctx.phase = "consult"
+    tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
+
+    result = await call_tool(
+        "check_oob",
+        {"content": "draft", "recipient_id": str(tool_ctx.partner.id)},
+        tool_ctx,
+    )
+
+    assert result["verdict"] == "ok"
+    assert calls == [[tool_ctx.user.id, tool_ctx.partner.id]]
+
+
+async def test_consult_phase_check_oob_unions_partial_protected_owner_ids(tool_ctx, monkeypatch):
+    calls = []
+    extra_owner_id = uuid4()
+
+    async def fake_check_oob_with_policy(pool, *, content, recipient_id, protected_owner_ids=None, sender_intent=None):
+        calls.append(protected_owner_ids)
+        return {
+            "verdict": "ok",
+            "reason": "checked",
+            "triggering_oob_ids": [],
+            "suggested_rewrite": None,
+            "checker_failed": False,
+        }
+
+    monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
+    tool_ctx.phase = "consult"
+    tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
+
+    result = await call_tool(
+        "check_oob",
+        {
+            "content": "draft",
+            "recipient_id": str(tool_ctx.partner.id),
+            "protected_owner_ids": [str(extra_owner_id), str(tool_ctx.user.id)],
+        },
+        tool_ctx,
+    )
+
+    assert result["verdict"] == "ok"
+    assert calls == [[extra_owner_id, tool_ctx.user.id, tool_ctx.partner.id]]
+
+
+async def test_read_phase_check_oob_does_not_inject_protected_owner_ids(tool_ctx, monkeypatch):
+    calls = []
+
+    async def fake_check_oob_with_policy(pool, *, content, recipient_id, protected_owner_ids=None, sender_intent=None):
+        calls.append(protected_owner_ids)
+        return {
+            "verdict": "ok",
+            "reason": "checked",
+            "triggering_oob_ids": [],
+            "suggested_rewrite": None,
+            "checker_failed": False,
+        }
+
+    monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
+    tool_ctx.phase = "read"
+    tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
+
+    result = await call_tool(
+        "check_oob",
+        {"content": "draft", "recipient_id": str(tool_ctx.partner.id)},
+        tool_ctx,
+    )
+
+    assert result["verdict"] == "ok"
+    assert calls == [None]
+
+
 async def test_search_emojis_returns_precise_candidates(tool_ctx):
     result = await read_tools.search_emojis(tool_ctx, SearchEmojisInput(query="candle", limit=5))
 

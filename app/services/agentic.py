@@ -45,6 +45,10 @@ class LLMPhaseError(Exception):
     failure_reason = "llm_timeout"
 
 
+class BoundedLoopExceeded(Exception):
+    failure_reason = "bounded_loop_exceeded"
+
+
 REACTION_DIRECTIVE_RE = re.compile(r"^\s*\[react:\s*(?P<emoji>[^\]\s]+)\s*\]\s*$", re.IGNORECASE)
 PACING_CONTEXT_KEYS = (
     "action",
@@ -232,6 +236,8 @@ async def _create_message_with_retry(
     system: list[dict[str, Any]],
     tools: list[dict[str, Any]],
     messages: list[dict[str, Any]],
+    model: str | None = None,
+    max_tokens: int = 1200,
 ) -> Any:
     settings = get_settings()
     last_error: Exception | None = None
@@ -240,8 +246,8 @@ async def _create_message_with_retry(
             raise SpendCapExceeded("text LLM spend cap exceeded")
         try:
             response = await client.messages.create(
-                model=settings.conversational_model,
-                max_tokens=1200,
+                model=model or settings.conversational_model,
+                max_tokens=max_tokens,
                 system=system,
                 messages=messages,
                 tools=tools,
@@ -264,6 +270,9 @@ async def run_phase(
     hot_context_rendered: str,
     allowed_tools: set[str],
     seed_messages: list[dict[str, Any]],
+    model: str | None = None,
+    max_tokens: int = 1200,
+    max_tool_iterations: int | None = None,
 ) -> tuple[str, list[dict[str, Any]], int]:
     settings = get_settings()
     if client is None:
@@ -273,9 +282,18 @@ async def run_phase(
     tools = _anthropic_tools(allowed_tools)
     messages = list(seed_messages)
     tool_call_count = 0
+    tool_iteration_count = 0
 
     while True:
-        response = await _create_message_with_retry(client, ctx=ctx, system=system, tools=tools, messages=messages)
+        response = await _create_message_with_retry(
+            client,
+            ctx=ctx,
+            system=system,
+            tools=tools,
+            messages=messages,
+            model=model,
+            max_tokens=max_tokens,
+        )
         content_blocks = [_block_to_dict(block) for block in (_attr(response, "content", []) or [])]
         messages.append({"role": "assistant", "content": content_blocks})
         tool_uses = [block for block in content_blocks if block.get("type") == "tool_use"]
@@ -287,6 +305,9 @@ async def run_phase(
             )
             return final_text, messages, tool_call_count
 
+        tool_iteration_count += 1
+        if max_tool_iterations is not None and tool_iteration_count > max_tool_iterations:
+            raise BoundedLoopExceeded(f"tool iteration cap exceeded: {max_tool_iterations}")
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
             tool_call_count += 1
@@ -647,6 +668,7 @@ async def _run_agentic(
             send_typing_indicator=send_typing_indicator,
             before_paced_send=before_paced_send,
             sent_message_parts=[],
+            hot_context_rendered=rendered_hot_context,
         )
         pacing_context = hot_context.trigger_metadata.get("pacing")
         pacing_seed = (

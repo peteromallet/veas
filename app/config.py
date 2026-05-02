@@ -2,7 +2,7 @@
 
 from functools import lru_cache
 
-from pydantic import Field, SecretStr
+from pydantic import Field, SecretStr, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -47,6 +47,9 @@ class Settings(BaseSettings):
     vision_daily_cap_usd: float = 2.0
     transcription_daily_cap_usd: float = 1.0
     conversational_model: str = "claude-sonnet-4-6"  # Conversational loop model.
+    consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
+    consult_max_tool_iterations: int = Field(default=3, ge=0, le=10)
+    consult_timeout_s: float = Field(default=20.0, ge=1.0, le=120.0)
     oob_checker_model: str = "claude-sonnet-4-6"  # Delivery/read-tool OOB checker model.
     scoring_model: str = "claude-haiku-4-5-20251001"  # Observation scoring and OOB topic clustering model.
     hot_context_token_budget: int = 6000  # Approximate prompt budget for hot context.
@@ -98,6 +101,12 @@ class Settings(BaseSettings):
     # memories.content, observations.content, bot_turns.reasoning).
     # When unset, the app falls back to plaintext storage and logs a warning.
     data_encryption_key: SecretStr | None = None
+
+    @model_validator(mode="after")
+    def default_consult_model(self) -> "Settings":
+        if not self.consult_model:
+            self.consult_model = self.conversational_model
+        return self
 
 
 @lru_cache

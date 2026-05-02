@@ -17,6 +17,12 @@ from tool_schemas import TOOL_REGISTRY
 ToolFn = Callable[[TurnContext, BaseModel], Awaitable[BaseModel]]
 
 
+async def _consult_perspective(ctx: TurnContext, args: BaseModel) -> BaseModel:
+    from app.services.tools.consult_perspective import consult_perspective
+
+    return await consult_perspective(ctx, args)
+
+
 TOOL_DESCRIPTIONS: dict[str, str] = {
     "search_messages": "Search prior message text, saved media explanations, or dates when exact conversation history matters; avoid for broad summaries.",
     "search_emojis": "Search the Unicode emoji dataset by meaning/name before choosing a precise or unusual reaction.",
@@ -32,6 +38,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "get_self_model": "Read the assistant's compact model of one user; avoid when you need exact source rows.",
     "get_bot_actions": "Audit what the assistant did or why; avoid relying on memory for action history.",
     "send_message_part": "Send one coherent user-visible Discord message part now when that is conversationally useful. The result is the authority for what actually reached the user.",
+    "consult_perspective": "Run a bounded read-only advisory consult from a named or custom perspective before a charged, ambiguous, or one-sided response. The consult cannot write, send, escalate, or recursively consult; the main agent remains responsible for final wording and safety.",
     "list_bridge_candidates": "List bridge candidates for this dyad; target-facing views must use approved shareable summaries, not raw private material.",
     "update_user_style_notes": "Replace a user's style notes when a stable communication preference changes; avoid for one-off moods.",
     "update_cross_thread_sharing_default": "Set one user's opt-in/opt-out default for cross-thread bridge sharing after they explicitly choose it.",
@@ -77,6 +84,7 @@ TOOL_DISPATCH: dict[str, ToolFn] = {
     "get_self_model": read_tools.get_self_model,
     "get_bot_actions": read_tools.get_bot_actions,
     "send_message_part": read_tools.send_message_part,
+    "consult_perspective": _consult_perspective,
     "list_bridge_candidates": read_tools.list_bridge_candidates,
     "update_user_style_notes": write_tools.update_user_style_notes,
     "update_cross_thread_sharing_default": write_tools.update_cross_thread_sharing_default,
@@ -121,6 +129,7 @@ READ_PHASE_TOOLS = {
     "get_self_model",
     "get_bot_actions",
     "send_message_part",
+    "consult_perspective",
     "list_bridge_candidates",
 }
 
@@ -153,6 +162,10 @@ WRITE_PHASE_TOOLS = {
     "log_feedback",
 }
 
+CONSULT_PHASE_TOOLS = READ_PHASE_TOOLS - {"send_message_part", "consult_perspective"}
+
+_CONSULT_OWNER_INJECTING_TOOLS = {"check_oob"}
+
 
 def to_anthropic_tools(allowed: set[str]) -> list[dict[str, Any]]:
     return [
@@ -167,7 +180,31 @@ def to_anthropic_tools(allowed: set[str]) -> list[dict[str, Any]]:
 
 
 def _phase_allowed(ctx: TurnContext) -> set[str]:
-    return READ_PHASE_TOOLS if ctx.phase == "read" else WRITE_PHASE_TOOLS
+    if ctx.phase == "read":
+        return READ_PHASE_TOOLS
+    if ctx.phase == "write":
+        return WRITE_PHASE_TOOLS
+    if ctx.phase == "consult":
+        return CONSULT_PHASE_TOOLS
+    return set()
+
+
+def _inject_consult_defaults(name: str, raw_args: dict[str, Any], ctx: TurnContext) -> dict[str, Any]:
+    if ctx.phase != "consult" or name not in _CONSULT_OWNER_INJECTING_TOOLS or not ctx.protected_owner_ids:
+        return raw_args
+    merged = dict(raw_args or {})
+    existing = merged.get("protected_owner_ids")
+    if not existing:
+        merged["protected_owner_ids"] = [str(uid) for uid in ctx.protected_owner_ids]
+        return merged
+    updated = list(existing)
+    seen = {str(uid) for uid in updated}
+    for uid in ctx.protected_owner_ids:
+        if str(uid) not in seen:
+            updated.append(str(uid))
+            seen.add(str(uid))
+    merged["protected_owner_ids"] = updated
+    return merged
 
 
 def _tool_error(message: str) -> dict[str, Any]:
@@ -188,7 +225,7 @@ async def call_tool(name: str, raw_args: dict[str, Any], ctx: TurnContext) -> di
         return result
     input_model, output_model = registry_entry
     try:
-        args = input_model.model_validate(raw_args)
+        args = input_model.model_validate(_inject_consult_defaults(name, raw_args, ctx))
     except ValidationError as exc:
         result = _tool_error(f"validation: {exc}")
         record_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
