@@ -92,6 +92,84 @@ async def test_discord_gateway_drops_non_partner(fake_pool, monkeypatch: pytest.
     get_settings.cache_clear()
 
 
+def test_discord_message_to_meta_payload_emits_image_for_attachment() -> None:
+    payload = message_to_meta_payload(
+        {
+            "id": "123",
+            "content": "look at this",
+            "author": {"id": "456", "username": "maya"},
+            "attachments": [
+                {
+                    "id": "att1",
+                    "url": "https://cdn.discordapp.com/attachments/1/2/x.png",
+                    "content_type": "image/png",
+                    "filename": "x.png",
+                }
+            ],
+        }
+    )
+
+    messages = payload["entry"][0]["changes"][0]["value"]["messages"]
+    assert [m["type"] for m in messages] == ["text", "image"]
+    assert messages[0]["text"]["body"] == "look at this"
+    assert messages[1]["id"] == "123:att1"
+    assert messages[1]["image"]["id"] == "https://cdn.discordapp.com/attachments/1/2/x.png"
+
+
+def test_discord_message_to_meta_payload_skips_non_image_attachments() -> None:
+    payload = message_to_meta_payload(
+        {
+            "id": "123",
+            "content": "",
+            "author": {"id": "456", "username": "maya"},
+            "attachments": [
+                {"id": "att1", "url": "https://cdn.discordapp.com/x.pdf", "content_type": "application/pdf", "filename": "x.pdf"}
+            ],
+        }
+    )
+
+    messages = payload["entry"][0]["changes"][0]["value"]["messages"]
+    assert len(messages) == 1
+    assert messages[0]["type"] == "text"
+    assert messages[0]["text"]["body"] == ""
+
+
+async def test_discord_gateway_processes_image_only_message(
+    fake_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MESSAGING_PROVIDER", "discord")
+    monkeypatch.setenv("DISCORD_PARTNER_USER_ID_A", "456")
+    get_settings.cache_clear()
+    calls = []
+
+    async def process_inbound(pool, payload, coalescer=None):
+        calls.append(payload)
+
+    monkeypatch.setattr("app.services.inbound.process_inbound", process_inbound)
+    bot = DiscordGatewayBot(fake_pool, None)
+    await bot._handle_message(
+        {
+            "id": "123",
+            "content": "",
+            "channel_id": "channel-1",
+            "author": {"id": "456", "username": "maya"},
+            "attachments": [
+                {
+                    "id": "att1",
+                    "url": "https://cdn.discordapp.com/x.jpg",
+                    "content_type": "image/jpeg",
+                    "filename": "x.jpg",
+                }
+            ],
+        }
+    )
+
+    assert len(calls) == 1
+    messages = calls[0]["entry"][0]["changes"][0]["value"]["messages"]
+    assert messages[0]["type"] == "image"
+    get_settings.cache_clear()
+
+
 async def test_discord_gateway_accepts_partner(fake_pool, monkeypatch: pytest.MonkeyPatch) -> None:
     monkeypatch.setenv("MESSAGING_PROVIDER", "discord")
     monkeypatch.setenv("DISCORD_PARTNER_USER_ID_A", "456")

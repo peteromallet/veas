@@ -201,6 +201,18 @@ def _configured_partner_name(user_id: str) -> str | None:
     return None
 
 
+def _has_image_attachment(message: dict[str, Any]) -> bool:
+    return any(_is_image_attachment(att) for att in (message.get("attachments") or []))
+
+
+def _is_image_attachment(attachment: dict[str, Any]) -> bool:
+    content_type = (attachment.get("content_type") or "").lower()
+    if content_type.startswith("image/"):
+        return True
+    filename = (attachment.get("filename") or "").lower()
+    return filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+
 def message_to_meta_payload(message: dict[str, Any]) -> dict[str, Any]:
     author = message["author"]
     user_id = str(author["id"])
@@ -208,6 +220,50 @@ def message_to_meta_payload(message: dict[str, Any]) -> dict[str, Any]:
     sent_at = datetime.now(UTC)
     if message.get("timestamp"):
         sent_at = datetime.fromisoformat(message["timestamp"].replace("Z", "+00:00"))
+    timestamp_str = str(int(sent_at.timestamp()))
+    message_id = str(message["id"])
+
+    messages: list[dict[str, Any]] = []
+    content = message.get("content") or ""
+    if content:
+        messages.append(
+            {
+                "from": user_id,
+                "id": message_id,
+                "timestamp": timestamp_str,
+                "type": "text",
+                "text": {"body": content},
+            }
+        )
+
+    for attachment in message.get("attachments") or []:
+        if not _is_image_attachment(attachment):
+            continue
+        url = attachment.get("url") or attachment.get("proxy_url")
+        if not url:
+            continue
+        attachment_id = str(attachment.get("id") or url)
+        messages.append(
+            {
+                "from": user_id,
+                "id": f"{message_id}:{attachment_id}",
+                "timestamp": timestamp_str,
+                "type": "image",
+                "image": {"id": url},
+            }
+        )
+
+    if not messages:
+        messages.append(
+            {
+                "from": user_id,
+                "id": message_id,
+                "timestamp": timestamp_str,
+                "type": "text",
+                "text": {"body": ""},
+            }
+        )
+
     return {
         "entry": [
             {
@@ -220,15 +276,7 @@ def message_to_meta_payload(message: dict[str, Any]) -> dict[str, Any]:
                                     "profile": {"name": name},
                                 }
                             ],
-                            "messages": [
-                                {
-                                    "from": user_id,
-                                    "id": str(message["id"]),
-                                    "timestamp": str(int(sent_at.timestamp())),
-                                    "type": "text",
-                                    "text": {"body": message.get("content", "")},
-                                }
-                            ],
+                            "messages": messages,
                         }
                     }
                 ]
@@ -330,7 +378,7 @@ class DiscordGatewayBot:
         if not is_allowed_discord_user(author_id):
             logger.warning("dropping non-whitelisted discord user %s", author_id)
             return
-        if not message.get("content"):
+        if not message.get("content") and not _has_image_attachment(message):
             return
         await process_inbound(self.pool, message_to_meta_payload(message), self.coalescer)
 
@@ -425,7 +473,9 @@ async def catch_up_recent_messages(pool: Any, coalescer: Any | None, *, limit: i
         for message in reversed(response.json()):
             if str(message.get("author", {}).get("id", "")) != user_id:
                 continue
-            if message.get("author", {}).get("bot") or not message.get("content"):
+            if message.get("author", {}).get("bot"):
+                continue
+            if not message.get("content") and not _has_image_attachment(message):
                 continue
             await process_inbound(
                 pool,
