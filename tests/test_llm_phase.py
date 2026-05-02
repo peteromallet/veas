@@ -8,7 +8,7 @@ from uuid import uuid4
 import pytest
 
 from app.models.user import User
-from app.services.agentic import SpendCapExceeded, run_phase
+from app.services.agentic import run_phase
 from app.services.turn_context import TurnContext
 from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS
 from tests.conftest import FakePool
@@ -118,10 +118,8 @@ async def test_run_phase_uses_tools_cache_markers_and_records_spend(app_env):
     assert requests[1]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert messages[2]["content"][0]["type"] == "tool_result"
     assert events == [
-        "cap_check",
         "client_call",
         "record_cost",
-        "cap_check",
         "cap_check",
         "client_call",
         "record_cost",
@@ -158,7 +156,7 @@ async def test_run_phase_applies_cache_markers_in_write_phase(app_env):
     assert requests[0]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
-async def test_run_phase_checks_spend_cap_before_client_call(app_env):
+async def test_run_phase_records_spend_without_blocking_on_caps(app_env):
     events: list[str] = []
     requests: list[dict] = []
     pool = TrackingPool(events)
@@ -170,8 +168,16 @@ async def test_run_phase_checks_spend_cap_before_client_call(app_env):
         events,
     )
 
-    with pytest.raises(SpendCapExceeded):
-        await run_phase(client, ctx, "system", "context", READ_PHASE_TOOLS, [{"role": "user", "content": "Phase A"}])
+    assistant_text, _, tool_count = await run_phase(
+        client,
+        ctx,
+        "system",
+        "context",
+        READ_PHASE_TOOLS,
+        [{"role": "user", "content": "Phase A"}],
+    )
 
-    assert events == ["cap_check"]
-    assert requests == []
+    assert assistant_text == "should not run"
+    assert tool_count == 0
+    assert events == ["client_call", "record_cost", "cap_check"]
+    assert len(requests) == 1

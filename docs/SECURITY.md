@@ -67,7 +67,7 @@ here.
       `python -c "import os, base64; print(base64.b64encode(os.urandom(32)).decode())"`.
 - [ ] Apply migration `0007_security_hardening.sql` (RLS + FORCE RLS +
       `*_encrypted` columns + pgcrypto + idempotent backfill notice).
-- [ ] Apply migrations through `0011_lock_public_schema.sql` so legacy
+- [ ] Apply migrations through `0013_bridge_candidates.sql` so legacy
       `public` tables are not anonymously accessible.
 - [ ] Run `python -m scripts.backfill_encryption` once with the key set.
       Re-run is safe; the script only encrypts rows where the encrypted

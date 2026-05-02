@@ -107,6 +107,7 @@ class HotContextPool:
         ]
         self.messages[-1]["id"] = self.trigger_id
         self.messages[-1]["charge"] = "charged"
+        self.bridge_candidates = []
 
     async def fetchrow(self, sql, *args):
         compact = " ".join(sql.split())
@@ -137,6 +138,7 @@ class HotContextPool:
             "timezone": user.timezone,
             "style_notes": f"{user.name} style",
             "onboarding_state": "welcomed" if user_id == self.user.id else "pending",
+            "cross_thread_sharing_default": user.cross_thread_sharing_default,
         }
 
     async def fetch(self, sql, *args):
@@ -151,15 +153,46 @@ class HotContextPool:
             return self.watch_items
         if "FROM observations" in compact:
             return [row for row in self.observations if row["significance"] is not None and row["significance"] >= 3]
+        if "FROM bridge_candidates" in compact:
+            target_user_id, source_user_id = args
+            return [
+                row
+                for row in self.bridge_candidates
+                if row["target_user_id"] == target_user_id
+                and row["source_user_id"] == source_user_id
+                and row["status"] in {"ready", "sent", "addressed"}
+            ][:3]
         if "FROM messages" in compact and "WHERE id = ANY" in compact:
             ids = set(args[0])
             return [
-                {"id": row["id"], "charge": row["charge"], "sent_at": row["sent_at"]}
+                {
+                    "id": row["id"],
+                    "direction": row["direction"],
+                    "sender_id": row["sender_id"],
+                    "recipient_id": row["recipient_id"],
+                    "charge": row["charge"],
+                    "sent_at": row["sent_at"],
+                    "content": row["content"],
+                }
                 for row in self.messages
                 if row["id"] in ids
             ]
         if "FROM messages" in compact:
-            return list(reversed(self.messages[-20:]))
+            if args and isinstance(args[0], list):
+                allowed = set(args[0])
+                rows = [
+                    row
+                    for row in self.messages
+                    if row.get("sender_id") in allowed or row.get("recipient_id") in allowed
+                ]
+            else:
+                user_id = args[0]
+                rows = [
+                    row
+                    for row in self.messages
+                    if row.get("sender_id") == user_id or row.get("recipient_id") == user_id
+                ]
+            return list(reversed(rows[-20:]))
         raise AssertionError(compact)
 
 
@@ -193,6 +226,30 @@ async def test_build_hot_context_returns_expected_fields(hot_context_seed):
     assert hc.conversation_load["inbound_count"] == 24
     assert hc.conversation_load["outbound_count"] == 1
     assert hc.trigger_metadata["messages"][0]["charge"] == "charged"
+    partner_rows = [item for item in hc.recent_messages if item["sender_id"] == partner.id or item["recipient_id"] == partner.id]
+    assert any(item.get("raw_content_hidden") for item in partner_rows)
+
+
+async def test_build_hot_context_shows_partner_raw_when_partner_opted_in(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    opted_in_partner = User(
+        partner.id,
+        partner.name,
+        partner.phone,
+        partner.timezone,
+        cross_thread_sharing_default="opt_in",
+    )
+
+    hc = await build_hot_context(pool, user, opted_in_partner, [pool.trigger_id])
+
+    partner_items = [
+        item
+        for item in hc.recent_messages
+        if item["sender_id"] == partner.id or item["recipient_id"] == partner.id
+    ]
+    assert partner_items
+    assert any(item["content"] for item in partner_items)
+    assert not all(item.get("raw_content_hidden") for item in partner_items)
 
 
 async def test_render_hot_context_respects_default_token_budget(hot_context_seed):
@@ -205,15 +262,18 @@ async def test_render_hot_context_respects_default_token_budget(hot_context_seed
     assert "## You" in text
     assert "onboarding_state: welcomed" in text
     assert "## Conversation load" in text
+    assert "## Sharing defaults" in text
+    assert "action_needed: Ask the current user" in text
     assert "total_messages: 25" in text
     assert "share carefully" in text
     assert "must stay private" not in text
     assert "core=" not in text
     assert "## Trigger" in text
+    assert "[raw partner content hidden by sharing_default]" in text
 
 
 def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
-    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "170")
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "230")
     get_settings.cache_clear()
     user_id = uuid4()
     partner_id = uuid4()
@@ -255,7 +315,7 @@ def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
 
     text = render_hot_context(hc)
 
-    assert len(text) // 4 <= 170
+    assert len(text) // 4 <= 230
     assert "shareable" in text
     assert "OOB MUST REMAIN" not in text
     assert "core=" not in text

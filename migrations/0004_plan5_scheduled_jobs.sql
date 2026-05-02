@@ -68,7 +68,7 @@ END $$;
 ALTER TABLE scheduled_jobs DROP CONSTRAINT IF EXISTS scheduled_jobs_job_type_check;
 ALTER TABLE scheduled_jobs
     ADD CONSTRAINT scheduled_jobs_job_type_check
-    CHECK (job_type IN ('checkin', 'weekly_summary', 'oob_review', 'watch_item_due', 'heartbeat'));
+    CHECK (job_type IN ('checkin', 'weekly_summary', 'oob_review', 'watch_item_due', 'heartbeat', 'deferred_turn'));
 
 CREATE OR REPLACE FUNCTION recency_weighted_score(
     significance integer,

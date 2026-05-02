@@ -79,7 +79,7 @@ AES-GCM ciphertext.
 Apply the forward migrations with `psql`:
 
 ```sh
-for file in migrations/0001_init.sql migrations/0002_plan2.sql migrations/0003_plan4_oob_reviews.sql migrations/0004_plan5_scheduled_jobs.sql migrations/0005_plan6_ops.sql migrations/0006_plan7_eval_results.sql migrations/0007_security_hardening.sql migrations/0008_discord_pacing.sql migrations/0009_incremental_agent_sending.sql migrations/0010_turn_prompt_encryption.sql migrations/0011_lock_public_schema.sql; do
+for file in migrations/0001_init.sql migrations/0002_plan2.sql migrations/0003_plan4_oob_reviews.sql migrations/0004_plan5_scheduled_jobs.sql migrations/0005_plan6_ops.sql migrations/0006_plan7_eval_results.sql migrations/0007_security_hardening.sql migrations/0008_discord_pacing.sql migrations/0009_incremental_agent_sending.sql migrations/0010_turn_prompt_encryption.sql migrations/0011_lock_public_schema.sql migrations/0012_cross_thread_sharing.sql migrations/0013_bridge_candidates.sql; do
   psql "$DATABASE_URL" -f "$file"
 done
 ```
@@ -259,7 +259,7 @@ Weekly-summary timing is configurable with `WEEKLY_SUMMARY_DEFAULT_DAY`,
 3. Confirm the start command is
    `uvicorn app.main:app --host 0.0.0.0 --port $PORT`.
 4. Add every variable from the environment checklist above.
-5. Apply all forward migrations through `migrations/0011_lock_public_schema.sql` to
+5. Apply all forward migrations through `migrations/0013_bridge_candidates.sql` to
    staging/production before deploying this version.
 6. Deploy and confirm Railway reports `/health` as healthy.
 7. Smoke test `/admin`, `/admin/turns`, `/admin/spend`, and `/health/deep` with

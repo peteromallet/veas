@@ -7,8 +7,8 @@ import asyncio
 import re
 from datetime import UTC, datetime, timedelta
 from typing import Any
-from uuid import UUID
 
+from app.services.cross_thread_privacy import bridge_candidate_visible_to_target, normalize_sharing_default, raw_message_visibility
 from app.services.turn_context import TurnContext
 from app.config import get_settings
 from app.services.messaging import send_outbound_part
@@ -25,6 +25,7 @@ from app.services.tools.common import (
 )
 from tool_schemas import (
     BotAction,
+    BridgeCandidate,
     CheckOOBInput,
     CheckOOBOutput,
     DateRange,
@@ -40,11 +41,12 @@ from tool_schemas import (
     GetSelfModelOutput,
     GetThemeInput,
     GetThemeOutput,
+    ListBridgeCandidatesInput,
+    ListBridgeCandidatesOutput,
     ListThemesInput,
     ListThemesOutput,
     ListWatchItemsInput,
     ListWatchItemsOutput,
-    OOBVerdict,
     RecentActivityInput,
     RecentActivityOutput,
     EmojiSearchHit,
@@ -250,11 +252,17 @@ async def send_message_part(ctx: TurnContext, args: SendMessagePartInput) -> Sen
 
 async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> SearchMessagesOutput:
     logger.info("read tool search_messages turn_id=%s", ctx.turn_id)
+    dyad_ids = {ctx.user.id, ctx.partner.id}
+    if args.partner_user_id is not None and args.partner_user_id not in dyad_ids:
+        return SearchMessagesOutput(hits=[], truncated=False)
     clauses = ["deleted_at IS NULL"]
     params: list[Any] = []
     if args.partner_user_id is not None:
         params.append(args.partner_user_id)
         clauses.append(f"(sender_id = ${len(params)} OR recipient_id = ${len(params)})")
+    else:
+        params.append([ctx.user.id, ctx.partner.id])
+        clauses.append(f"(sender_id = ANY(${len(params)}::uuid[]) OR recipient_id = ANY(${len(params)}::uuid[]))")
     if args.text_contains:
         params.append(f"%{args.text_contains}%")
         clauses.append(f"content ILIKE ${len(params)}")
@@ -262,7 +270,7 @@ async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> Search
     params.append(args.limit)
     rows = await ctx.pool.fetch(
         f"""
-        SELECT id, sender_id, sent_at, content, COALESCE(charge, 'routine') AS charge, direction
+        SELECT id, sender_id, recipient_id, sent_at, content, COALESCE(charge, 'routine') AS charge, direction
         FROM messages
         WHERE {' AND '.join(clauses)}
         ORDER BY sent_at DESC
@@ -270,7 +278,69 @@ async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> Search
         """,
         *params,
     )
-    return SearchMessagesOutput(hits=[message_hit(row) for row in rows], truncated=len(rows) == args.limit)
+    sharing_defaults = {
+        ctx.user.id: normalize_sharing_default(ctx.user.cross_thread_sharing_default),
+        ctx.partner.id: normalize_sharing_default(ctx.partner.cross_thread_sharing_default),
+    }
+    hits = []
+    for row in rows:
+        owner_id = _message_thread_owner_id(row)
+        if owner_id not in dyad_ids:
+            continue
+        if not raw_message_visibility(
+            viewer_user_id=ctx.user.id,
+            thread_owner_user_id=owner_id,
+            thread_owner_sharing_default=sharing_defaults.get(owner_id),
+        ).visible:
+            continue
+        hits.append(message_hit(row))
+    return SearchMessagesOutput(hits=hits, truncated=len(rows) == args.limit)
+
+
+async def list_bridge_candidates(ctx: TurnContext, args: ListBridgeCandidatesInput) -> ListBridgeCandidatesOutput:
+    logger.info("read tool list_bridge_candidates turn_id=%s", ctx.turn_id)
+    rows = await ctx.pool.fetch(
+        """
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+               COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
+               COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
+               COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
+               internal_note, shareable_summary, sent_message_id,
+               created_at, updated_at, resolved_at
+        FROM bridge_candidates
+        WHERE (
+            (source_user_id=$1 AND target_user_id=$2)
+            OR (source_user_id=$2 AND target_user_id=$1)
+        )
+          AND ($3::uuid IS NULL OR source_user_id=$3)
+          AND ($4::uuid IS NULL OR target_user_id=$4)
+          AND ($5::text IS NULL OR status=$5)
+        ORDER BY created_at DESC
+        LIMIT $6
+        """,
+        ctx.user.id,
+        ctx.partner.id,
+        args.source_user_id,
+        args.target_user_id,
+        args.status.value if args.status is not None else None,
+        args.limit,
+    )
+    candidates: list[BridgeCandidate] = []
+    for row in rows:
+        if row["target_user_id"] == ctx.user.id and row["source_user_id"] != ctx.user.id:
+            if not bridge_candidate_visible_to_target(row, target_user_id=ctx.user.id):
+                continue
+            row = {**dict(row), "internal_note": None}
+        candidates.append(_bridge_candidate(row))
+    return ListBridgeCandidatesOutput(candidates=candidates, truncated=len(rows) == args.limit)
+
+
+def _bridge_candidate(row: Any) -> BridgeCandidate:
+    data = dict(row)
+    data["source_message_ids"] = list(data.get("source_message_ids") or [])
+    data["related_memory_ids"] = list(data.get("related_memory_ids") or [])
+    data["related_observation_ids"] = list(data.get("related_observation_ids") or [])
+    return BridgeCandidate.model_validate(data)
 
 
 async def search_emojis(ctx: TurnContext, args: SearchEmojisInput) -> SearchEmojisOutput:
@@ -325,7 +395,7 @@ async def recent_activity(ctx: TurnContext, args: RecentActivityInput) -> Recent
     start = end - timedelta(days=args.days)
     rows = await ctx.pool.fetch(
         """
-        SELECT u.id AS user_id, u.name AS user_name, COUNT(m.id) AS message_count,
+        SELECT u.id AS user_id, u.name AS user_name, u.cross_thread_sharing_default, COUNT(m.id) AS message_count,
                MAX(m.sent_at) AS last_message_at,
                (ARRAY_AGG(m.content ORDER BY m.sent_at DESC))[1] AS latest_content
         FROM users u
@@ -334,18 +404,33 @@ async def recent_activity(ctx: TurnContext, args: RecentActivityInput) -> Recent
          AND m.sent_at >= $1
          AND m.sent_at <= $2
          AND m.deleted_at IS NULL
-        GROUP BY u.id, u.name
+        WHERE u.id = ANY($3::uuid[])
+        GROUP BY u.id, u.name, u.cross_thread_sharing_default
         ORDER BY last_message_at DESC NULLS LAST, u.name ASC
         """,
         start,
         end,
+        [ctx.user.id, ctx.partner.id],
     )
     threads: list[ThreadDigest] = []
     for row in rows:
         count = int(value(row, "message_count", 0))
-        snippet = (value(row, "latest_content", "") or "")[:160]
+        sharing_default = value(row, "cross_thread_sharing_default", None)
+        if row["user_id"] == ctx.user.id:
+            sharing_default = ctx.user.cross_thread_sharing_default
+        elif row["user_id"] == ctx.partner.id:
+            sharing_default = ctx.partner.cross_thread_sharing_default
+        can_show_latest = raw_message_visibility(
+            viewer_user_id=ctx.user.id,
+            thread_owner_user_id=row["user_id"],
+            thread_owner_sharing_default=sharing_default,
+        ).visible
+        snippet = (value(row, "latest_content", "") or "")[:160] if can_show_latest else ""
         # Plan 3 stub. tool_schemas.ThreadDigest.summary describes an LLM-generated digest; deferring the Haiku digest to Plan 4 alongside the significance scorer.
-        summary = f'{count} messages this period; latest: "{snippet}"'
+        if can_show_latest:
+            summary = f'{count} messages this period; latest: "{snippet}"'
+        else:
+            summary = f"{count} messages this period; latest content hidden by sharing_default"
         threads.append(
             ThreadDigest(
                 user_id=row["user_id"],
@@ -356,6 +441,14 @@ async def recent_activity(ctx: TurnContext, args: RecentActivityInput) -> Recent
             )
         )
     return RecentActivityOutput(threads=threads, period=DateRange(start=start, end=end))
+
+
+def _message_thread_owner_id(row: Any) -> Any:
+    if row["direction"] == "inbound" and row["sender_id"] is not None:
+        return row["sender_id"]
+    if row["direction"] == "outbound" and row["recipient_id"] is not None:
+        return row["recipient_id"]
+    return row["sender_id"] or row["recipient_id"]
 
 
 async def list_themes(ctx: TurnContext, args: ListThemesInput) -> ListThemesOutput:

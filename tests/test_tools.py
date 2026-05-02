@@ -6,6 +6,14 @@ from uuid import uuid4
 import pytest
 
 from app.models.user import User
+from app.services.cross_thread_privacy import (
+    bridge_candidate_visible_to_target,
+    can_view_raw_message,
+    normalize_sharing_default,
+    raw_message_visibility,
+    redact_raw_message_content,
+    should_omit_raw_message,
+)
 from app.services.turn_context import TurnContext
 from app.services.scheduled_job_handlers import schedule_checkin_job
 from app.services.tools import read_tools, write_tools
@@ -18,20 +26,27 @@ from tool_schemas import (
     CancelScheduledCheckinInput,
     CheckOOBInput,
     Confidence,
+    CreateBridgeCandidateInput,
     CreateThemeInput,
+    CrossThreadSharingDefault,
     EscalateToPartnerInput,
     FeedbackSentiment,
     GetOOBInput,
+    ListBridgeCandidatesInput,
     LiftOOBInput,
     LogFeedbackInput,
     LogObservationInput,
     OOBSeverity,
     RecentActivityInput,
     ScheduleCheckinInput,
+    SearchMessagesInput,
     SearchEmojisInput,
+    SendBridgeCandidateInput,
     SupersedeMemoryInput,
     ThemeHealth,
     ThemeSentiment,
+    UpdateBridgeCandidateInput,
+    UpdateCrossThreadSharingDefaultInput,
     UpdateMemoryInput,
     UpdateOOBInput,
     UpdateObservationInput,
@@ -41,6 +56,73 @@ from tool_schemas import (
 )
 
 pytestmark = pytest.mark.anyio
+
+
+def test_cross_thread_privacy_helper_gates_raw_partner_messages():
+    viewer_id = uuid4()
+    partner_id = uuid4()
+
+    assert normalize_sharing_default(None) == "unset"
+    assert normalize_sharing_default(CrossThreadSharingDefault.opt_in) == "opt_in"
+    assert can_view_raw_message(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=viewer_id,
+        thread_owner_sharing_default=None,
+    )
+    assert not can_view_raw_message(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default=None,
+    )
+    assert not can_view_raw_message(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default="opt_out",
+    )
+    assert can_view_raw_message(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default="opt_in",
+    )
+
+    visibility = raw_message_visibility(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default=None,
+    )
+    assert visibility.reason == "source_user_not_opted_in"
+    assert visibility.omission_reason == "raw_partner_content_hidden_by_sharing_default"
+    assert should_omit_raw_message(
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default=None,
+    )
+    assert "withheld" in redact_raw_message_content(
+        "private raw text",
+        viewer_user_id=viewer_id,
+        thread_owner_user_id=partner_id,
+        thread_owner_sharing_default=None,
+    )
+
+
+def test_cross_thread_privacy_helper_gates_bridge_target_visibility():
+    target_id = uuid4()
+    source_id = uuid4()
+
+    for status in ("ready", "sent", "addressed"):
+        assert bridge_candidate_visible_to_target(
+            {"status": status, "target_user_id": target_id},
+            target_user_id=target_id,
+        )
+    for status in ("pending", "declined", "blocked", "expired"):
+        assert not bridge_candidate_visible_to_target(
+            {"status": status, "target_user_id": target_id},
+            target_user_id=target_id,
+        )
+    assert not bridge_candidate_visible_to_target(
+        {"status": "ready", "target_user_id": source_id},
+        target_user_id=target_id,
+    )
 
 
 @pytest.fixture
@@ -136,10 +218,28 @@ def _seed_job(pool, user_id):
     return job_id
 
 
+def _seed_message(pool, user_id, partner_id, *, direction="inbound", content="source"):
+    message_id = uuid4()
+    pool.messages[message_id] = {
+        "id": message_id,
+        "direction": direction,
+        "sender_id": user_id if direction == "inbound" else None,
+        "recipient_id": partner_id if direction == "inbound" else user_id,
+        "content": content,
+        "processing_state": "raw",
+        "sent_at": datetime.now(UTC),
+        "charge": "routine",
+        "whatsapp_message_id": None,
+        "deleted_at": None,
+    }
+    return message_id
+
+
 @pytest.mark.parametrize(
     ("tool_name", "call_factory"),
     [
         ("update_user_style_notes", lambda ctx: (write_tools.update_user_style_notes, UpdateUserStyleNotesInput(user_id=ctx.user.id, notes="short"))),
+        ("update_cross_thread_sharing_default", lambda ctx: (write_tools.update_cross_thread_sharing_default, UpdateCrossThreadSharingDefaultInput(user_id=ctx.user.id, default=CrossThreadSharingDefault.opt_in, reason="user chose opt in"))),
         ("add_memory", lambda ctx: (write_tools.add_memory, AddMemoryInput(about_user_id=ctx.user.id, content="memory"))),
         ("update_memory", lambda ctx: (write_tools.update_memory, UpdateMemoryInput(memory_id=_seed_memory(ctx.pool, ctx.user.id), content="new"))),
         ("supersede_memory", lambda ctx: (write_tools.supersede_memory, SupersedeMemoryInput(old_memory_id=_seed_memory(ctx.pool, ctx.user.id), new_content="new"))),
@@ -191,6 +291,260 @@ async def test_supersede_memory_flips_old_and_links_new(tool_ctx):
 
     assert tool_ctx.pool.memories[old_id]["status"] == "superseded"
     assert tool_ctx.pool.memories[result.new_id]["supersedes_memory_id"] == old_id
+
+
+async def test_update_cross_thread_sharing_default_records_choice(tool_ctx):
+    result = await write_tools.update_cross_thread_sharing_default(
+        tool_ctx,
+        UpdateCrossThreadSharingDefaultInput(
+            user_id=tool_ctx.user.id,
+            default=CrossThreadSharingDefault.opt_out,
+            reason="wants privacy by default",
+        ),
+    )
+
+    assert result.default == CrossThreadSharingDefault.opt_out
+    assert tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] == "opt_out"
+    assert tool_ctx.pool.tool_calls[-1]["tool_name"] == "update_cross_thread_sharing_default"
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.update_cross_thread_sharing_default(
+            tool_ctx,
+            UpdateCrossThreadSharingDefaultInput(
+                user_id=tool_ctx.partner.id,
+                default=CrossThreadSharingDefault.opt_in,
+                reason="not this user's choice",
+            ),
+        )
+
+
+async def test_search_messages_hides_partner_raw_until_opt_in(tool_ctx):
+    tool_ctx.phase = "read"
+    user_message_id = _seed_message(
+        tool_ctx.pool,
+        tool_ctx.user.id,
+        tool_ctx.partner.id,
+        content="user repair phrase",
+    )
+    partner_message_id = _seed_message(
+        tool_ctx.pool,
+        tool_ctx.partner.id,
+        tool_ctx.user.id,
+        content="partner private phrase",
+    )
+
+    result = await read_tools.search_messages(
+        tool_ctx,
+        SearchMessagesInput(text_contains="phrase", limit=10),
+    )
+
+    assert [hit.id for hit in result.hits] == [user_message_id]
+    assert partner_message_id not in [hit.id for hit in result.hits]
+
+    tool_ctx.partner = User(
+        tool_ctx.partner.id,
+        tool_ctx.partner.name,
+        tool_ctx.partner.phone,
+        tool_ctx.partner.timezone,
+        cross_thread_sharing_default="opt_in",
+    )
+    result = await read_tools.search_messages(
+        tool_ctx,
+        SearchMessagesInput(text_contains="phrase", limit=10),
+    )
+
+    assert {hit.id for hit in result.hits} == {user_message_id, partner_message_id}
+
+
+async def test_recent_activity_hides_partner_latest_content_until_opt_in(tool_ctx):
+    tool_ctx.phase = "read"
+    _seed_message(
+        tool_ctx.pool,
+        tool_ctx.partner.id,
+        tool_ctx.user.id,
+        content="partner private latest",
+    )
+
+    hidden = await read_tools.recent_activity(tool_ctx, RecentActivityInput(days=7))
+    partner_thread = next(thread for thread in hidden.threads if thread.user_id == tool_ctx.partner.id)
+    assert "partner private latest" not in partner_thread.summary
+    assert "hidden by sharing_default" in partner_thread.summary
+
+    tool_ctx.partner = User(
+        tool_ctx.partner.id,
+        tool_ctx.partner.name,
+        tool_ctx.partner.phone,
+        tool_ctx.partner.timezone,
+        cross_thread_sharing_default="opt_in",
+    )
+    visible = await read_tools.recent_activity(tool_ctx, RecentActivityInput(days=7))
+    partner_thread = next(thread for thread in visible.threads if thread.user_id == tool_ctx.partner.id)
+    assert "partner private latest" in partner_thread.summary
+
+
+async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatch):
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    memory_id = _seed_memory(tool_ctx.pool, tool_ctx.user.id)
+    observation_id = _seed_observation(tool_ctx.pool, tool_ctx.user.id)
+
+    created = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="repair",
+            sensitivity="low",
+            source_message_ids=[source_message_id],
+            related_memory_ids=[memory_id],
+            related_observation_ids=[observation_id],
+            internal_note="raw-ish note stays internal",
+            shareable_summary="Maya wants to repair this carefully.",
+        ),
+    )
+
+    assert created.candidate.status == "ready"
+    assert created.candidate.source_message_ids == [source_message_id]
+    assert tool_ctx.pool.tool_calls[-1]["tool_name"] == "create_bridge_candidate"
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.create_bridge_candidate(
+            tool_ctx,
+            CreateBridgeCandidateInput(
+                source_user_id=tool_ctx.partner.id,
+                target_user_id=tool_ctx.user.id,
+                kind="repair",
+                sensitivity="low",
+                source_message_ids=[source_message_id],
+                shareable_summary="Not allowed from the target side.",
+            ),
+        )
+
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    listed = await read_tools.list_bridge_candidates(read_ctx, ListBridgeCandidatesInput())
+    assert listed.candidates[0].internal_note == "raw-ish note stays internal"
+
+    target_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="read")
+    target_listed = await read_tools.list_bridge_candidates(target_ctx, ListBridgeCandidatesInput())
+    assert target_listed.candidates[0].shareable_summary == "Maya wants to repair this carefully."
+    assert target_listed.candidates[0].internal_note is None
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.update_bridge_candidate(
+            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+            UpdateBridgeCandidateInput(
+                candidate_id=created.candidate.id,
+                status="ready",
+                shareable_summary="target must not rewrite source summary",
+            ),
+        )
+
+    target_addressed = await write_tools.update_bridge_candidate(
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+        UpdateBridgeCandidateInput(candidate_id=created.candidate.id, status="addressed"),
+    )
+    assert target_addressed.candidate.status == "addressed"
+    assert target_addressed.candidate.internal_note is None
+
+    updated = await write_tools.update_bridge_candidate(
+        tool_ctx,
+        UpdateBridgeCandidateInput(
+            candidate_id=created.candidate.id,
+            status="addressed",
+            shareable_summary="The repair was addressed.",
+        ),
+    )
+    assert updated.candidate.status == "addressed"
+    assert updated.candidate.resolved_at is not None
+
+    ready = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="process",
+            sensitivity="medium",
+            source_message_ids=[source_message_id],
+            shareable_summary="Maya can talk after dinner.",
+        ),
+    )
+
+    sent = []
+    sent_message_id = uuid4()
+
+    async def fake_oob(pool, content, recipient_id, protected_owner_ids=None):
+        return {"verdict": "ok", "reason": "ok", "suggested_rewrite": None, "checker_failed": False}
+
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+        sent.append((recipient.id, content, protected_owner_ids))
+        return sent_message_id
+
+    monkeypatch.setattr(write_tools, "_call_oob_hook", fake_oob)
+    monkeypatch.setattr(write_tools, "send_outbound", fake_send)
+
+    result = await write_tools.send_bridge_candidate(
+        tool_ctx,
+        SendBridgeCandidateInput(candidate_id=ready.candidate.id, reason="good moment"),
+    )
+
+    assert result.candidate.status == "sent"
+    assert result.candidate.sent_message_id == sent_message_id
+    assert sent == [(tool_ctx.partner.id, "Maya can talk after dinner.", [tool_ctx.user.id, tool_ctx.partner.id])]
+
+
+async def test_bridge_candidate_send_rejects_non_ready_and_blocks_on_oob(tool_ctx, monkeypatch):
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    pending = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="clarification",
+            sensitivity="high",
+            source_message_ids=[source_message_id],
+            shareable_summary="Sensitive summary.",
+        ),
+    )
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.send_bridge_candidate(
+            tool_ctx,
+            SendBridgeCandidateInput(candidate_id=pending.candidate.id),
+        )
+
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    ready = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="clarification",
+            sensitivity="low",
+            source_message_ids=[source_message_id],
+            shareable_summary="Allowed-looking summary.",
+        ),
+    )
+    sent = []
+
+    async def fake_oob(pool, content, recipient_id, protected_owner_ids=None):
+        return {"verdict": "block", "reason": "too revealing", "suggested_rewrite": None, "checker_failed": False}
+
+    async def fake_send(*args, **kwargs):
+        sent.append((args, kwargs))
+        return uuid4()
+
+    monkeypatch.setattr(write_tools, "_call_oob_hook", fake_oob)
+    monkeypatch.setattr(write_tools, "send_outbound", fake_send)
+
+    blocked = await write_tools.send_bridge_candidate(
+        tool_ctx,
+        SendBridgeCandidateInput(candidate_id=ready.candidate.id),
+    )
+
+    assert blocked.candidate.status == "blocked"
+    assert "too revealing" in (blocked.candidate.internal_note or "")
+    assert blocked.candidate.resolved_at is not None
+    assert sent == []
 
 
 async def test_schedule_checkin_supersedes_prior_pending(tool_ctx):

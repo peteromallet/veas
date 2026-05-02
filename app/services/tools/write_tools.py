@@ -10,6 +10,7 @@ from typing import Any
 from pydantic import BaseModel
 
 from app.services.checkins import schedule_checkin_record
+from app.services.cross_thread_privacy import normalize_sharing_default
 from app.services.crypto import encrypt_value
 from app.config import get_settings
 from app.services.messaging import send_outbound, _append_turn_reasoning, _call_oob_hook
@@ -25,8 +26,13 @@ from tool_schemas import (
     AddWatchItemOutput,
     AddressWatchItemInput,
     AddressWatchItemOutput,
+    BridgeCandidate,
+    BridgeCandidateSensitivity,
+    BridgeCandidateStatus,
     CancelScheduledCheckinInput,
     CancelScheduledCheckinOutput,
+    CreateBridgeCandidateInput,
+    CreateBridgeCandidateOutput,
     CreateThemeInput,
     CreateThemeOutput,
     DeleteOutboundMessageInput,
@@ -45,10 +51,16 @@ from tool_schemas import (
     ReactToMessageOutput,
     ScheduleCheckinInput,
     ScheduleCheckinOutput,
+    SendBridgeCandidateInput,
+    SendBridgeCandidateOutput,
     SupersedeMemoryInput,
     SupersedeMemoryOutput,
+    UpdateBridgeCandidateInput,
+    UpdateBridgeCandidateOutput,
     UpdateMemoryInput,
     UpdateMemoryOutput,
+    UpdateCrossThreadSharingDefaultInput,
+    UpdateCrossThreadSharingDefaultOutput,
     UpdateOOBInput,
     UpdateOOBOutput,
     UpdateObservationInput,
@@ -64,6 +76,7 @@ from tool_schemas import (
 logger = logging.getLogger(__name__)
 
 SCORING_PROMPT_VERSION = scoring.SCORING_PROMPT_VERSION
+_BRIDGE_RESOLVED_STATUSES = {"sent", "declined", "blocked", "addressed", "expired"}
 
 
 class ToolCallRejected(Exception):
@@ -148,6 +161,393 @@ async def update_user_style_notes(ctx: TurnContext, args: UpdateUserStyleNotesIn
     result = UpdateUserStyleNotesOutput(user_id=row["user_id"], updated_at=row["updated_at"])
     await _log_tool_call(ctx, "update_user_style_notes", args, started, result)
     return result
+
+
+async def update_cross_thread_sharing_default(
+    ctx: TurnContext,
+    args: UpdateCrossThreadSharingDefaultInput,
+) -> UpdateCrossThreadSharingDefaultOutput:
+    started = _start()
+    if args.user_id != ctx.user.id:
+        result = {
+            "error": "sharing_default_rejected",
+            "reason": "can only update the current user's sharing default",
+        }
+        await _log_tool_call(ctx, "update_cross_thread_sharing_default", args, started, result)
+        raise ToolCallRejected(result)
+    row = await ctx.pool.fetchrow(
+        """
+        UPDATE users
+        SET cross_thread_sharing_default=$2
+        WHERE id=$1
+        RETURNING id AS user_id, cross_thread_sharing_default, now() AS updated_at
+        """,
+        args.user_id,
+        args.default.value,
+    )
+    result = UpdateCrossThreadSharingDefaultOutput(
+        user_id=row["user_id"],
+        default=row["cross_thread_sharing_default"],
+        updated_at=row["updated_at"],
+    )
+    await _append_turn_reasoning(
+        ctx.pool,
+        ctx.turn_id,
+        f"Cross-thread sharing default set for user_id={args.user_id}: {args.default.value}. reason={args.reason}",
+    )
+    await _log_tool_call(ctx, "update_cross_thread_sharing_default", args, started, result)
+    return result
+
+
+async def create_bridge_candidate(
+    ctx: TurnContext,
+    args: CreateBridgeCandidateInput,
+) -> CreateBridgeCandidateOutput:
+    started = _start()
+    if args.status is not None and args.status != BridgeCandidateStatus.blocked:
+        result = {
+            "error": "bridge_candidate_status_rejected",
+            "reason": "create_bridge_candidate only accepts explicit blocked status; otherwise status is derived",
+        }
+        await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    if args.source_user_id != ctx.user.id:
+        result = {
+            "error": "bridge_candidate_rejected",
+            "reason": "bridge candidates must be created from the current user's thread as source",
+        }
+        await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    if not _bridge_users_in_current_dyad(ctx, args.source_user_id, args.target_user_id):
+        result = {
+            "error": "bridge_candidate_rejected",
+            "reason": "bridge candidates must stay within the current dyad and source must differ from target",
+        }
+        await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    await _require_existing_source_messages(ctx, args.source_message_ids, args.source_user_id)
+    await _require_existing_ids(ctx, "memories", args.related_memory_ids)
+    await _require_existing_ids(ctx, "observations", args.related_observation_ids)
+
+    if args.status == BridgeCandidateStatus.blocked:
+        status = BridgeCandidateStatus.blocked
+    else:
+        source_default = await _sharing_default_for_user(ctx, args.source_user_id)
+        low_or_medium = args.sensitivity in {
+            BridgeCandidateSensitivity.low,
+            BridgeCandidateSensitivity.medium,
+        }
+        status = BridgeCandidateStatus.ready if source_default == "opt_in" and low_or_medium else BridgeCandidateStatus.pending
+    resolved_at_sql = "now()" if status.value in _BRIDGE_RESOLVED_STATUSES else "NULL"
+    row = await ctx.pool.fetchrow(
+        f"""
+        INSERT INTO bridge_candidates (
+            source_user_id, target_user_id, kind, status, sensitivity,
+            source_message_ids, related_memory_ids, related_observation_ids,
+            internal_note, shareable_summary, resolved_at
+        )
+        VALUES ($1, $2, $3, $4, $5, $6::uuid[], $7::uuid[], $8::uuid[], $9, $10, {resolved_at_sql})
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+                  COALESCE(source_message_ids, '{{}}'::uuid[]) AS source_message_ids,
+                  COALESCE(related_memory_ids, '{{}}'::uuid[]) AS related_memory_ids,
+                  COALESCE(related_observation_ids, '{{}}'::uuid[]) AS related_observation_ids,
+                  internal_note, shareable_summary, sent_message_id,
+                  created_at, updated_at, resolved_at
+        """,
+        args.source_user_id,
+        args.target_user_id,
+        args.kind.value,
+        status.value,
+        args.sensitivity.value,
+        args.source_message_ids,
+        args.related_memory_ids,
+        args.related_observation_ids,
+        args.internal_note or "",
+        args.shareable_summary,
+    )
+    result = CreateBridgeCandidateOutput(candidate=_bridge_candidate(row))
+    await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+    return result
+
+
+async def update_bridge_candidate(
+    ctx: TurnContext,
+    args: UpdateBridgeCandidateInput,
+) -> UpdateBridgeCandidateOutput:
+    started = _start()
+    existing = await _fetch_bridge_candidate_row(ctx, args.candidate_id)
+    if existing is None:
+        result = {
+            "error": "bridge_candidate_not_found",
+            "reason": "candidate is not in the current dyad",
+        }
+        await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    if existing["source_user_id"] != ctx.user.id:
+        target_allowed_statuses = {
+            BridgeCandidateStatus.addressed,
+            BridgeCandidateStatus.declined,
+        }
+        if (
+            existing["status"] not in {"ready", "sent", "addressed"}
+            or
+            args.kind is not None
+            or args.sensitivity is not None
+            or args.source_message_ids is not None
+            or args.related_memory_ids is not None
+            or args.related_observation_ids is not None
+            or args.internal_note is not None
+            or args.shareable_summary is not None
+            or args.status not in target_allowed_statuses
+        ):
+            result = {
+                "error": "bridge_candidate_update_rejected",
+                "reason": "target-side bridge updates can only mark a visible candidate addressed or declined",
+            }
+            await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
+            raise ToolCallRejected(result)
+    if args.source_message_ids is not None:
+        await _require_existing_source_messages(ctx, args.source_message_ids, existing["source_user_id"])
+    if args.related_memory_ids is not None:
+        await _require_existing_ids(ctx, "memories", args.related_memory_ids)
+    if args.related_observation_ids is not None:
+        await _require_existing_ids(ctx, "observations", args.related_observation_ids)
+    row = await ctx.pool.fetchrow(
+        """
+        UPDATE bridge_candidates
+        SET kind=COALESCE($2::text, kind),
+            status=COALESCE($3::text, status),
+            sensitivity=COALESCE($4::text, sensitivity),
+            source_message_ids=COALESCE($5::uuid[], source_message_ids),
+            related_memory_ids=COALESCE($6::uuid[], related_memory_ids),
+            related_observation_ids=COALESCE($7::uuid[], related_observation_ids),
+            internal_note=COALESCE($8::text, internal_note),
+            shareable_summary=COALESCE($9::text, shareable_summary),
+            updated_at=now(),
+            resolved_at=CASE
+                WHEN $3::text IN ('sent', 'declined', 'blocked', 'addressed', 'expired')
+                    THEN COALESCE(resolved_at, now())
+                ELSE resolved_at
+            END
+        WHERE id=$1
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+                  COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
+                  COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
+                  COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
+                  internal_note, shareable_summary, sent_message_id,
+                  created_at, updated_at, resolved_at
+        """,
+        args.candidate_id,
+        args.kind.value if args.kind is not None else None,
+        args.status.value if args.status is not None else None,
+        args.sensitivity.value if args.sensitivity is not None else None,
+        args.source_message_ids,
+        args.related_memory_ids,
+        args.related_observation_ids,
+        args.internal_note,
+        args.shareable_summary,
+    )
+    result = UpdateBridgeCandidateOutput(candidate=_bridge_candidate_for_context(ctx, row))
+    await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
+    return result
+
+
+async def send_bridge_candidate(
+    ctx: TurnContext,
+    args: SendBridgeCandidateInput,
+) -> SendBridgeCandidateOutput:
+    started = _start()
+    existing = await _fetch_bridge_candidate_row(ctx, args.candidate_id)
+    if existing is None or existing["source_user_id"] != ctx.user.id:
+        result = {
+            "error": "bridge_candidate_not_found",
+            "reason": "candidate must exist in this dyad with the current user as source",
+        }
+        await _log_tool_call(ctx, "send_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    if existing["status"] != BridgeCandidateStatus.ready.value:
+        result = {
+            "error": "bridge_candidate_not_ready",
+            "reason": "send_bridge_candidate only sends candidates in ready status",
+        }
+        await _log_tool_call(ctx, "send_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    target = ctx.partner if existing["target_user_id"] == ctx.partner.id else None
+    if target is None:
+        result = {
+            "error": "bridge_candidate_target_rejected",
+            "reason": "ready candidate target must be the current partner",
+        }
+        await _log_tool_call(ctx, "send_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+
+    content = existing["shareable_summary"]
+    protected_owner_ids = [existing["source_user_id"], existing["target_user_id"]]
+    verdict = await _call_oob_hook(ctx.pool, content, target.id, protected_owner_ids)
+    if verdict["verdict"] in {"block", "rewrite"}:
+        note = _append_note(existing["internal_note"], f"OOB {verdict['verdict']}: {verdict.get('reason', '')}")
+        row = await _set_bridge_candidate_status(
+            ctx,
+            args.candidate_id,
+            BridgeCandidateStatus.blocked,
+            internal_note=note,
+        )
+        result = SendBridgeCandidateOutput(candidate=_bridge_candidate(row))
+        await _log_tool_call(ctx, "send_bridge_candidate", args, started, result)
+        return result
+
+    sent_message_id = await send_outbound(
+        ctx.pool,
+        target,
+        content,
+        bot_turn_id=ctx.turn_id,
+        protected_owner_ids=protected_owner_ids,
+    )
+    row = await _set_bridge_candidate_status(
+        ctx,
+        args.candidate_id,
+        BridgeCandidateStatus.sent,
+        sent_message_id=sent_message_id,
+    )
+    await _append_turn_reasoning(
+        ctx.pool,
+        ctx.turn_id,
+        f"Bridge candidate sent candidate_id={args.candidate_id} sent_message_id={sent_message_id}. reason={args.reason or ''}",
+    )
+    result = SendBridgeCandidateOutput(candidate=_bridge_candidate(row))
+    await _log_tool_call(ctx, "send_bridge_candidate", args, started, result)
+    return result
+
+
+def _bridge_users_in_current_dyad(ctx: TurnContext, source_user_id: Any, target_user_id: Any) -> bool:
+    dyad = {ctx.user.id, ctx.partner.id}
+    return source_user_id in dyad and target_user_id in dyad and source_user_id != target_user_id
+
+
+async def _sharing_default_for_user(ctx: TurnContext, user_id: Any) -> str:
+    row = await ctx.pool.fetchrow("SELECT cross_thread_sharing_default FROM users WHERE id=$1", user_id)
+    if row is not None:
+        return normalize_sharing_default(row["cross_thread_sharing_default"])
+    for user in (ctx.user, ctx.partner):
+        if user.id == user_id:
+            return normalize_sharing_default(user.cross_thread_sharing_default)
+    return "unset"
+
+
+async def _require_existing_source_messages(ctx: TurnContext, message_ids: list[Any], source_user_id: Any) -> None:
+    rows = await ctx.pool.fetch(
+        """
+        SELECT id
+        FROM messages
+        WHERE id = ANY($1::uuid[])
+          AND deleted_at IS NULL
+          AND (sender_id=$2 OR recipient_id=$2)
+        """,
+        message_ids,
+        source_user_id,
+    )
+    found = {row["id"] for row in rows}
+    missing = [message_id for message_id in message_ids if message_id not in found]
+    if missing:
+        raise ToolCallRejected(
+            {
+                "error": "bridge_source_messages_not_found",
+                "reason": f"source_message_ids are not visible source-thread messages: {missing}",
+            }
+        )
+
+
+async def _require_existing_ids(ctx: TurnContext, table: str, ids: list[Any]) -> None:
+    if not ids:
+        return
+    if table not in {"memories", "observations"}:
+        raise ValueError("unsupported bridge link table")
+    rows = await ctx.pool.fetch(f"SELECT id FROM {table} WHERE id = ANY($1::uuid[])", ids)
+    found = {row["id"] for row in rows}
+    missing = [row_id for row_id in ids if row_id not in found]
+    if missing:
+        raise ToolCallRejected(
+            {
+                "error": "bridge_related_ids_not_found",
+                "reason": f"{table} ids were not found: {missing}",
+            }
+        )
+
+
+async def _fetch_bridge_candidate_row(ctx: TurnContext, candidate_id: Any) -> Any | None:
+    return await ctx.pool.fetchrow(
+        """
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+               COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
+               COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
+               COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
+               internal_note, shareable_summary, sent_message_id,
+               created_at, updated_at, resolved_at
+        FROM bridge_candidates
+        WHERE id=$1
+          AND (
+            (source_user_id=$2 AND target_user_id=$3)
+            OR (source_user_id=$3 AND target_user_id=$2)
+        )
+        """,
+        candidate_id,
+        ctx.user.id,
+        ctx.partner.id,
+    )
+
+
+async def _set_bridge_candidate_status(
+    ctx: TurnContext,
+    candidate_id: Any,
+    status: BridgeCandidateStatus,
+    *,
+    sent_message_id: Any | None = None,
+    internal_note: str | None = None,
+) -> Any:
+    return await ctx.pool.fetchrow(
+        """
+        UPDATE bridge_candidates
+        SET status=$2,
+            sent_message_id=COALESCE($3::uuid, sent_message_id),
+            internal_note=COALESCE($4::text, internal_note),
+            updated_at=now(),
+            resolved_at=CASE
+                WHEN $2::text IN ('sent', 'declined', 'blocked', 'addressed', 'expired')
+                    THEN COALESCE(resolved_at, now())
+                ELSE resolved_at
+            END
+        WHERE id=$1
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+                  COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
+                  COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
+                  COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
+                  internal_note, shareable_summary, sent_message_id,
+                  created_at, updated_at, resolved_at
+        """,
+        candidate_id,
+        status.value,
+        sent_message_id,
+        internal_note,
+    )
+
+
+def _append_note(existing: str | None, note: str) -> str:
+    return f"{existing}\n{note}" if existing else note
+
+
+def _bridge_candidate(row: Any) -> BridgeCandidate:
+    data = dict(row)
+    data["source_message_ids"] = list(data.get("source_message_ids") or [])
+    data["related_memory_ids"] = list(data.get("related_memory_ids") or [])
+    data["related_observation_ids"] = list(data.get("related_observation_ids") or [])
+    return BridgeCandidate.model_validate(data)
+
+
+def _bridge_candidate_for_context(ctx: TurnContext, row: Any) -> BridgeCandidate:
+    data = dict(row)
+    if data["target_user_id"] == ctx.user.id and data["source_user_id"] != ctx.user.id:
+        data["internal_note"] = None
+    return _bridge_candidate(data)
 
 
 async def add_memory(ctx: TurnContext, args: AddMemoryInput) -> AddMemoryOutput:

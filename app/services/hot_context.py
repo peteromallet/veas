@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
 from app.config import get_settings
 from app.models.user import User
+from app.services.cross_thread_privacy import (
+    bridge_candidate_visible_to_target,
+    normalize_sharing_default,
+    raw_message_visibility,
+)
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
 
 
@@ -25,6 +30,7 @@ class HotContext:
     recent_messages: list[dict[str, Any]]
     time_since_last_message: str | None
     trigger_metadata: dict[str, Any]
+    bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
@@ -63,6 +69,8 @@ def _clip(text: Any, limit: int = 240) -> str:
 
 
 def _history_content(item: dict[str, Any], clip_limit: int) -> str:
+    if item.get("raw_content_hidden"):
+        return "[raw partner content hidden by sharing_default]"
     content = item.get("content")
     if item.get("direction") == "outbound":
         raw_content = str(content or "")
@@ -79,7 +87,8 @@ async def _user_profile(pool: Any, user: User) -> dict[str, Any]:
     row = await pool.fetchrow(
         """
         SELECT id, name, phone, timezone, COALESCE(style_notes, '') AS style_notes,
-               COALESCE(onboarding_state, 'pending') AS onboarding_state
+               COALESCE(onboarding_state, 'pending') AS onboarding_state,
+               cross_thread_sharing_default
         FROM users
         WHERE id = $1
         """,
@@ -93,6 +102,7 @@ async def _user_profile(pool: Any, user: User) -> dict[str, Any]:
             "timezone": user.timezone,
             "style_notes": "",
             "onboarding_state": "pending",
+            "cross_thread_sharing_default": user.cross_thread_sharing_default,
         }
     return _row_dict(row)
 
@@ -246,28 +256,70 @@ async def build_hot_context(
         """
         SELECT id, direction, sender_id, recipient_id, content, sent_at, COALESCE(charge, 'routine') AS charge
         FROM messages
-        WHERE deleted_at IS NULL AND (sender_id = $1 OR recipient_id = $1)
+        WHERE deleted_at IS NULL
+          AND (sender_id = ANY($1::uuid[]) OR recipient_id = ANY($1::uuid[]))
         ORDER BY sent_at DESC
         LIMIT 20
         """,
-        user.id,
+        [user.id, partner.id],
     )
+    sharing_defaults = {
+        user.id: normalize_sharing_default(current_user.get("cross_thread_sharing_default")),
+        partner.id: normalize_sharing_default(partner_user.get("cross_thread_sharing_default")),
+    }
     recent_messages = [
         {
             "id": row["id"],
             "direction": row["direction"],
             "sender_id": row["sender_id"],
             "recipient_id": row["recipient_id"],
-            "content": row["content"],
+            "content": row["content"] if raw_message_visibility(
+                viewer_user_id=user.id,
+                thread_owner_user_id=_message_thread_owner_id(row),
+                thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
+            ).visible else None,
+            "raw_content_hidden": not raw_message_visibility(
+                viewer_user_id=user.id,
+                thread_owner_user_id=_message_thread_owner_id(row),
+                thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
+            ).visible,
             "sent_at": _iso(row["sent_at"]),
             "charge": row["charge"],
         }
         for row in reversed(message_rows)
+        if _message_thread_owner_id(row) in sharing_defaults
+    ]
+    bridge_candidate_rows = await pool.fetch(
+        """
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+               shareable_summary, created_at
+        FROM bridge_candidates
+        WHERE target_user_id=$1
+          AND source_user_id=$2
+          AND status IN ('ready', 'sent', 'addressed')
+        ORDER BY created_at DESC
+        LIMIT 3
+        """,
+        user.id,
+        partner.id,
+    )
+    bridge_candidates = [
+        {
+            "id": row["id"],
+            "source_user_id": row["source_user_id"],
+            "target_user_id": row["target_user_id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "sensitivity": row["sensitivity"],
+            "shareable_summary": row["shareable_summary"],
+        }
+        for row in bridge_candidate_rows
+        if bridge_candidate_visible_to_target(row, target_user_id=user.id)
     ]
     latest_sent_at = max((row["sent_at"] for row in message_rows), default=None)
     trigger_rows = await pool.fetch(
         """
-        SELECT id, COALESCE(charge, 'routine') AS charge, sent_at, content
+        SELECT id, direction, sender_id, recipient_id, COALESCE(charge, 'routine') AS charge, sent_at, content
         FROM messages
         WHERE id = ANY($1::uuid[])
         ORDER BY sent_at ASC
@@ -283,6 +335,7 @@ async def build_hot_context(
         active_themes=active_themes,
         open_watch_items=open_watch_items,
         observations=observations,
+        bridge_candidates=bridge_candidates,
         recent_messages=recent_messages,
         time_since_last_message=_duration_since(latest_sent_at),
         trigger_metadata={
@@ -293,7 +346,14 @@ async def build_hot_context(
                     "id": row["id"],
                     "charge": row["charge"],
                     "sent_at": _iso(row["sent_at"]),
-                    "content": row["content"] if "content" in row else None,
+                    "content": row["content"]
+                    if "content" in row
+                    and raw_message_visibility(
+                        viewer_user_id=user.id,
+                        thread_owner_user_id=_message_thread_owner_id(row),
+                        thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
+                    ).visible
+                    else None,
                 }
                 for row in trigger_rows
             ],
@@ -305,6 +365,17 @@ def _line(prefix: str, value: Any) -> str:
     return f"- {prefix}: {_clip(value)}"
 
 
+def _message_thread_owner_id(row: Any) -> Any:
+    direction = row["direction"] if "direction" in row else None
+    sender_id = row["sender_id"] if "sender_id" in row else None
+    recipient_id = row["recipient_id"] if "recipient_id" in row else None
+    if direction == "inbound" and sender_id is not None:
+        return sender_id
+    if direction == "outbound" and recipient_id is not None:
+        return recipient_id
+    return sender_id or recipient_id
+
+
 def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit: int = 240) -> str:
     lines: list[str] = [
         "## You",
@@ -312,6 +383,7 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
         f"- name: {_clip(hc.current_user['name'], clip_limit)}",
         f"- timezone: {_clip(hc.current_user['timezone'], clip_limit)}",
         f"- onboarding_state: {_clip(hc.current_user.get('onboarding_state', 'pending'), clip_limit)}",
+        f"- sharing_default: {_clip(hc.current_user.get('cross_thread_sharing_default') or 'unset', clip_limit)}",
         f"- style_notes: {_clip(hc.current_user.get('style_notes', ''), clip_limit)}",
         "",
         "## Your Partner",
@@ -319,8 +391,19 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
         f"- name: {_clip(hc.partner_user['name'], clip_limit)}",
         f"- timezone: {_clip(hc.partner_user['timezone'], clip_limit)}",
         f"- onboarding_state: {_clip(hc.partner_user.get('onboarding_state', 'pending'), clip_limit)}",
+        f"- sharing_default: {_clip(hc.partner_user.get('cross_thread_sharing_default') or 'unset', clip_limit)}",
         f"- style_notes: {_clip(hc.partner_user.get('style_notes', ''), clip_limit)}",
     ]
+    lines += [
+        "",
+        "## Sharing defaults",
+        f"- current_user: {_clip(hc.current_user.get('cross_thread_sharing_default') or 'unset', clip_limit)}",
+        f"- partner: {_clip(hc.partner_user.get('cross_thread_sharing_default') or 'unset', clip_limit)}",
+    ]
+    if not hc.current_user.get("cross_thread_sharing_default"):
+        lines.append(
+            "- action_needed: Ask the current user to choose opt_in or opt_out for cross-thread sharing when there is a natural opening."
+        )
     if not truncations.get("conversation_load"):
         lines += [
             "",
@@ -360,6 +443,15 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     )
     if truncations.get("observations"):
         lines.append(f"- [truncated, {truncations['observations']} more]")
+    lines += ["", "## Bridge candidates"]
+    if hc.bridge_candidates:
+        lines.extend(
+            f"- id={_clip_id(item['id'], clip_limit)} kind={item['kind']} status={item['status']} sensitivity={item['sensitivity']} source={_clip_id(item['source_user_id'], clip_limit)}: {_clip(item['shareable_summary'], clip_limit)}"
+            for item in hc.bridge_candidates
+        )
+        lines.append("- use list_bridge_candidates for older or filtered bridge candidates.")
+    else:
+        lines.append("- none")
     lines += ["", "## Recent messages"]
     lines.extend(
         f"- {item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}: {_history_content(item, clip_limit)}"
@@ -398,6 +490,7 @@ def render_hot_context(hc: HotContext) -> str:
         active_themes=hc.active_themes,
         open_watch_items=hc.open_watch_items,
         observations=list(hc.observations),
+        bridge_candidates=list(hc.bridge_candidates),
         recent_messages=list(hc.recent_messages),
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,

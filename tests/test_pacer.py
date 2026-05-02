@@ -345,7 +345,7 @@ async def test_llm_judgement_can_silence_ambiguous_live_burst_and_records_cost(f
     assert event["llm_judgement"]["action"] == "silence"
 
 
-async def test_llm_judgement_spend_cap_falls_back_without_model_call(fake_pool) -> None:
+async def test_llm_judgement_continues_when_spend_is_above_cap(fake_pool) -> None:
     now = datetime(2026, 5, 1, 12, 0, tzinfo=UTC)
     user = _seed_user(fake_pool)
     ids = [
@@ -358,11 +358,8 @@ async def test_llm_judgement_spend_cap_falls_back_without_model_call(fake_pool) 
 
     decision = await pacer.decide(user, ids, source="live")
 
-    assert decision.action == "answer"
-    assert len(client.calls) == 0
-    event = next(iter(fake_pool.pacing_events.values()))
-    assert event["decision"] == "fallback"
-    assert "spend cap" in event["llm_judgement"]["error"]
+    assert decision.action == "silence"
+    assert len(client.calls) == 1
 
 
 async def test_llm_judgement_invalid_json_records_fallback(fake_pool) -> None:

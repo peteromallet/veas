@@ -16,6 +16,7 @@ class User:
     timezone: str
     onboarding_state: str = "pending"
     pacing_preferences: dict[str, Any] = field(default_factory=dict)
+    cross_thread_sharing_default: str | None = None
 
 
 def _clamp_float(value: Any, default: float, minimum: float, maximum: float) -> float:
@@ -138,6 +139,7 @@ def _normalize_json_object(value: Any) -> dict[str, Any]:
 def _row_to_user(row: Any) -> User:
     onboarding_state = row["onboarding_state"] if "onboarding_state" in row else "pending"
     pacing_preferences = row["pacing_preferences"] if "pacing_preferences" in row else {}
+    cross_thread_sharing_default = row["cross_thread_sharing_default"] if "cross_thread_sharing_default" in row else None
     return User(
         id=row["id"],
         name=row["name"],
@@ -145,13 +147,14 @@ def _row_to_user(row: Any) -> User:
         timezone=row["timezone"],
         onboarding_state=onboarding_state,
         pacing_preferences=_normalize_json_object(pacing_preferences),
+        cross_thread_sharing_default=cross_thread_sharing_default,
     )
 
 
 async def fetch_user_by_id(pool: Any, user_id: UUID) -> User:
     row = await pool.fetchrow(
         """
-        SELECT id, name, phone, timezone, onboarding_state, pacing_preferences
+        SELECT id, name, phone, timezone, onboarding_state, pacing_preferences, cross_thread_sharing_default
         FROM users
         WHERE id = $1
         """,
@@ -166,7 +169,7 @@ async def upsert_user(pool: Any, name: str, phone: str, default_tz: str) -> User
         INSERT INTO users (name, phone, timezone)
         VALUES ($1, $2, $3)
         ON CONFLICT (phone) DO UPDATE SET name = EXCLUDED.name
-        RETURNING id, name, phone, timezone, onboarding_state, pacing_preferences
+        RETURNING id, name, phone, timezone, onboarding_state, pacing_preferences, cross_thread_sharing_default
         """,
         name,
         phone,

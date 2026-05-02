@@ -60,7 +60,7 @@ class TrackingPool(FakePool):
 
     async def fetch(self, sql: str, *args):
         compact = " ".join(sql.split())
-        if compact.startswith("SELECT id, sender_id, sent_at, content") and "FROM messages" in compact:
+        if compact.startswith("SELECT id, sender_id") and "sent_at, content" in compact and "FROM messages" in compact:
             self.mark("read:search_messages")
             rows = [
                 row

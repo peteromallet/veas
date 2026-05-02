@@ -95,6 +95,36 @@ class FeedbackSentiment(str, Enum):
     mixed = "mixed"
 
 
+class CrossThreadSharingDefault(str, Enum):
+    opt_in = "opt_in"
+    opt_out = "opt_out"
+
+
+class BridgeCandidateKind(str, Enum):
+    context = "context"
+    clarification = "clarification"
+    contradiction = "contradiction"
+    repair = "repair"
+    vulnerability = "vulnerability"
+    process = "process"
+
+
+class BridgeCandidateStatus(str, Enum):
+    pending = "pending"
+    ready = "ready"
+    sent = "sent"
+    declined = "declined"
+    blocked = "blocked"
+    addressed = "addressed"
+    expired = "expired"
+
+
+class BridgeCandidateSensitivity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
 Significance = Annotated[int, Field(ge=1, le=5)]
 
 
@@ -491,6 +521,104 @@ class UpdateUserStyleNotesOutput(BaseModel):
     updated_at: datetime
 
 
+# --- update_cross_thread_sharing_default ---
+
+
+class UpdateCrossThreadSharingDefaultInput(BaseModel):
+    user_id: UUID
+    default: CrossThreadSharingDefault = Field(
+        description="Whether this user's thread is shareable across the relationship bridge by default."
+    )
+    reason: str = Field(description="The user's stated preference or short rationale. Logged for audit.")
+
+
+class UpdateCrossThreadSharingDefaultOutput(BaseModel):
+    user_id: UUID
+    default: CrossThreadSharingDefault
+    updated_at: datetime
+
+
+# --- bridge candidates ---
+
+
+class BridgeCandidate(BaseModel):
+    id: UUID
+    source_user_id: UUID
+    target_user_id: UUID
+    kind: BridgeCandidateKind
+    status: BridgeCandidateStatus
+    sensitivity: BridgeCandidateSensitivity
+    source_message_ids: list[UUID]
+    related_memory_ids: list[UUID] = Field(default_factory=list)
+    related_observation_ids: list[UUID] = Field(default_factory=list)
+    shareable_summary: str
+    internal_note: str | None = None
+    sent_message_id: UUID | None = None
+    created_at: datetime
+    updated_at: datetime
+    resolved_at: datetime | None = None
+
+
+class CreateBridgeCandidateInput(BaseModel):
+    source_user_id: UUID
+    target_user_id: UUID
+    kind: BridgeCandidateKind
+    sensitivity: BridgeCandidateSensitivity = BridgeCandidateSensitivity.medium
+    source_message_ids: list[UUID] = Field(min_length=1)
+    related_memory_ids: list[UUID] = Field(default_factory=list)
+    related_observation_ids: list[UUID] = Field(default_factory=list)
+    internal_note: str | None = None
+    shareable_summary: str = Field(min_length=1)
+    status: BridgeCandidateStatus | None = Field(
+        default=None,
+        description="Optional explicit lifecycle status. Runtime defaults are applied by the tool implementation.",
+    )
+
+
+class CreateBridgeCandidateOutput(BaseModel):
+    candidate: BridgeCandidate
+
+
+class ListBridgeCandidatesInput(BaseModel):
+    source_user_id: UUID | None = None
+    target_user_id: UUID | None = None
+    status: BridgeCandidateStatus | None = None
+    limit: int = Field(default=10, ge=1, le=50)
+
+
+class ListBridgeCandidatesOutput(BaseModel):
+    candidates: list[BridgeCandidate]
+    truncated: bool = False
+
+
+class UpdateBridgeCandidateInput(BaseModel):
+    candidate_id: UUID
+    kind: BridgeCandidateKind | None = None
+    status: BridgeCandidateStatus | None = None
+    sensitivity: BridgeCandidateSensitivity | None = None
+    source_message_ids: list[UUID] | None = Field(default=None, min_length=1)
+    related_memory_ids: list[UUID] | None = None
+    related_observation_ids: list[UUID] | None = None
+    internal_note: str | None = None
+    shareable_summary: str | None = Field(default=None, min_length=1)
+
+
+class UpdateBridgeCandidateOutput(BaseModel):
+    candidate: BridgeCandidate
+
+
+class SendBridgeCandidateInput(BaseModel):
+    candidate_id: UUID
+    reason: str | None = Field(
+        default=None,
+        description="Short reason for sending this ready bridge candidate now.",
+    )
+
+
+class SendBridgeCandidateOutput(BaseModel):
+    candidate: BridgeCandidate
+
+
 # --- add_memory / update_memory / supersede_memory ---
 #
 # Dedup is the agent's responsibility: it searches existing memories first and
@@ -859,8 +987,13 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "get_self_model": (GetSelfModelInput, GetSelfModelOutput),
     "get_bot_actions": (GetBotActionsInput, GetBotActionsOutput),
     "send_message_part": (SendMessagePartInput, SendMessagePartOutput),
+    "list_bridge_candidates": (ListBridgeCandidatesInput, ListBridgeCandidatesOutput),
     # write
     "update_user_style_notes": (UpdateUserStyleNotesInput, UpdateUserStyleNotesOutput),
+    "update_cross_thread_sharing_default": (UpdateCrossThreadSharingDefaultInput, UpdateCrossThreadSharingDefaultOutput),
+    "create_bridge_candidate": (CreateBridgeCandidateInput, CreateBridgeCandidateOutput),
+    "update_bridge_candidate": (UpdateBridgeCandidateInput, UpdateBridgeCandidateOutput),
+    "send_bridge_candidate": (SendBridgeCandidateInput, SendBridgeCandidateOutput),
     "add_memory": (AddMemoryInput, AddMemoryOutput),
     "update_memory": (UpdateMemoryInput, UpdateMemoryOutput),
     "supersede_memory": (SupersedeMemoryInput, SupersedeMemoryOutput),
