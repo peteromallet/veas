@@ -10,8 +10,8 @@ from decimal import Decimal
 from typing import Any
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, Form, HTTPException, Query, status
-from fastapi.responses import HTMLResponse, RedirectResponse
+from fastapi import APIRouter, Depends, HTTPException, Query, status
+from fastapi.responses import HTMLResponse
 from fastapi.security import HTTPBasic, HTTPBasicCredentials
 
 from app.config import get_settings
@@ -62,7 +62,6 @@ def _page(title: str, body: str) -> str:
             ("spend", "Spend"),
             ("escalations", "Escalations"),
             ("evals", "Evals"),
-            ("feedback", "Feedback"),
             ("audit", "Audit"),
         ]
     )
@@ -283,101 +282,6 @@ async def eval_detail(run_id: str, pool: Any = Depends(get_pool), _: None = Depe
             "</article>"
         )
     return _page("Eval Detail", "".join(sections))
-
-
-_FEEDBACK_FILTERS = ("open", "resolved", "ignored", "all")
-
-
-@router.get("/admin/feedback", response_class=HTMLResponse)
-async def feedback(
-    pool: Any = Depends(get_pool),
-    _: None = Depends(authenticate_admin),
-    resolution: str = Query(default="open"),
-) -> str:
-    if resolution not in _FEEDBACK_FILTERS:
-        resolution = "open"
-    if resolution == "all":
-        rows = await _fetch(
-            pool,
-            "SELECT id, from_user_id, target_type, target_id, sentiment, content, source, created_at, resolution, resolved_at, resolution_note FROM feedback ORDER BY created_at DESC LIMIT 100",
-        )
-    else:
-        rows = await _fetch(
-            pool,
-            "SELECT id, from_user_id, target_type, target_id, sentiment, content, source, created_at, resolution, resolved_at, resolution_note FROM feedback WHERE resolution = $1 ORDER BY created_at DESC LIMIT 100",
-            resolution,
-        )
-    filter_links = " ".join(
-        f'<a href="/admin/feedback?resolution={name}"><strong>{label}</strong></a>'
-        if name == resolution
-        else f'<a href="/admin/feedback?resolution={name}">{label}</a>'
-        for name, label in [("open", "Open"), ("resolved", "Resolved"), ("ignored", "Ignored"), ("all", "All")]
-    )
-    columns = ["created_at", "sentiment", "source", "target_type", "target_id", "content", "resolution", "resolved_at", "resolution_note", "id"]
-    if not rows:
-        body = f'<nav>{filter_links}</nav><p>No rows.</p>'
-        return _page("Feedback", body)
-    head = "".join(f"<th>{_esc(column)}</th>" for column in columns) + "<th>actions</th>"
-    body_rows = ""
-    for row in rows:
-        cells = "".join(f"<td>{_esc(row.get(column))}</td>" for column in columns)
-        current = row.get("resolution") or "open"
-        if current == "open":
-            action_html = (
-                f'<form method="post" action="/admin/feedback/{_esc(row["id"])}/resolve">'
-                f'<input type="hidden" name="from_filter" value="{_esc(resolution)}">'
-                f'<input type="text" name="note" placeholder="note" maxlength="500">'
-                f'<button type="submit" name="action" value="resolve">Mark resolved</button>'
-                f'<button type="submit" name="action" value="ignore">Mark ignored</button>'
-                f'</form>'
-            )
-        else:
-            action_html = (
-                f'<form method="post" action="/admin/feedback/{_esc(row["id"])}/resolve">'
-                f'<input type="hidden" name="from_filter" value="{_esc(resolution)}">'
-                f'<button type="submit" name="action" value="reopen">Reopen</button>'
-                f'</form>'
-            )
-        body_rows += f"<tr>{cells}<td>{action_html}</td></tr>"
-    table = f"<table><thead><tr>{head}</tr></thead><tbody>{body_rows}</tbody></table>"
-    body = f'<nav>{filter_links}</nav>{table}'
-    return _page("Feedback", body)
-
-
-@router.post("/admin/feedback/{feedback_id}/resolve")
-async def feedback_resolve(
-    feedback_id: str,
-    action: str = Form(...),
-    note: str = Form(default=""),
-    from_filter: str = Form(default="open"),
-    pool: Any = Depends(get_pool),
-    _: None = Depends(authenticate_admin),
-) -> RedirectResponse:
-    if action not in ("resolve", "ignore", "reopen"):
-        raise HTTPException(status_code=400, detail="invalid action")
-    try:
-        UUID(feedback_id)
-    except ValueError as exc:
-        raise HTTPException(status_code=400, detail="invalid feedback id") from exc
-    if from_filter not in _FEEDBACK_FILTERS:
-        from_filter = "open"
-    trimmed_note = (note or "").strip()[:500] or None
-    if action == "reopen":
-        result = await pool.execute(
-            "UPDATE feedback SET resolution = 'open', resolved_at = NULL, resolution_note = NULL WHERE id = $1::uuid",
-            feedback_id,
-        )
-    else:
-        new_resolution = "resolved" if action == "resolve" else "ignored"
-        result = await pool.execute(
-            "UPDATE feedback SET resolution = $1, resolved_at = now(), resolution_note = $2 WHERE id = $3::uuid",
-            new_resolution,
-            trimmed_note,
-            feedback_id,
-        )
-    if isinstance(result, str) and result.endswith(" 0"):
-        raise HTTPException(status_code=404, detail="feedback not found")
-    return RedirectResponse(url=f"/admin/feedback?resolution={from_filter}", status_code=303)
 
 
 @router.get("/admin/audit", response_class=HTMLResponse)

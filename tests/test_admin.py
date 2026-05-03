@@ -100,9 +100,6 @@ def test_admin_pages_and_turn_detail_render_escaped_read_only(monkeypatch) -> No
         assert response.status_code == 200, path
         assert "<form" not in response.text.lower()
 
-    feedback_response = client.get("/admin/feedback", auth=("admin", "correct-password"))
-    assert feedback_response.status_code == 200
-
     detail = client.get(f"/admin/turns/{turn_id}", auth=("admin", "correct-password"))
     assert "prompt_snapshot" in detail.text
     assert "because" in detail.text
@@ -193,93 +190,4 @@ def test_admin_oob_page_redacts_raw_core_and_escapes_safe_metadata(monkeypatch) 
     assert "hard" in response.text
     assert "firm" in response.text
     assert str(owner_id) in response.text
-    get_settings.cache_clear()
-
-
-def test_admin_feedback_resolve_marks_handled(monkeypatch) -> None:
-    pool = FakePool()
-    user_id = uuid4()
-    target_id = uuid4()
-    fb1_id = uuid4()
-    fb2_id = uuid4()
-    pool.feedback[fb1_id] = {
-        "id": fb1_id,
-        "from_user_id": user_id,
-        "target_type": "message",
-        "target_id": target_id,
-        "sentiment": "negative",
-        "content": "<script>x()</script>",
-        "source": "reaction",
-        "created_at": datetime.now(UTC),
-        "resolution": "open",
-        "resolved_at": None,
-        "resolution_note": None,
-    }
-    pool.feedback[fb2_id] = {
-        "id": fb2_id,
-        "from_user_id": user_id,
-        "target_type": "message",
-        "target_id": target_id,
-        "sentiment": "positive",
-        "content": "good",
-        "source": "reaction",
-        "created_at": datetime.now(UTC),
-        "resolution": "open",
-        "resolved_at": None,
-        "resolution_note": None,
-    }
-    client = _client(monkeypatch, pool)
-
-    open_response = client.get("/admin/feedback", auth=("admin", "correct-password"))
-    assert open_response.status_code == 200
-    assert "&lt;script&gt;x()&lt;/script&gt;" in open_response.text
-    assert "<form" in open_response.text.lower()
-    assert "Mark resolved" in open_response.text
-
-    resolved_empty = client.get("/admin/feedback?resolution=resolved", auth=("admin", "correct-password"))
-    assert resolved_empty.status_code == 200
-    assert str(fb1_id) not in resolved_empty.text
-
-    redirect = client.post(
-        f"/admin/feedback/{fb1_id}/resolve",
-        data={"action": "resolve", "note": "fixed", "from_filter": "open"},
-        auth=("admin", "correct-password"),
-        follow_redirects=False,
-    )
-    assert redirect.status_code == 303
-    assert redirect.headers["location"] == "/admin/feedback?resolution=open"
-
-    resolved_response = client.get("/admin/feedback?resolution=resolved", auth=("admin", "correct-password"))
-    assert resolved_response.status_code == 200
-    assert str(fb1_id) in resolved_response.text
-    assert "fixed" in resolved_response.text
-    assert "Reopen" in resolved_response.text
-
-    reopen_redirect = client.post(
-        f"/admin/feedback/{fb1_id}/resolve",
-        data={"action": "reopen", "from_filter": "resolved"},
-        auth=("admin", "correct-password"),
-        follow_redirects=False,
-    )
-    assert reopen_redirect.status_code == 303
-    assert reopen_redirect.headers["location"] == "/admin/feedback?resolution=resolved"
-    assert pool.feedback[fb1_id]["resolution"] == "open"
-    assert pool.feedback[fb1_id]["resolved_at"] is None
-    assert pool.feedback[fb1_id]["resolution_note"] is None
-
-    bogus = client.post(
-        f"/admin/feedback/{fb1_id}/resolve",
-        data={"action": "bogus"},
-        auth=("admin", "correct-password"),
-        follow_redirects=False,
-    )
-    assert bogus.status_code == 400
-
-    missing = client.post(
-        f"/admin/feedback/{uuid4()}/resolve",
-        data={"action": "resolve"},
-        auth=("admin", "correct-password"),
-        follow_redirects=False,
-    )
-    assert missing.status_code == 404
     get_settings.cache_clear()
