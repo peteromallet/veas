@@ -3,7 +3,7 @@ import types
 import json
 from datetime import UTC, datetime, timedelta
 from decimal import Decimal
-from uuid import uuid4
+from uuid import UUID, uuid4
 from collections.abc import AsyncIterator
 
 import pytest
@@ -778,6 +778,9 @@ class FakePool:
                 "content": content,
                 "source": source,
                 "created_at": datetime.now(UTC),
+                "resolution": "open",
+                "resolved_at": None,
+                "resolution_note": None,
             }
             self.feedback[row["id"]] = row
             return {"id": row["id"]}
@@ -1232,8 +1235,15 @@ class FakePool:
             return rows[:limit]
         if "FROM feedback" in compact:
             rows = list(self.feedback.values())
+            for row in rows:
+                row.setdefault("resolution", "open")
+                row.setdefault("resolved_at", None)
+                row.setdefault("resolution_note", None)
+            if "WHERE resolution =" in compact and args:
+                wanted = args[0]
+                rows = [row for row in rows if (row.get("resolution") or "open") == wanted]
             rows.sort(key=lambda row: row.get("created_at", datetime.now(UTC)), reverse=True)
-            return rows[:50]
+            return rows[:100]
         if "FROM public.eval_runs" in compact:
             rows = list(self.eval_runs.values())
             rows.sort(key=lambda row: row["run_at"], reverse=True)
@@ -1586,6 +1596,31 @@ class FakePool:
             )
             if notes is not None:
                 self.eval_runs[run_id]["notes"] = notes
+            return "UPDATE 1"
+        if compact.startswith("UPDATE feedback SET resolution = 'open'"):
+            try:
+                feedback_id = UUID(args[0]) if isinstance(args[0], str) else args[0]
+            except (ValueError, TypeError):
+                feedback_id = args[0]
+            row = self.feedback.get(feedback_id)
+            if row is None:
+                return "UPDATE 0"
+            row["resolution"] = "open"
+            row["resolved_at"] = None
+            row["resolution_note"] = None
+            return "UPDATE 1"
+        if compact.startswith("UPDATE feedback SET resolution = $1"):
+            new_resolution, note, raw_id = args
+            try:
+                feedback_id = UUID(raw_id) if isinstance(raw_id, str) else raw_id
+            except (ValueError, TypeError):
+                feedback_id = raw_id
+            row = self.feedback.get(feedback_id)
+            if row is None:
+                return "UPDATE 0"
+            row["resolution"] = new_resolution
+            row["resolved_at"] = datetime.now(UTC)
+            row["resolution_note"] = note
             return "UPDATE 1"
         if compact.startswith("INSERT INTO tool_calls"):
             turn_id, tool_name, arguments, result, called_at, duration_ms = args
