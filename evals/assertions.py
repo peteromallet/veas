@@ -15,6 +15,7 @@ KIND_TO_TABLE = {
     "theme": "themes",
     "watch_item": "watch_items",
     "observation": "observations",
+    "distillation": "distillations",
     "style_note": "users",
     "oob_entry": "out_of_bounds",
 }
@@ -136,7 +137,7 @@ def _operation_rows(diff: TableDiff, operation: str | None) -> list[dict[str, An
         return [
             row
             for row in [*diff.inserted, *diff.updated, *diff.deleted]
-            if row.get("status") == "superseded" or row.get("supersedes_memory_id")
+            if row.get("status") in {"superseded", "revised"} or row.get("supersedes_memory_id") or row.get("supersedes_distillation_id")
         ]
     return [*diff.inserted, *diff.updated, *diff.deleted]
 
@@ -157,7 +158,7 @@ def _matches_row(row: dict[str, Any], expected: PrimitiveWriteExpectation) -> bo
 
 
 def _searchable_text(row: dict[str, Any]) -> str:
-    fields = ("content", "title", "description", "sensitive_core", "shareable_context", "style_notes", "addressing_note")
+    fields = ("content", "title", "description", "sensitive_core", "shareable_context", "shareable_summary", "revision_note", "style_notes", "addressing_note")
     return "\n".join(str(row.get(field) or "") for field in fields)
 
 

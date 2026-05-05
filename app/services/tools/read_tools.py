@@ -16,6 +16,7 @@ from app.services.oob_check import check_oob_with_policy, summarize_partner_oob
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
 from app.services.tools.common import (
     add_date_range,
+    distillation_row,
     memory_row,
     message_hit,
     observation_row,
@@ -30,6 +31,8 @@ from tool_schemas import (
     CheckOOBInput,
     CheckOOBOutput,
     DateRange,
+    GetDistillationsInput,
+    GetDistillationsOutput,
     GetBotActionsInput,
     GetBotActionsOutput,
     GetMemoriesInput,
@@ -318,7 +321,7 @@ async def list_bridge_candidates(ctx: TurnContext, args: ListBridgeCandidatesInp
     logger.info("read tool list_bridge_candidates turn_id=%s", ctx.turn_id)
     rows = await ctx.pool.fetch(
         """
-        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
                COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
                COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
@@ -332,14 +335,16 @@ async def list_bridge_candidates(ctx: TurnContext, args: ListBridgeCandidatesInp
           AND ($3::uuid IS NULL OR source_user_id=$3)
           AND ($4::uuid IS NULL OR target_user_id=$4)
           AND ($5::text IS NULL OR status=$5)
+          AND ($6::text IS NULL OR partner_path=$6)
         ORDER BY created_at DESC
-        LIMIT $6
+        LIMIT $7
         """,
         ctx.user.id,
         ctx.partner.id,
         args.source_user_id,
         args.target_user_id,
         args.status.value if args.status is not None else None,
+        args.partner_path.value if args.partner_path is not None else None,
         args.limit,
     )
     candidates: list[BridgeCandidate] = []
@@ -354,6 +359,7 @@ async def list_bridge_candidates(ctx: TurnContext, args: ListBridgeCandidatesInp
 
 def _bridge_candidate(row: Any) -> BridgeCandidate:
     data = dict(row)
+    data.setdefault("partner_path", "message_partner")
     data["source_message_ids"] = list(data.get("source_message_ids") or [])
     data["related_memory_ids"] = list(data.get("related_memory_ids") or [])
     data["related_observation_ids"] = list(data.get("related_observation_ids") or [])
@@ -606,6 +612,80 @@ async def get_observations(ctx: TurnContext, args: GetObservationsInput) -> GetO
     return GetObservationsOutput(observations=[observation_row(row) for row in rows])
 
 
+async def get_distillations(ctx: TurnContext, args: GetDistillationsInput) -> GetDistillationsOutput:
+    logger.info("read tool get_distillations turn_id=%s", ctx.turn_id)
+    clauses = ["status = $1"]
+    params: list[Any] = [args.status.value]
+    if args.source_user_id is not None:
+        params.append(args.source_user_id)
+        clauses.append(f"${len(params)} = ANY(COALESCE(source_user_ids, '{{}}'::uuid[]))")
+    if args.related_theme_id is not None:
+        params.append(args.related_theme_id)
+        clauses.append(f"${len(params)} = ANY(COALESCE(related_theme_ids, '{{}}'::uuid[]))")
+    if args.related_memory_id is not None:
+        params.append(args.related_memory_id)
+        clauses.append(f"${len(params)} = ANY(COALESCE(related_memory_ids, '{{}}'::uuid[]))")
+    if args.related_observation_id is not None:
+        params.append(args.related_observation_id)
+        clauses.append(f"${len(params)} = ANY(COALESCE(related_observation_ids, '{{}}'::uuid[]))")
+    if args.supporting_message_id is not None:
+        params.append(args.supporting_message_id)
+        clauses.append(f"${len(params)} = ANY(COALESCE(supporting_message_ids, '{{}}'::uuid[]))")
+    if args.text_contains:
+        params.append(f"%{args.text_contains}%")
+        clauses.append(
+            f"""(
+                content ILIKE ${len(params)}
+                OR shareable_summary ILIKE ${len(params)}
+                OR revision_note ILIKE ${len(params)}
+            )"""
+        )
+    params.append(args.limit)
+    rows = await ctx.pool.fetch(
+        f"""
+        SELECT id, content, confidence, status, sensitivity, visibility, shareable_summary,
+               COALESCE(source_user_ids, '{{}}'::uuid[]) AS source_user_ids,
+               COALESCE(related_memory_ids, '{{}}'::uuid[]) AS related_memory_ids,
+               COALESCE(related_observation_ids, '{{}}'::uuid[]) AS related_observation_ids,
+               COALESCE(related_theme_ids, '{{}}'::uuid[]) AS related_theme_ids,
+               COALESCE(supporting_message_ids, '{{}}'::uuid[]) AS supporting_message_ids,
+               created_from_tool_call_id, triggering_message_id,
+               supersedes_distillation_id, superseded_by_distillation_id,
+               revision_note, revision_count,
+               created_at, updated_at, revised_at, retired_at
+        FROM distillations
+        WHERE {' AND '.join(clauses)}
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT ${len(params)}
+        """,
+        *params,
+    )
+    sharing_defaults = {
+        ctx.user.id: normalize_sharing_default(ctx.user.cross_thread_sharing_default),
+        ctx.partner.id: normalize_sharing_default(ctx.partner.cross_thread_sharing_default),
+    }
+    visible_rows = []
+    for row in rows:
+        source_user_ids = list(row["source_user_ids"] or [])
+        full_visible = bool(source_user_ids) and all(
+            raw_message_visibility(
+                viewer_user_id=ctx.user.id,
+                thread_owner_user_id=source_user_id,
+                thread_owner_sharing_default=sharing_defaults.get(source_user_id),
+            ).visible
+            for source_user_id in source_user_ids
+        )
+        if full_visible:
+            visible_rows.append(row)
+            continue
+        if row["visibility"] == "dyad_shareable" and row["shareable_summary"]:
+            safe_row = dict(row)
+            safe_row["content"] = row["shareable_summary"]
+            safe_row["revision_note"] = None
+            visible_rows.append(safe_row)
+    return GetDistillationsOutput(distillations=[distillation_row(row) for row in visible_rows])
+
+
 async def get_oob(ctx: TurnContext, args: GetOOBInput) -> GetOOBOutput:
     logger.info("read tool get_oob turn_id=%s", ctx.turn_id)
     clauses: list[str] = []
@@ -678,6 +758,7 @@ def _target_tool_names(target_type: Any) -> set[str]:
         "message": {"escalate_to_partner"},
         "memory": {"add_memory", "update_memory", "supersede_memory"},
         "observation": {"log_observation", "update_observation"},
+        "distillation": {"get_distillations", "add_distillation", "update_distillation", "revise_distillation"},
         "theme": {"create_theme", "update_theme"},
         "watch_item": {"add_watch_item", "update_watch_item", "address_watch_item"},
         "oob": {"add_oob", "update_oob", "lift_oob"},

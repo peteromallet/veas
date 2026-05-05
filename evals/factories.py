@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from typing import Any
@@ -61,6 +60,7 @@ async def seed_scenario(pool: Any, scenario: Scenario) -> ScenarioSeed:
     await _seed_themes(pool, scenario.setup.get("themes", []), refs)
     await _seed_memories(pool, scenario.setup.get("memories", []), refs, user)
     await _seed_observations(pool, scenario.setup.get("observations", []), refs, user)
+    await _seed_distillations(pool, scenario.setup.get("distillations", []), refs, user)
     await _seed_watch_items(pool, scenario.setup.get("watch_items", []), refs, user)
     await _seed_oob_entries(pool, scenario.setup.get("oob_entries", []), refs, user)
     await _seed_scheduled_jobs(pool, scenario.setup.get("scheduled_jobs", []), refs, user)
@@ -227,6 +227,51 @@ async def _seed_observations(pool: Any, specs: Any, refs: dict[str, UUID], defau
             )
         if item.get("key"):
             refs[str(item["key"])] = observation_id
+
+
+async def _seed_distillations(pool: Any, specs: Any, refs: dict[str, UUID], default_user: User) -> None:
+    for item in _list_specs(specs, "setup.distillations"):
+        distillation_id = _coerce_uuid(item.get("id")) or uuid4()
+        row = {
+            "id": distillation_id,
+            "content": str(item["content"]),
+            "confidence": str(item.get("confidence") or "medium"),
+            "status": str(item.get("status") or "active"),
+            "sensitivity": str(item.get("sensitivity") or "medium"),
+            "visibility": str(item.get("visibility") or "private"),
+            "shareable_summary": item.get("shareable_summary"),
+            "source_user_ids": [_ref(value, refs) for value in item.get("source_users", [])] or [default_user.id],
+            "related_memory_ids": [_ref(value, refs) for value in item.get("related_memories", [])],
+            "related_observation_ids": [_ref(value, refs) for value in item.get("related_observations", [])],
+            "related_theme_ids": [_ref(value, refs) for value in item.get("related_themes", [])],
+            "supporting_message_ids": [_ref(value, refs) for value in item.get("supporting_messages", [])],
+            "supersedes_distillation_id": _ref(item.get("supersedes"), refs),
+            "superseded_by_distillation_id": _ref(item.get("superseded_by"), refs),
+            "revision_note": item.get("revision_note"),
+            "revision_count": int(item.get("revision_count") or 0),
+            "created_at": _parse_time(item.get("created_at")) or datetime.now(UTC),
+            "updated_at": _parse_time(item.get("updated_at")) or datetime.now(UTC),
+            "revised_at": _parse_time(item.get("revised_at")),
+            "retired_at": _parse_time(item.get("retired_at")),
+        }
+        if hasattr(pool, "distillations"):
+            pool.distillations[distillation_id] = row
+        else:
+            await pool.fetchrow(
+                """
+                INSERT INTO distillations (
+                    id, content, confidence, status, sensitivity, visibility, shareable_summary,
+                    source_user_ids, related_memory_ids, related_observation_ids, related_theme_ids,
+                    supporting_message_ids, supersedes_distillation_id, superseded_by_distillation_id,
+                    revision_note, revision_count, created_at, updated_at, revised_at, retired_at
+                )
+                VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20)
+                RETURNING id
+                """,
+                *row.values(),
+            )
+        if item.get("key"):
+            refs[str(item["key"])] = distillation_id
 
 
 async def _seed_watch_items(pool: Any, specs: Any, refs: dict[str, UUID], default_user: User) -> None:

@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 
-PRIMITIVE_TABLES = ("users", "memories", "themes", "watch_items", "observations", "out_of_bounds")
+PRIMITIVE_TABLES = ("users", "memories", "themes", "watch_items", "observations", "distillations", "out_of_bounds")
 STATE_TABLES = (
     *PRIMITIVE_TABLES,
     "scheduled_jobs",
@@ -125,6 +125,8 @@ async def _fetch_table(pool: Any, table: str) -> list[Any]:
         return await pool.fetch("SELECT * FROM watch_items ORDER BY id")
     if table == "observations":
         return await pool.fetch("SELECT * FROM observations ORDER BY id")
+    if table == "distillations":
+        return await pool.fetch("SELECT * FROM distillations ORDER BY id")
     if table == "out_of_bounds":
         return await pool.fetch("SELECT * FROM out_of_bounds ORDER BY id")
     if table == "scheduled_jobs":

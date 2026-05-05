@@ -112,6 +112,43 @@ async def test_image_success_persists_analysis_and_enqueues_as_media(fake_pool, 
     assert recorder.calls == [(user.id, message_id, user, "media")]
 
 
+async def test_image_openai_failure_falls_back_to_anthropic(fake_pool, monkeypatch) -> None:
+    user, message_id = _user_and_message(fake_pool)
+    recorder = Recorder()
+
+    async def fetch_media(media_id):
+        return b"image", "image/jpeg"
+
+    async def upload_media(bucket, object_path, content, content_type):
+        return f"{bucket}/{object_path}"
+
+    async def fail_openai(image_bytes, content_type):
+        raise RuntimeError("openai quota")
+
+    async def anthropic_analyze(image_bytes, content_type):
+        return {
+            "kind": "image",
+            "provider": "anthropic",
+            "model": "claude-sonnet-4-6",
+            "detail": "high",
+            "explanation": "fallback image description",
+            "description": "fallback image description",
+        }
+
+    monkeypatch.setattr("app.services.whatsapp.fetch_media", fetch_media)
+    monkeypatch.setattr("app.services.storage.upload_media", upload_media)
+    monkeypatch.setattr("app.services.vision._openai_analyze", fail_openai)
+    monkeypatch.setattr("app.services.vision._anthropic_analyze", anthropic_analyze)
+
+    await handle_image(fake_pool, message_id, "media-image", user, recorder)
+    message = fake_pool.messages[message_id]
+
+    assert message["media_analysis"]["provider"] == "anthropic"
+    assert message["media_analysis"]["explanation"] == "fallback image description"
+    assert message["processing_state"] == "raw"
+    assert recorder.calls == [(user.id, message_id, user, "media")]
+
+
 async def test_voice_double_failure_expires_with_audio_retained(fake_pool, monkeypatch) -> None:
     user, message_id = _user_and_message(fake_pool)
     attempts = 0
@@ -225,13 +262,15 @@ async def test_image_vision_failure_retains_media_and_keeps_raw(fake_pool, monke
     monkeypatch.setattr("app.services.whatsapp.fetch_media", fetch_media)
     monkeypatch.setattr("app.services.storage.upload_media", upload_media)
     monkeypatch.setattr("app.services.vision._openai_analyze", fail)
+    monkeypatch.setattr("app.services.vision._anthropic_analyze", fail)
     monkeypatch.setattr("app.services.vision.send_outbound", fake_send)
 
     await handle_image(fake_pool, message_id, "media-image", user)
     message = fake_pool.messages[message_id]
 
     assert message["media_url"].endswith(f"image/{message_id}")
-    assert message["media_analysis"] == {"error": "vision_failed"}
+    assert message["media_analysis"]["error"] == "vision_failed"
+    assert message["media_analysis"]["detail"] == "RuntimeError"
     assert message["processing_state"] == "expired"
     assert sent[0][2].name == "media_failure"
 
@@ -370,6 +409,7 @@ async def test_process_inbound_text_plus_image_still_replies_when_vision_fails(
     monkeypatch.setattr("app.services.whatsapp.fetch_media", fetch_media)
     monkeypatch.setattr("app.services.storage.upload_media", upload_media)
     monkeypatch.setattr("app.services.vision._openai_analyze", fail)
+    monkeypatch.setattr("app.services.vision._anthropic_analyze", fail)
     monkeypatch.setattr("app.services.vision.send_outbound", fake_send)
 
     coalescer = Recorder()
@@ -415,7 +455,8 @@ async def test_process_inbound_text_plus_image_still_replies_when_vision_fails(
     # The image row exists with a vision_failed marker -- agentic turn can see it.
     image_rows = [m for m in fake_pool.messages.values() if m.get("media_type") == "image"]
     assert len(image_rows) == 1
-    assert image_rows[0]["media_analysis"] == {"error": "vision_failed"}
+    assert image_rows[0]["media_analysis"]["error"] == "vision_failed"
+    assert image_rows[0]["media_analysis"]["detail"] == "RuntimeError"
 
 
 async def test_explain_stored_image_downloads_analyzes_and_persists(fake_pool, monkeypatch) -> None:

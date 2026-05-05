@@ -68,6 +68,34 @@ def test_load_scenario_parses_valid_front_matter(tmp_path: Path) -> None:
     assert scenario.body.startswith("## Notes")
 
 
+def test_load_scenario_accepts_distillation_write_expectation(tmp_path: Path) -> None:
+    path = write_scenario(
+        tmp_path,
+        "distillation.md",
+        VALID_SCENARIO.replace(
+            "    - kind: observation\n      operation: update\n      content_matches: \"ask.*day|deadline\"\n      significance_min: 3\n      significance_max: 5",
+            "    - kind: distillation\n      operation: insert\n      content_matches: \"one possible explanation\"",
+        ),
+    )
+
+    scenario = load_scenario(path)
+
+    assert scenario.expectations.must_write_primitives[0].kind == "distillation"
+
+
+def test_load_distillation_scenario_requires_search_before_add_and_preserves_observations() -> None:
+    path = Path(__file__).resolve().parents[1] / "evals" / "scenarios" / "19_distillation_before_revise.md"
+
+    scenario = load_scenario(path)
+
+    assert "get_distillations" in scenario.expectations.must_call_tools
+    assert "add_distillation" in scenario.expectations.must_call_tools
+    assert "update_observation" in scenario.expectations.must_not_call_tools
+    assert "log_observation" in scenario.expectations.must_not_call_tools
+    assert scenario.expectations.must_write_primitives[0].kind == "distillation"
+    assert "not mutate the supporting observations" in scenario.body
+
+
 def test_load_scenarios_filters_by_name_and_tag(tmp_path: Path) -> None:
     write_scenario(tmp_path, "worked.md", VALID_SCENARIO)
     write_scenario(

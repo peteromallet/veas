@@ -1,8 +1,10 @@
 """Image analysis pipeline."""
 
 import base64
+import logging
 from typing import Any
 
+import anthropic
 import httpx
 
 from app.config import get_settings
@@ -11,6 +13,8 @@ from app.services import storage, system_state, whatsapp
 from app.services.messaging import send_outbound
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.templates import TemplateCall
+
+logger = logging.getLogger(__name__)
 
 
 MEDIA_EXPLAIN_PROMPT = """Describe this image for durable future recall by a relationship-mediation assistant.
@@ -87,6 +91,59 @@ async def _openai_analyze(image_bytes: bytes, content_type: str) -> dict[str, An
     return _analysis_payload(explanation)
 
 
+def _anthropic_text(response: Any) -> str:
+    pieces: list[str] = []
+    for block in getattr(response, "content", []) or []:
+        text = getattr(block, "text", None)
+        if isinstance(text, str):
+            pieces.append(text)
+    return "\n".join(piece.strip() for piece in pieces if piece.strip()).strip()
+
+
+async def _anthropic_analyze(image_bytes: bytes, content_type: str) -> dict[str, Any]:
+    settings = get_settings()
+    client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
+    response = await client.messages.create(
+        model=settings.conversational_model,
+        max_tokens=1200,
+        messages=[
+            {
+                "role": "user",
+                "content": [
+                    {
+                        "type": "image",
+                        "source": {
+                            "type": "base64",
+                            "media_type": content_type,
+                            "data": base64.b64encode(image_bytes).decode(),
+                        },
+                    },
+                    {"type": "text", "text": MEDIA_EXPLAIN_PROMPT},
+                ],
+            }
+        ],
+    )
+    explanation = _anthropic_text(response)
+    if not explanation:
+        raise ValueError("empty anthropic vision explanation")
+    return _analysis_payload(
+        {
+            "provider": "anthropic",
+            "model": settings.conversational_model,
+            "explanation": explanation,
+            "description": explanation,
+        }
+    )
+
+
+async def _analyze_image(image_bytes: bytes, content_type: str) -> dict[str, Any]:
+    try:
+        return _analysis_payload(await _openai_analyze(image_bytes, content_type))
+    except Exception:
+        logger.exception("openai image analysis failed; trying anthropic fallback")
+    return await _anthropic_analyze(image_bytes, content_type)
+
+
 async def explain_stored_image(pool: Any, message_id) -> dict[str, Any]:
     row = await pool.fetchrow(
         """
@@ -101,7 +158,7 @@ async def explain_stored_image(pool: Any, message_id) -> dict[str, Any]:
     if row["media_type"] != "image" or not row["media_url"]:
         raise ValueError("message is not an image with stored media")
     image_bytes, content_type = await storage.download_media(row["media_url"])
-    analysis = _analysis_payload(await _openai_analyze(image_bytes, content_type))
+    analysis = await _analyze_image(image_bytes, content_type)
     await pool.execute("UPDATE messages SET media_analysis=$1 WHERE id=$2", analysis, message_id)
     await record_llm_cost(pool, "vision", 0.001)
     return analysis
@@ -141,11 +198,12 @@ async def handle_image(
         return
 
     try:
-        analysis = _analysis_payload(await _openai_analyze(image_bytes, content_type))
-    except Exception:
+        analysis = await _analyze_image(image_bytes, content_type)
+    except Exception as exc:
+        logger.exception("image analysis failed message_id=%s", message_id)
         await pool.execute(
             "UPDATE messages SET media_analysis=$1, processing_state='expired' WHERE id=$2",
-            {"error": "vision_failed"},
+            {"error": "vision_failed", "detail": type(exc).__name__},
             message_id,
         )
         if not paused:

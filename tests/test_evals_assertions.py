@@ -113,6 +113,43 @@ def test_primitive_write_matchers_cover_insert_update_regex_status_and_significa
     assert check_expectations(capture).passed
 
 
+def test_primitive_write_matchers_cover_distillation_summary_and_revision_note() -> None:
+    capture = _capture(
+        ScenarioExpectations(
+            must_write_primitives=[
+                PrimitiveWriteExpectation(
+                    kind="distillation",
+                    operation="supersede",
+                    content_matches="repair explanation|new evidence",
+                )
+            ]
+        ),
+        table_diffs={
+            "distillations": TableDiff(
+                updated=[
+                    {
+                        "id": "distill-1",
+                        "content": "Old repair explanation.",
+                        "status": "revised",
+                        "revision_note": "New evidence changed the synthesis.",
+                    }
+                ],
+                inserted=[
+                    {
+                        "id": "distill-2",
+                        "content": "Revised synthesis.",
+                        "shareable_summary": "Repair explanation, safely summarized.",
+                        "supersedes_distillation_id": "distill-1",
+                        "status": "active",
+                    }
+                ],
+            )
+        },
+    )
+
+    assert check_expectations(capture).passed
+
+
 def test_primitive_write_failure_is_localized() -> None:
     capture = _capture(
         ScenarioExpectations(

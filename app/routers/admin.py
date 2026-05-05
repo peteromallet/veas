@@ -5,7 +5,6 @@ from __future__ import annotations
 import html
 import json
 import secrets
-from datetime import UTC, datetime
 from decimal import Decimal
 from typing import Any
 from uuid import UUID
@@ -57,6 +56,7 @@ def _page(title: str, body: str) -> str:
             ("memories", "Memories"),
             ("watch-items", "Watch items"),
             ("observations", "Observations"),
+            ("distillations", "Distillations"),
             ("oob", "OOB"),
             ("scheduled-jobs", "Jobs"),
             ("spend", "Spend"),
@@ -93,6 +93,7 @@ async def admin_page(_: None = Depends(authenticate_admin)) -> str:
         for path, label in [
             ("turns", "Recent turns"),
             ("messages", "Recent messages"),
+            ("distillations", "Distillations"),
             ("spend", "Spend"),
             ("evals", "Evals"),
             ("audit", "Audit"),
@@ -190,6 +191,61 @@ async def observations(pool: Any = Depends(get_pool), _: None = Depends(authenti
     rows = await _fetch(pool, "SELECT id, about_user_id, content, confidence, significance, status, supporting_message_ids, created_at, last_reinforced_at FROM observations ORDER BY created_at DESC LIMIT 100")
     rows = [row for row in rows if (row.get("significance") or 0) >= min_significance]
     return _page("Observations", _table(rows, ["id", "about_user_id", "content", "confidence", "significance", "status", "supporting_message_ids", "created_at", "last_reinforced_at"]))
+
+
+@router.get("/admin/distillations", response_class=HTMLResponse)
+async def distillations(pool: Any = Depends(get_pool), _: None = Depends(authenticate_admin), q: str | None = None, status_filter: str | None = Query(default=None, alias="status")) -> str:
+    rows = await _fetch(
+        pool,
+        """
+        SELECT id, content, shareable_summary, confidence, status, sensitivity, visibility,
+               source_user_ids, related_memory_ids, related_observation_ids, related_theme_ids,
+               supporting_message_ids, supersedes_distillation_id, superseded_by_distillation_id,
+               revision_note, revision_count, created_at, updated_at, revised_at, retired_at
+        FROM distillations
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 100
+        """,
+    )
+    if status_filter:
+        rows = [row for row in rows if row.get("status") == status_filter]
+    if q:
+        needle = q.casefold()
+        rows = [
+            row
+            for row in rows
+            if needle in str(row.get("content") or "").casefold()
+            or needle in str(row.get("shareable_summary") or "").casefold()
+            or needle in str(row.get("revision_note") or "").casefold()
+        ]
+    return _page(
+        "Distillations",
+        _table(
+            rows,
+            [
+                "id",
+                "content",
+                "shareable_summary",
+                "confidence",
+                "status",
+                "sensitivity",
+                "visibility",
+                "source_user_ids",
+                "related_memory_ids",
+                "related_observation_ids",
+                "related_theme_ids",
+                "supporting_message_ids",
+                "supersedes_distillation_id",
+                "superseded_by_distillation_id",
+                "revision_note",
+                "revision_count",
+                "created_at",
+                "updated_at",
+                "revised_at",
+                "retired_at",
+            ],
+        ),
+    )
 
 
 @router.get("/admin/oob", response_class=HTMLResponse)

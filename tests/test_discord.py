@@ -116,7 +116,33 @@ def test_discord_message_to_meta_payload_emits_image_for_attachment() -> None:
     assert messages[1]["image"]["id"] == "https://cdn.discordapp.com/attachments/1/2/x.png"
 
 
-def test_discord_message_to_meta_payload_skips_non_image_attachments() -> None:
+def test_discord_message_to_meta_payload_emits_audio_for_attachment() -> None:
+    payload = message_to_meta_payload(
+        {
+            "id": "123",
+            "content": "",
+            "author": {"id": "456", "username": "maya"},
+            "attachments": [
+                {
+                    "id": "voice1",
+                    "url": "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg",
+                    "content_type": "audio/ogg",
+                    "filename": "voice-message.ogg",
+                    "duration_secs": 7.4,
+                }
+            ],
+        }
+    )
+
+    messages = payload["entry"][0]["changes"][0]["value"]["messages"]
+    assert len(messages) == 1
+    assert messages[0]["id"] == "123:voice1"
+    assert messages[0]["type"] == "audio"
+    assert messages[0]["audio"]["id"] == "https://cdn.discordapp.com/attachments/1/2/voice-message.ogg"
+    assert messages[0]["audio"]["duration"] == 7
+
+
+def test_discord_message_to_meta_payload_skips_unsupported_attachments() -> None:
     payload = message_to_meta_payload(
         {
             "id": "123",
@@ -167,6 +193,44 @@ async def test_discord_gateway_processes_image_only_message(
     assert len(calls) == 1
     messages = calls[0]["entry"][0]["changes"][0]["value"]["messages"]
     assert messages[0]["type"] == "image"
+    get_settings.cache_clear()
+
+
+async def test_discord_gateway_processes_audio_only_message(
+    fake_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("MESSAGING_PROVIDER", "discord")
+    monkeypatch.setenv("DISCORD_PARTNER_USER_ID_A", "456")
+    get_settings.cache_clear()
+    calls = []
+
+    async def process_inbound(pool, payload, coalescer=None):
+        calls.append(payload)
+
+    monkeypatch.setattr("app.services.inbound.process_inbound", process_inbound)
+    bot = DiscordGatewayBot(fake_pool, None)
+    await bot._handle_message(
+        {
+            "id": "123",
+            "content": "",
+            "channel_id": "channel-1",
+            "author": {"id": "456", "username": "maya"},
+            "attachments": [
+                {
+                    "id": "voice1",
+                    "url": "https://cdn.discordapp.com/voice.ogg",
+                    "content_type": "audio/ogg",
+                    "filename": "voice.ogg",
+                    "duration_secs": 3.2,
+                }
+            ],
+        }
+    )
+
+    assert len(calls) == 1
+    messages = calls[0]["entry"][0]["changes"][0]["value"]["messages"]
+    assert messages[0]["type"] == "audio"
+    assert messages[0]["audio"]["duration"] == 3
     get_settings.cache_clear()
 
 
@@ -364,6 +428,68 @@ async def test_catch_up_recent_messages_ingests_partner_history(fake_pool, monke
     }
     assert inbound_ids == {"m1", "m2"}
     assert [call[3] for call in coalescer.calls] == ["catch_up", "catch_up"]
+    get_settings.cache_clear()
+
+
+async def test_catch_up_recent_messages_strips_attachment_suffix_for_after(
+    fake_pool, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setenv("DISCORD_PARTNER_USER_ID_A", "456")
+    monkeypatch.setenv("DISCORD_PARTNER_NAME_A", "Partner A")
+    monkeypatch.setenv("DISCORD_PARTNER_USER_ID_B", "")
+    monkeypatch.setenv("MESSAGING_PROVIDER", "discord")
+    get_settings.cache_clear()
+    await seed_partner_users(fake_pool)
+    user_id = next(iter(fake_pool.users))
+    message_id = uuid4()
+    fake_pool.messages[message_id] = {
+        "id": message_id,
+        "direction": "inbound",
+        "sender_id": user_id,
+        "recipient_id": None,
+        "content": None,
+        "processing_state": "processed",
+        "sent_at": datetime.now(UTC),
+        "charge": None,
+        "whatsapp_message_id": "1501272897379893248:1501272897061388338",
+        "media_type": "image",
+        "media_url": "mediator-media/image/x",
+        "media_duration_seconds": None,
+        "media_analysis": None,
+        "edit_history": None,
+        "edited_at": None,
+        "deleted_at": None,
+    }
+    calls = []
+
+    async def get_dm_channel_id(user_id):
+        return "channel-1"
+
+    class Response:
+        def raise_for_status(self):
+            return None
+
+        def json(self):
+            return []
+
+    class Client:
+        async def get(self, path, headers=None, params=None):
+            calls.append((path, params))
+            return Response()
+
+    async def get_client():
+        return Client()
+
+    monkeypatch.setattr("app.services.discord.get_dm_channel_id", get_dm_channel_id)
+    monkeypatch.setattr("app.services.discord._get_client", get_client)
+
+    assert await catch_up_recent_messages(fake_pool, None) == 0
+    assert calls == [
+        (
+            "/channels/channel-1/messages",
+            {"limit": 50, "after": "1501272897379893248"},
+        )
+    ]
     get_settings.cache_clear()
 
 

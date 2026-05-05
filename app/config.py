@@ -53,6 +53,7 @@ class Settings(BaseSettings):
     oob_checker_model: str = "claude-sonnet-4-6"  # Delivery/read-tool OOB checker model.
     scoring_model: str = "claude-haiku-4-5-20251001"  # Observation scoring and OOB topic clustering model.
     hot_context_token_budget: int = 6000  # Approximate prompt budget for hot context.
+    bot_id: str = "mediator"  # Bot profile consumed by the shared agentic runner.
     system_prompt_version: str = "v1"  # Version tag stored with each bot turn.
     assistant_name: str = "the assistant"  # Rendered into the main system prompt.
     scheduler_enabled: bool = True

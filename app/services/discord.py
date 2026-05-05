@@ -205,12 +205,43 @@ def _has_image_attachment(message: dict[str, Any]) -> bool:
     return any(_is_image_attachment(att) for att in (message.get("attachments") or []))
 
 
+def _has_supported_attachment(message: dict[str, Any]) -> bool:
+    return any(
+        _is_image_attachment(att) or _is_audio_attachment(att)
+        for att in (message.get("attachments") or [])
+    )
+
+
 def _is_image_attachment(attachment: dict[str, Any]) -> bool:
     content_type = (attachment.get("content_type") or "").lower()
     if content_type.startswith("image/"):
         return True
     filename = (attachment.get("filename") or "").lower()
     return filename.endswith((".png", ".jpg", ".jpeg", ".gif", ".webp"))
+
+
+def _is_audio_attachment(attachment: dict[str, Any]) -> bool:
+    content_type = (attachment.get("content_type") or "").lower()
+    if content_type.startswith("audio/"):
+        return True
+    filename = (attachment.get("filename") or "").lower()
+    return filename.endswith((".ogg", ".oga", ".opus", ".mp3", ".m4a", ".wav", ".webm"))
+
+
+def _duration_seconds(attachment: dict[str, Any]) -> int | None:
+    duration = attachment.get("duration_secs")
+    if duration is None:
+        return None
+    try:
+        return max(0, round(float(duration)))
+    except (TypeError, ValueError):
+        return None
+
+
+def _discord_base_message_id(message_id: str | None) -> str | None:
+    if not message_id:
+        return None
+    return str(message_id).split(":", 1)[0]
 
 
 def message_to_meta_payload(message: dict[str, Any]) -> dict[str, Any]:
@@ -237,21 +268,27 @@ def message_to_meta_payload(message: dict[str, Any]) -> dict[str, Any]:
         )
 
     for attachment in message.get("attachments") or []:
-        if not _is_image_attachment(attachment):
+        if not (_is_image_attachment(attachment) or _is_audio_attachment(attachment)):
             continue
         url = attachment.get("url") or attachment.get("proxy_url")
         if not url:
             continue
         attachment_id = str(attachment.get("id") or url)
-        messages.append(
-            {
-                "from": user_id,
-                "id": f"{message_id}:{attachment_id}",
-                "timestamp": timestamp_str,
-                "type": "image",
-                "image": {"id": url},
-            }
-        )
+        item = {
+            "from": user_id,
+            "id": f"{message_id}:{attachment_id}",
+            "timestamp": timestamp_str,
+        }
+        if _is_audio_attachment(attachment):
+            item["type"] = "audio"
+            item["audio"] = {"id": url}
+            duration = _duration_seconds(attachment)
+            if duration is not None:
+                item["audio"]["duration"] = duration
+        else:
+            item["type"] = "image"
+            item["image"] = {"id": url}
+        messages.append(item)
 
     if not messages:
         messages.append(
@@ -379,7 +416,7 @@ class DiscordGatewayBot:
         if not is_allowed_discord_user(author_id):
             logger.warning("dropping non-whitelisted discord user %s", author_id)
             return
-        if not message.get("content") and not _has_image_attachment(message):
+        if not message.get("content") and not _has_supported_attachment(message):
             return
         await process_inbound(self.pool, message_to_meta_payload(message), self.coalescer)
 
@@ -469,14 +506,18 @@ async def catch_up_recent_messages(pool: Any, coalescer: Any | None, *, limit: i
             """,
             user_id,
         )
-        response = await rest.fetch_channel_messages(channel_id, limit=limit, after=last_seen_id)
+        response = await rest.fetch_channel_messages(
+            channel_id,
+            limit=limit,
+            after=_discord_base_message_id(last_seen_id),
+        )
         response.raise_for_status()
         for message in reversed(response.json()):
             if str(message.get("author", {}).get("id", "")) != user_id:
                 continue
             if message.get("author", {}).get("bot"):
                 continue
-            if not message.get("content") and not _has_image_attachment(message):
+            if not message.get("content") and not _has_supported_attachment(message):
                 continue
             await process_inbound(
                 pool,

@@ -118,6 +118,7 @@ async def consult_perspective(
         before_paced_send=None,
         sent_message_parts=[],
         hot_context_rendered=ctx.hot_context_rendered,
+        trigger_metadata=dict(ctx.trigger_metadata),
     )
     seed_payload: dict[str, Any] = {
         "focus": args.focus,

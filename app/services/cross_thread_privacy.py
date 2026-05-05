@@ -129,8 +129,20 @@ def bridge_candidate_visible_to_target(
     *,
     target_user_id: UUID | None = None,
 ) -> bool:
-    if not is_bridge_status_target_visible(candidate.get("status")):
+    status = candidate.get("status")
+    if isinstance(status, Enum):
+        status = status.value
+    status = str(status)
+    if not is_bridge_status_target_visible(status):
         return False
+    if status == "ready":
+        partner_path = candidate.get("partner_path", "message_partner")
+        if isinstance(partner_path, Enum):
+            partner_path = partner_path.value
+        # Gate ready rows by path so source-only bookkeeping rows such as
+        # hold_for_context or coach_in_person cannot leak through target lists.
+        if partner_path != "message_partner":
+            return False
     if target_user_id is None:
         return True
     return candidate.get("target_user_id") == target_user_id

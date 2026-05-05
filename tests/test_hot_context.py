@@ -93,6 +93,7 @@ class HotContextPool:
                 "created_at": self.now,
             },
         ]
+        self.distillations = []
         self.messages = [
             {
                 "id": uuid4(),
@@ -153,6 +154,8 @@ class HotContextPool:
             return self.watch_items
         if "FROM observations" in compact:
             return [row for row in self.observations if row["significance"] is not None and row["significance"] >= 3]
+        if "FROM distillations" in compact:
+            return self.distillations
         if "FROM bridge_candidates" in compact:
             target_user_id, source_user_id = args
             return [
@@ -160,8 +163,9 @@ class HotContextPool:
                 for row in self.bridge_candidates
                 if row["target_user_id"] == target_user_id
                 and row["source_user_id"] == source_user_id
-                and row["status"] in {"ready", "sent", "addressed"}
-            ][:3]
+                and row["status"] == "ready"
+                and row.get("partner_path", "message_partner") == "message_partner"
+            ][:5]
         if "FROM messages" in compact and "WHERE id = ANY" in compact:
             ids = set(args[0])
             return [
@@ -252,6 +256,157 @@ async def test_build_hot_context_shows_partner_raw_when_partner_opted_in(hot_con
     assert not all(item.get("raw_content_hidden") for item in partner_items)
 
 
+async def test_build_hot_context_distillation_privacy_gates_partner_sources(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    pool.distillations = [
+        {
+            "id": uuid4(),
+            "content": "Partner-only private synthesis",
+            "shareable_summary": None,
+            "confidence": "medium",
+            "status": "active",
+            "sensitivity": "medium",
+            "visibility": "private",
+            "source_user_ids": [partner.id],
+            "related_memory_ids": [],
+            "related_observation_ids": [uuid4()],
+            "related_theme_ids": [],
+            "supporting_message_ids": [],
+            "revision_count": 0,
+            "updated_at": pool.now,
+            "created_at": pool.now,
+        },
+        {
+            "id": uuid4(),
+            "content": "Partner source full synthesis",
+            "shareable_summary": "Safe reviewed summary",
+            "confidence": "medium",
+            "status": "active",
+            "sensitivity": "medium",
+            "visibility": "dyad_shareable",
+            "source_user_ids": [partner.id],
+            "related_memory_ids": [],
+            "related_observation_ids": [uuid4()],
+            "related_theme_ids": [],
+            "supporting_message_ids": [],
+            "revision_count": 0,
+            "updated_at": pool.now,
+            "created_at": pool.now,
+        },
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert [item["display"] for item in hc.distillations] == ["shareable_summary"]
+    assert "Safe reviewed summary" in text
+    assert "Partner-only private synthesis" not in text
+    assert "Partner source full synthesis" not in text
+
+
+async def test_build_hot_context_distillation_full_content_when_sources_visible(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    opted_in_partner = User(
+        partner.id,
+        partner.name,
+        partner.phone,
+        partner.timezone,
+        cross_thread_sharing_default="opt_in",
+    )
+    pool.partner = opted_in_partner
+    pool.distillations = [
+        {
+            "id": uuid4(),
+            "content": "Partner source full synthesis",
+            "shareable_summary": "Summary should not replace full content",
+            "confidence": "medium",
+            "status": "active",
+            "sensitivity": "medium",
+            "visibility": "dyad_shareable",
+            "source_user_ids": [partner.id],
+            "related_memory_ids": [],
+            "related_observation_ids": [uuid4()],
+            "related_theme_ids": [],
+            "supporting_message_ids": [],
+            "revision_count": 0,
+            "updated_at": pool.now,
+            "created_at": pool.now,
+        }
+    ]
+
+    hc = await build_hot_context(pool, user, opted_in_partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert hc.distillations[0]["display"] == "full_content"
+    assert "Partner source full synthesis" in text
+
+
+def _bridge_candidate_row(pool, user, partner, *, status="ready", partner_path="message_partner", summary="Bridge summary"):
+    return {
+        "id": uuid4(),
+        "source_user_id": partner.id,
+        "target_user_id": user.id,
+        "kind": "repair",
+        "status": status,
+        "sensitivity": "low",
+        "partner_path": partner_path,
+        "shareable_summary": summary,
+        "created_at": pool.now,
+    }
+
+
+async def test_build_hot_context_surfaces_multiple_ready_message_partner_bridges(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    pool.bridge_candidates = [
+        _bridge_candidate_row(
+            pool,
+            user,
+            partner,
+            summary=f"Ready partner bridge {index}",
+        )
+        for index in range(6)
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert len(hc.bridge_candidates) == 5
+    assert all(item["status"] == "ready" for item in hc.bridge_candidates)
+    assert all(item["partner_path"] == "message_partner" for item in hc.bridge_candidates)
+    assert "Ready partner bridge 0" in text
+    assert "partner_path=message_partner" in text
+
+
+async def test_build_hot_context_excludes_sent_addressed_and_non_message_partner_bridges(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    visible = _bridge_candidate_row(pool, user, partner, summary="Visible ready message partner")
+    sent = _bridge_candidate_row(pool, user, partner, status="sent", summary="Sent bridge should be absent")
+    addressed = _bridge_candidate_row(
+        pool,
+        user,
+        partner,
+        status="addressed",
+        summary="Addressed bridge should be absent",
+    )
+    hold = _bridge_candidate_row(
+        pool,
+        user,
+        partner,
+        partner_path="hold_for_context",
+        summary="Held bridge should be absent",
+    )
+    pool.bridge_candidates = [visible, sent, addressed, hold]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert [item["id"] for item in hc.bridge_candidates] == [visible["id"]]
+    assert "Visible ready message partner" in text
+    assert "Sent bridge should be absent" not in text
+    assert "Addressed bridge should be absent" not in text
+    assert "Held bridge should be absent" not in text
+
+
 async def test_render_hot_context_respects_default_token_budget(hot_context_seed):
     pool, user, partner = hot_context_seed
     hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
@@ -323,6 +478,123 @@ def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
     assert "[truncated, 6 more]" in text
     assert text.index("## High-significance observations") < text.index("## Recent messages")
     assert text.count("[truncated, 6 more]") == 3
+    get_settings.cache_clear()
+
+
+def test_render_hot_context_labels_voice_transcripts(monkeypatch):
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "2000")
+    get_settings.cache_clear()
+    user_id = uuid4()
+    partner_id = uuid4()
+    message_id = uuid4()
+    hc = HotContext(
+        current_user={"id": user_id, "name": "Maya", "phone": "1", "timezone": "UTC", "style_notes": "", "onboarding_state": "welcomed"},
+        partner_user={"id": partner_id, "name": "Ben", "phone": "2", "timezone": "UTC", "style_notes": "", "onboarding_state": "pending"},
+        conversation_load={"period": "today", "timezone": "UTC", "total_count": 1, "inbound_count": 1, "outbound_count": 0},
+        active_oob=[],
+        memories=[],
+        active_themes=[],
+        open_watch_items=[],
+        observations=[],
+        recent_messages=[
+            {
+                "id": message_id,
+                "direction": "inbound",
+                "sender_id": user_id,
+                "recipient_id": None,
+                "content": "Can you hear this? Or can you understand it?",
+                "media_type": "voice",
+                "media_duration_seconds": 7,
+                "media_analysis": None,
+                "sent_at": datetime.now(UTC).isoformat(),
+                "charge": "routine",
+            }
+        ],
+        time_since_last_message="5s",
+        trigger_metadata={
+            "triggering_message_ids": [message_id],
+            "messages": [
+                {
+                    "id": message_id,
+                    "charge": "routine",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                    "content": "Can you hear this? Or can you understand it?",
+                    "media_type": "voice",
+                    "media_duration_seconds": 7,
+                    "media_analysis": None,
+                }
+            ],
+        },
+    )
+
+    text = render_hot_context(hc)
+
+    assert "inbound charge=routine" in text
+    assert "[voice transcript, 7s]: Can you hear this? Or can you understand it?" in text
+    assert "trigger_message" in text
+    assert "[voice transcript, 7s]: Can you hear this? Or can you understand it?" in text
+    get_settings.cache_clear()
+
+
+def test_render_hot_context_does_not_clip_trigger_voice_transcript(monkeypatch):
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "2000")
+    get_settings.cache_clear()
+    user_id = uuid4()
+    partner_id = uuid4()
+    message_id = uuid4()
+    transcript = (
+        "So one thing I was thinking about, like we discussed before, kind of the plan around therapy. "
+        + "middle " * 80
+        + "The weekly thing helps us bring that into the real world, and the monthly therapist handles the harder stuff."
+    )
+    hc = HotContext(
+        current_user={"id": user_id, "name": "Maya", "phone": "1", "timezone": "UTC", "style_notes": "", "onboarding_state": "welcomed"},
+        partner_user={"id": partner_id, "name": "Ben", "phone": "2", "timezone": "UTC", "style_notes": "", "onboarding_state": "pending"},
+        conversation_load={"period": "today", "timezone": "UTC", "total_count": 1, "inbound_count": 1, "outbound_count": 0},
+        active_oob=[],
+        memories=[],
+        active_themes=[],
+        open_watch_items=[],
+        observations=[],
+        recent_messages=[
+            {
+                "id": message_id,
+                "direction": "inbound",
+                "sender_id": user_id,
+                "recipient_id": None,
+                "content": transcript,
+                "media_type": "voice",
+                "media_duration_seconds": 119,
+                "media_analysis": None,
+                "sent_at": datetime.now(UTC).isoformat(),
+                "charge": "routine",
+            }
+        ],
+        time_since_last_message="5s",
+        trigger_metadata={
+            "triggering_message_ids": [message_id],
+            "messages": [
+                {
+                    "id": message_id,
+                    "charge": "routine",
+                    "sent_at": datetime.now(UTC).isoformat(),
+                    "content": transcript,
+                    "media_type": "voice",
+                    "media_duration_seconds": 119,
+                    "media_analysis": None,
+                }
+            ],
+        },
+    )
+
+    text = render_hot_context(hc)
+
+    recent_line, trigger_line = [
+        line for line in text.splitlines() if "[voice transcript, 119s]" in line
+    ]
+    assert "The weekly thing helps us bring that into the real world" in recent_line
+    assert "The weekly thing helps us bring that into the real world" in trigger_line
+    assert trigger_line.endswith("harder stuff.")
     get_settings.cache_clear()
 
 

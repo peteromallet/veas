@@ -54,6 +54,17 @@ async def test_seed_scenario_creates_synthetic_state_and_direct_inbound(fake_poo
                     "related_themes": ["repair"],
                 }
             ],
+            "distillations": [
+                {
+                    "key": "repair_explanation",
+                    "content": "One possible explanation is that repair feels rushed.",
+                    "source_users": ["maya"],
+                    "related_observations": ["quiet"],
+                    "related_themes": ["repair"],
+                    "shareable_summary": "Repair may feel rushed.",
+                    "visibility": "dyad_shareable",
+                }
+            ],
             "watch_items": [{"key": "followup", "owner": "maya", "content": "Ask whether the talk happened."}],
             "scheduled_jobs": [{"key": "checkin", "user": "maya", "job_type": "checkin", "scheduled_for": {"in_hours": 4}}],
             "oob_entries": [
@@ -80,6 +91,7 @@ async def test_seed_scenario_creates_synthetic_state_and_direct_inbound(fake_poo
     assert all(fake_pool.messages[message_id]["charge"] == "charged" for message_id in seed.inbound_message_ids)
     assert snapshot.tables["themes"][str(seed.refs["repair"])]["title"] == "Repair timing"
     assert snapshot.tables["observations"][str(seed.refs["quiet"])]["significance"] == 4
+    assert snapshot.tables["distillations"][str(seed.refs["repair_explanation"])]["shareable_summary"] == "Repair may feel rushed."
     assert snapshot.tables["out_of_bounds"][str(seed.refs["oob"])]["severity"] == "hard"
     assert snapshot.tables["scheduled_jobs"][str(seed.refs["checkin"])]["job_type"] == "checkin"
 

@@ -9,7 +9,7 @@ import yaml
 
 Charge = Literal["routine", "notable", "charged", "crisis"]
 OobOutcome = Literal["pass", "block", "rewrite"]
-PrimitiveKind = Literal["memory", "theme", "watch_item", "observation", "style_note", "oob_entry"]
+PrimitiveKind = Literal["memory", "theme", "watch_item", "observation", "distillation", "style_note", "oob_entry"]
 
 
 class ScenarioError(ValueError):
@@ -212,7 +212,7 @@ def _parse_primitive_writes(value: Any, path: Path) -> list[PrimitiveWriteExpect
         kind = item.get("kind")
         _expect_choice(
             kind,
-            {"memory", "theme", "watch_item", "observation", "style_note", "oob_entry"},
+            {"memory", "theme", "watch_item", "observation", "distillation", "style_note", "oob_entry"},
             f"{label}.kind",
             path,
         )

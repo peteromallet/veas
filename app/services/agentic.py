@@ -12,16 +12,16 @@ from uuid import UUID
 
 import anthropic
 
+from app.bots.registry import get_bot_spec
 from app.config import get_settings
 from app.models.user import User, claim_onboarding_welcome
 from app.services import discord, hooks, system_state
 from app.services.hot_context import build_hot_context, render_hot_context
 from app.services.messaging import send_outbound, sent_contents_for_turn
-from app.services.prompts import render_system_prompt
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.crypto import encrypt_value
 from app.services.text_safety import clean_user_facing_text
-from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS, call_tool, to_anthropic_tools
+from app.services.tools.registry import call_tool, to_anthropic_tools
 from app.services.turn_context import BeforePacedSend, TurnContext, partner_of
 
 logger = logging.getLogger(__name__)
@@ -624,6 +624,7 @@ async def _run_agentic(
         raise RuntimeError("agentic pool has not been set")
 
     settings = get_settings()
+    bot_spec = get_bot_spec(settings.bot_id)
     selected_prompt_version = prompt_version or settings.system_prompt_version
     send_typing_indicator = not bool(trigger_metadata and trigger_metadata.get("pacing"))
     turn_id: UUID | None = None
@@ -633,14 +634,11 @@ async def _run_agentic(
         partner = await partner_of(active_pool, user)
         hot_context = await build_hot_context(active_pool, user, partner, triggering_message_ids, trigger_metadata)
         rendered_hot_context = render_hot_context(hot_context)
-        system_prompt = render_system_prompt(
-            settings.assistant_name,
-            user.name,
-            partner.name,
+        system_prompt = bot_spec.render_system_prompt(
+            assistant_name=settings.assistant_name,
+            user=user,
+            partner=partner,
             prompt_version=selected_prompt_version,
-            onboarding_state=user.onboarding_state,
-            current_user_sharing_default=user.cross_thread_sharing_default,
-            partner_sharing_default=partner.cross_thread_sharing_default,
         )
         prompt_snapshot = f"{system_prompt}\n\n{rendered_hot_context}"
         turn_id, started_at = await _open_turn(
@@ -672,39 +670,14 @@ async def _run_agentic(
             before_paced_send=before_paced_send,
             sent_message_parts=[],
             hot_context_rendered=rendered_hot_context,
+            trigger_metadata=hot_context.trigger_metadata,
         )
-        pacing_context = hot_context.trigger_metadata.get("pacing")
-        pacing_seed = (
-            f" pacing={json.dumps(pacing_context, default=str)}."
-            if pacing_context is not None
-            else ""
+        phase_a_seed = bot_spec.build_phase_a_seed(
+            trigger_metadata=hot_context.trigger_metadata,
+            triggering_message_ids=triggering_message_ids,
+            charge=charge,
         )
-        phase_a_seed = [
-            {
-                "role": "user",
-                "content": (
-                    f"Trigger: kind={hot_context.trigger_metadata.get('kind', 'inbound')} "
-                    f"ids={triggering_message_ids} charge={charge or 'routine'} "
-                    f"context={json.dumps(hot_context.trigger_metadata.get('context', {}), default=str)}."
-                    f"{pacing_seed} "
-                    "Phase A: read what you need, then produce the user-facing response. "
-                    "On Discord, prefer `send_message_part` during Phase A whenever the response should "
-                    "feel like separate chat bubbles: explicit multi-message requests, short acknowledgement "
-                    "then deeper thought, or otherwise stacked lines. Send each intended bubble with its own "
-                    "`send_message_part` call, see whether it actually sent, and continue from the returned "
-                    "`sent_so_far`. Do not stream every thought or send process updates. If "
-                    "`send_message_part` returns `interrupted`, stop sending in this turn. "
-                    "If a text reply would be unnecessary and a small acknowledgement is enough, "
-                    "you may use `search_emojis` and then produce exactly one `[react: emoji]` directive instead. "
-                    "If a reaction would naturally complement a short reply, put one `[react: emoji]` "
-                    "directive on its own line before or after the reply; the directive will not be shown to the user. "
-                    "If the user asks you to emoji react, use a `[react: emoji]` directive; do not claim "
-                    "Discord reactions are unavailable. "
-                    "Do not include scratch notes, analysis of the message, tool/read decisions, or separators."
-                ),
-            }
-        ]
-        read_phase_tools = set(READ_PHASE_TOOLS)
+        read_phase_tools = set(bot_spec.read_phase_tools)
         if not ctx.incremental_sending_enabled:
             read_phase_tools.discard("send_message_part")
         assistant_text, phase_a_messages, phase_a_tool_count = await run_phase(
@@ -803,14 +776,9 @@ async def _run_agentic(
             )
         else:
             sent_summary = f"You sent: {f'[reaction {reaction_emoji}]' if reaction_emoji else (assistant_text or '[silence]')}"
-        phase_b_seed.append(
-            {
-                "role": "user",
-                "content": f"{sent_summary}. Now record any state changes (memories, observations, theme updates, watch items) and optionally schedule one follow-up check-in. Do not produce user-facing text.",
-            }
-        )
+        phase_b_seed.append(bot_spec.build_phase_b_seed_message(sent_summary=sent_summary))
         _, phase_b_messages, phase_b_tool_count = await run_phase(
-            None, ctx, system_prompt, rendered_hot_context, WRITE_PHASE_TOOLS, phase_b_seed
+            None, ctx, system_prompt, rendered_hot_context, set(bot_spec.write_phase_tools), phase_b_seed
         )
         reasoning = "\n".join(
             part

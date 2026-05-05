@@ -31,6 +31,7 @@ class HotContext:
     recent_messages: list[dict[str, Any]]
     time_since_last_message: str | None
     trigger_metadata: dict[str, Any]
+    distillations: list[dict[str, Any]] = field(default_factory=list)
     bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
 
 
@@ -69,7 +70,7 @@ def _clip(text: Any, limit: int = 240) -> str:
     return value if len(value) <= limit else value[: limit - 3] + "..."
 
 
-def _history_content(item: dict[str, Any], clip_limit: int) -> str:
+def _history_content(item: dict[str, Any]) -> str:
     if item.get("raw_content_hidden"):
         return "[raw partner content hidden by sharing_default]"
     content = item.get("content") or media_analysis_text(item)
@@ -77,7 +78,24 @@ def _history_content(item: dict[str, Any], clip_limit: int) -> str:
         raw_content = str(content or "")
         cleaned = clean_user_facing_text(raw_content)
         content = cleaned if cleaned or looks_like_internal_process_text(raw_content) else content
-    return _clip(content, clip_limit)
+    return "" if content is None else str(content)
+
+
+def _media_label(item: dict[str, Any]) -> str:
+    media_type = item.get("media_type")
+    if not media_type:
+        return ""
+    duration = item.get("media_duration_seconds")
+    duration_text = f", {duration}s" if duration is not None else ""
+    if media_type == "voice":
+        return f" [voice transcript{duration_text}]"
+    if media_type == "image":
+        return " [image analysis]"
+    return f" [{media_type}{duration_text}]"
+
+
+def _message_content(item: dict[str, Any], clip_limit: int) -> str:
+    return f"{_media_label(item)}: {_history_content(item)}"
 
 
 def _clip_id(value: Any, clip_limit: int) -> str:
@@ -255,8 +273,8 @@ async def build_hot_context(
     ]
     message_rows = await pool.fetch(
         """
-        SELECT id, direction, sender_id, recipient_id, content, media_type, media_analysis,
-               sent_at, COALESCE(charge, 'routine') AS charge
+        SELECT id, direction, sender_id, recipient_id, content, media_type, media_duration_seconds,
+               media_analysis, sent_at, COALESCE(charge, 'routine') AS charge
         FROM messages
         WHERE deleted_at IS NULL
           AND (sender_id = ANY($1::uuid[]) OR recipient_id = ANY($1::uuid[]))
@@ -269,6 +287,59 @@ async def build_hot_context(
         user.id: normalize_sharing_default(current_user.get("cross_thread_sharing_default")),
         partner.id: normalize_sharing_default(partner_user.get("cross_thread_sharing_default")),
     }
+    distillation_rows = await pool.fetch(
+        """
+        SELECT id, content, confidence, status, sensitivity, visibility, shareable_summary,
+               COALESCE(source_user_ids, '{}'::uuid[]) AS source_user_ids,
+               COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
+               COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
+               COALESCE(related_theme_ids, '{}'::uuid[]) AS related_theme_ids,
+               COALESCE(supporting_message_ids, '{}'::uuid[]) AS supporting_message_ids,
+               revision_note, revision_count, updated_at, created_at
+        FROM distillations
+        WHERE status = 'active'
+          AND source_user_ids && $1::uuid[]
+        ORDER BY updated_at DESC, created_at DESC
+        LIMIT 12
+        """,
+        [user.id, partner.id],
+    )
+    distillations: list[dict[str, Any]] = []
+    for row in distillation_rows:
+        source_user_ids = _clean_list(row["source_user_ids"])
+        full_visible = bool(source_user_ids) and all(
+            raw_message_visibility(
+                viewer_user_id=user.id,
+                thread_owner_user_id=source_user_id,
+                thread_owner_sharing_default=sharing_defaults.get(source_user_id),
+            ).visible
+            for source_user_id in source_user_ids
+        )
+        if full_visible:
+            content = row["content"]
+            display = "full_content"
+        elif row["visibility"] == "dyad_shareable" and row["shareable_summary"]:
+            content = row["shareable_summary"]
+            display = "shareable_summary"
+        else:
+            continue
+        distillations.append(
+            {
+                "id": row["id"],
+                "content": content,
+                "display": display,
+                "source_user_ids": source_user_ids,
+                "confidence": row["confidence"],
+                "sensitivity": row["sensitivity"],
+                "visibility": row["visibility"],
+                "revision_count": row["revision_count"],
+                "related_memory_ids": _clean_list(row["related_memory_ids"]),
+                "related_observation_ids": _clean_list(row["related_observation_ids"]),
+                "related_theme_ids": _clean_list(row["related_theme_ids"]),
+                "supporting_message_ids": _clean_list(row["supporting_message_ids"]),
+                "updated_at": _iso(row["updated_at"]),
+            }
+        )
     recent_messages = [
         {
             "id": row["id"],
@@ -281,6 +352,7 @@ async def build_hot_context(
                 thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
             ).visible else None,
             "media_type": row["media_type"] if "media_type" in row else None,
+            "media_duration_seconds": row["media_duration_seconds"] if "media_duration_seconds" in row else None,
             "media_analysis": row["media_analysis"] if "media_analysis" in row else None,
             "raw_content_hidden": not raw_message_visibility(
                 viewer_user_id=user.id,
@@ -295,14 +367,15 @@ async def build_hot_context(
     ]
     bridge_candidate_rows = await pool.fetch(
         """
-        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                shareable_summary, created_at
         FROM bridge_candidates
         WHERE target_user_id=$1
           AND source_user_id=$2
-          AND status IN ('ready', 'sent', 'addressed')
+          AND status='ready'
+          AND partner_path='message_partner'
         ORDER BY created_at DESC
-        LIMIT 3
+        LIMIT 5
         """,
         user.id,
         partner.id,
@@ -315,6 +388,7 @@ async def build_hot_context(
             "kind": row["kind"],
             "status": row["status"],
             "sensitivity": row["sensitivity"],
+            "partner_path": row["partner_path"],
             "shareable_summary": row["shareable_summary"],
         }
         for row in bridge_candidate_rows
@@ -324,7 +398,7 @@ async def build_hot_context(
     trigger_rows = await pool.fetch(
         """
         SELECT id, direction, sender_id, recipient_id, COALESCE(charge, 'routine') AS charge,
-               sent_at, content, media_type, media_analysis
+               sent_at, content, media_type, media_duration_seconds, media_analysis
         FROM messages
         WHERE id = ANY($1::uuid[])
         ORDER BY sent_at ASC
@@ -340,6 +414,7 @@ async def build_hot_context(
         active_themes=active_themes,
         open_watch_items=open_watch_items,
         observations=observations,
+        distillations=distillations,
         bridge_candidates=bridge_candidates,
         recent_messages=recent_messages,
         time_since_last_message=_duration_since(latest_sent_at),
@@ -360,6 +435,7 @@ async def build_hot_context(
                     ).visible
                     else None,
                     "media_type": row["media_type"] if "media_type" in row else None,
+                    "media_duration_seconds": row["media_duration_seconds"] if "media_duration_seconds" in row else None,
                     "media_analysis": row["media_analysis"] if "media_analysis" in row else None,
                 }
                 for row in trigger_rows
@@ -457,18 +533,29 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     )
     if truncations.get("observations"):
         lines.append(f"- [truncated, {truncations['observations']} more]")
+    lines += ["", "## Distillations"]
+    if hc.distillations:
+        lines.extend(
+            f"- id={_clip_id(item['id'], clip_limit)} display={item['display']} confidence={item['confidence']} sensitivity={item['sensitivity']} visibility={item['visibility']} sources={_clip(', '.join(str(source) for source in item['source_user_ids']), clip_limit)}: {_clip(item['content'], clip_limit)}"
+            for item in hc.distillations
+        )
+        lines.append("- use get_distillations before adding or revising synthesized explanations.")
+    else:
+        lines.append("- none")
+    if truncations.get("distillations"):
+        lines.append(f"- [truncated, {truncations['distillations']} more]")
     lines += ["", "## Bridge candidates"]
     if hc.bridge_candidates:
         lines.extend(
-            f"- id={_clip_id(item['id'], clip_limit)} kind={item['kind']} status={item['status']} sensitivity={item['sensitivity']} source={_clip_id(item['source_user_id'], clip_limit)}: {_clip(item['shareable_summary'], clip_limit)}"
+            f"- id={_clip_id(item['id'], clip_limit)} kind={item['kind']} status={item['status']} sensitivity={item['sensitivity']} partner_path={item['partner_path']} source={_clip_id(item['source_user_id'], clip_limit)}: {_clip(item['shareable_summary'], clip_limit)}"
             for item in hc.bridge_candidates
         )
-        lines.append("- use list_bridge_candidates for older or filtered bridge candidates.")
+        lines.append("- use list_bridge_candidates for sent, addressed, or non-message_partner bridge candidates.")
     else:
         lines.append("- none")
     lines += ["", "## Recent messages"]
     lines.extend(
-        f"- {item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}: {_history_content(item, clip_limit)}"
+        f"- {item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}"
         for item in hc.recent_messages
     )
     if truncations.get("recent_messages"):
@@ -483,7 +570,7 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     if hc.trigger_metadata.get("context") is not None:
         lines.append(f"- context: {_clip(hc.trigger_metadata['context'], clip_limit)}")
     lines.extend(
-        f"- trigger_message id={msg['id']} charge={msg['charge']} sent_at={msg['sent_at']}"
+        f"- trigger_message id={msg['id']} charge={msg['charge']} sent_at={msg['sent_at']}{_message_content(msg, clip_limit)}"
         for msg in hc.trigger_metadata["messages"]
     )
     return "\n".join(lines).strip()
@@ -504,15 +591,16 @@ def render_hot_context(hc: HotContext) -> str:
         active_themes=hc.active_themes,
         open_watch_items=hc.open_watch_items,
         observations=list(hc.observations),
+        distillations=list(hc.distillations),
         bridge_candidates=list(hc.bridge_candidates),
         recent_messages=list(hc.recent_messages),
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,
     )
-    truncations = {"observations": 0, "memories": 0, "recent_messages": 0, "conversation_load": 0}
+    truncations = {"distillations": 0, "observations": 0, "memories": 0, "recent_messages": 0, "conversation_load": 0}
     clip_limit = 240
     text = _render_with_counts(working, truncations, clip_limit)
-    for name in ("observations", "memories", "recent_messages"):
+    for name in ("distillations", "observations", "memories", "recent_messages"):
         items = getattr(working, name)
         while _estimated_tokens(text) > budget and items:
             items.pop()
