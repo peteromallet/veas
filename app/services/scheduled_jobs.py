@@ -18,7 +18,7 @@ logger = logging.getLogger(__name__)
 
 JobHandler = Callable[[dict[str, Any]], Awaitable[None]]
 
-USER_FACING_JOB_TYPES = {"weekly_summary", "checkin", "watch_item_due", "oob_review"}
+USER_FACING_JOB_TYPES = {"weekly_summary", "checkin", "watch_item_due", "oob_review", "scheduled_task"}
 
 
 def _utc_now() -> datetime:

@@ -12,6 +12,7 @@ USER_FACING_JOB_TYPES = (
     "watch_item_due",
     "oob_review",
     "deferred_turn",
+    "scheduled_task",
 )
 
 

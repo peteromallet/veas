@@ -17,13 +17,16 @@ from app.services.cross_thread_privacy import (
 from app.services.turn_context import TurnContext
 from app.services.scheduled_job_handlers import schedule_checkin_job
 from app.services.tools import read_tools, write_tools
+from app.services.tools.common import current_scheduled_task
 from app.services.tools.registry import call_tool
 from tool_schemas import (
+    AddDistillationInput,
     AddMemoryInput,
     AddOOBInput,
     AddWatchItemInput,
     AddressWatchItemInput,
     CancelScheduledCheckinInput,
+    CancelScheduledTaskInput,
     CheckOOBInput,
     Confidence,
     CreateBridgeCandidateInput,
@@ -32,25 +35,31 @@ from tool_schemas import (
     EscalateToPartnerInput,
     ExplainMediaItemInput,
     FeedbackSentiment,
+    GetDistillationsInput,
     GetOOBInput,
     ListBridgeCandidatesInput,
+    ListScheduledTasksInput,
     LiftOOBInput,
     LogFeedbackInput,
     LogObservationInput,
     OOBSeverity,
     RecentActivityInput,
     ScheduleCheckinInput,
+    ScheduleTaskInput,
     SearchMessagesInput,
     SearchEmojisInput,
     SendBridgeCandidateInput,
+    ReviseDistillationInput,
     SupersedeMemoryInput,
     ThemeHealth,
     ThemeSentiment,
     UpdateBridgeCandidateInput,
     UpdateCrossThreadSharingDefaultInput,
+    UpdateDistillationInput,
     UpdateMemoryInput,
     UpdateOOBInput,
     UpdateObservationInput,
+    UpdateScheduledTaskInput,
     UpdateThemeInput,
     UpdateUserStyleNotesInput,
     UpdateWatchItemInput,
@@ -166,6 +175,232 @@ def _seed_theme(pool):
     return theme_id
 
 
+def test_current_scheduled_task_helper_is_scoped_to_scheduled_task_turns(tool_ctx):
+    assert current_scheduled_task(tool_ctx) is None
+
+    job_id = uuid4()
+    task_id = uuid4()
+    recurrence = {"type": "daily", "interval": 1}
+    scheduled_ctx = TurnContext(
+        tool_ctx.turn_id,
+        tool_ctx.pool,
+        tool_ctx.user,
+        tool_ctx.partner,
+        [],
+        phase="write",
+        trigger_metadata={
+            "kind": "scheduled_task",
+            "context": {
+                "job_id": str(job_id),
+                "task_id": str(task_id),
+                "brief": "Send a short future brief",
+                "recurrence": recurrence,
+            },
+        },
+    )
+
+    assert current_scheduled_task(scheduled_ctx) == {
+        "job_id": str(job_id),
+        "task_id": str(task_id),
+        "brief": "Send a short future brief",
+        "recurrence": recurrence,
+    }
+    inbound_ctx = TurnContext(
+        tool_ctx.turn_id,
+        tool_ctx.pool,
+        tool_ctx.user,
+        tool_ctx.partner,
+        [uuid4()],
+        phase="write",
+        trigger_metadata={
+            "kind": "inbound",
+            "context": {"job_id": str(job_id), "task_id": str(task_id), "brief": "ignore"},
+        },
+    )
+    assert current_scheduled_task(inbound_ctx) is None
+
+
+async def test_scheduled_task_current_task_requires_scheduled_task_turn(tool_ctx):
+    update_result = await call_tool(
+        "update_scheduled_task",
+        {"current_task": True, "brief": "Update the current task."},
+        tool_ctx,
+    )
+    cancel_result = await call_tool(
+        "cancel_scheduled_task",
+        {"current_task": True, "reason": "No longer needed."},
+        tool_ctx,
+    )
+
+    assert update_result["is_error"] is True
+    assert "current_task=true is only valid during a scheduled_task turn" in update_result["error"]
+    assert cancel_result["is_error"] is True
+    assert "current_task=true is only valid during a scheduled_task turn" in cancel_result["error"]
+
+
+async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx):
+    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    created = await write_tools.schedule_task(
+        tool_ctx,
+        ScheduleTaskInput(
+            brief="Prepare a morning repair brief.",
+            when=scheduled_for,
+            recurrence={"type": "daily", "interval": 1},
+        ),
+    )
+
+    job = tool_ctx.pool.scheduled_jobs[created.job_id]
+    assert job["user_id"] == tool_ctx.user.id
+    assert job["job_type"] == "scheduled_task"
+    assert job["status"] == "pending"
+    assert job["context"]["task_id"] == str(created.task_id)
+    assert job["context"]["brief"] == "Prepare a morning repair brief."
+    assert created.scheduled_for == scheduled_for
+
+    partner_job_id = uuid4()
+    tool_ctx.pool.scheduled_jobs[partner_job_id] = {
+        **job,
+        "id": partner_job_id,
+        "user_id": tool_ctx.partner.id,
+        "context": {**job["context"], "task_id": str(uuid4()), "brief": "Partner-only task."},
+    }
+
+    listed = await write_tools.list_scheduled_tasks(tool_ctx, ListScheduledTasksInput())
+    assert [task.job_id for task in listed.tasks] == [created.job_id]
+    assert listed.tasks[0].task_id == created.task_id
+
+    updated_for = datetime(2026, 5, 6, 10, 45, tzinfo=UTC)
+    updated = await write_tools.update_scheduled_task(
+        tool_ctx,
+        UpdateScheduledTaskInput(
+            task_id=created.task_id,
+            brief="Prepare an updated repair brief.",
+            when=updated_for,
+            recurrence=None,
+        ),
+    )
+    assert updated.action == "updated"
+    assert updated.job_id == created.job_id
+    assert updated.task_id == created.task_id
+    assert updated.recurrence is None
+    assert tool_ctx.pool.scheduled_jobs[created.job_id]["scheduled_for"] == updated_for
+    assert tool_ctx.pool.scheduled_jobs[created.job_id]["context"]["brief"] == "Prepare an updated repair brief."
+    assert tool_ctx.pool.scheduled_jobs[created.job_id]["context"]["recurrence"] is None
+
+    cancelled = await write_tools.cancel_scheduled_task(
+        tool_ctx,
+        CancelScheduledTaskInput(job_id=created.job_id, reason="No longer useful."),
+    )
+    assert cancelled.action == "cancelled"
+    assert cancelled.job_id == created.job_id
+    assert cancelled.task_id == created.task_id
+    assert tool_ctx.pool.scheduled_jobs[created.job_id]["status"] == "cancelled"
+    assert tool_ctx.pool.scheduled_jobs[partner_job_id]["status"] == "pending"
+    assert [row["tool_name"] for row in tool_ctx.pool.tool_calls[-4:]] == [
+        "schedule_task",
+        "list_scheduled_tasks",
+        "update_scheduled_task",
+        "cancel_scheduled_task",
+    ]
+
+
+async def test_scheduled_task_current_task_update_and_cancel_mutate_current_row(tool_ctx):
+    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    created = await write_tools.schedule_task(
+        tool_ctx,
+        ScheduleTaskInput(brief="Current brief.", when=scheduled_for),
+    )
+    current_ctx = TurnContext(
+        tool_ctx.turn_id,
+        tool_ctx.pool,
+        tool_ctx.user,
+        tool_ctx.partner,
+        [],
+        phase="write",
+        trigger_metadata={
+            "kind": "scheduled_task",
+            "context": {
+                "job_id": str(created.job_id),
+                "task_id": str(created.task_id),
+                "brief": "Current brief.",
+                "recurrence": None,
+            },
+        },
+    )
+
+    updated = await write_tools.update_scheduled_task(
+        current_ctx,
+        UpdateScheduledTaskInput(
+            current_task=True,
+            brief="Updated from inside the scheduled-task turn.",
+            recurrence={"type": "weekly", "weekdays": [1], "interval": 1},
+        ),
+    )
+    cancelled = await write_tools.cancel_scheduled_task(
+        current_ctx,
+        CancelScheduledTaskInput(current_task=True, reason="Cancel after this run."),
+    )
+
+    row = tool_ctx.pool.scheduled_jobs[created.job_id]
+    assert updated.action == "updated"
+    assert updated.job_id == created.job_id
+    assert cancelled.action == "cancelled"
+    assert row["status"] == "pending"
+    assert row["context"]["brief"] == "Updated from inside the scheduled-task turn."
+    assert row["context"]["recurrence"] == {"version": 1, "type": "weekly", "interval": 1, "weekdays": [1]}
+    assert row["context"]["scheduled_task_control"] == {
+        "cancel_after_current_fire": True,
+        "reason": "Cancel after this run.",
+    }
+
+
+async def test_scheduled_task_current_task_call_tool_accepts_scheduled_turn(tool_ctx):
+    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    created = await write_tools.schedule_task(
+        tool_ctx,
+        ScheduleTaskInput(brief="Current call_tool brief.", when=scheduled_for),
+    )
+    current_ctx = TurnContext(
+        tool_ctx.turn_id,
+        tool_ctx.pool,
+        tool_ctx.user,
+        tool_ctx.partner,
+        [],
+        phase="write",
+        trigger_metadata={
+            "kind": "scheduled_task",
+            "context": {
+                "job_id": str(created.job_id),
+                "task_id": str(created.task_id),
+                "brief": "Current call_tool brief.",
+                "recurrence": None,
+            },
+        },
+    )
+
+    update_result = await call_tool(
+        "update_scheduled_task",
+        {"current_task": True, "brief": "Updated through call_tool."},
+        current_ctx,
+    )
+    cancel_result = await call_tool(
+        "cancel_scheduled_task",
+        {"current_task": True, "reason": "Cancel through call_tool."},
+        current_ctx,
+    )
+
+    row = tool_ctx.pool.scheduled_jobs[created.job_id]
+    assert update_result["action"] == "updated"
+    assert update_result["job_id"] == str(created.job_id)
+    assert cancel_result["action"] == "cancelled"
+    assert row["status"] == "pending"
+    assert row["context"]["brief"] == "Updated through call_tool."
+    assert row["context"]["scheduled_task_control"] == {
+        "cancel_after_current_fire": True,
+        "reason": "Cancel through call_tool.",
+    }
+
+
 def _seed_watch(pool, user_id):
     watch_id = uuid4()
     pool.watch_items[watch_id] = {
@@ -191,6 +426,41 @@ def _seed_observation(pool, user_id):
         "status": "active",
     }
     return observation_id
+
+
+def _seed_distillation(
+    pool,
+    source_user_id,
+    *,
+    related_observation_ids=None,
+    supporting_message_ids=None,
+):
+    distillation_id = uuid4()
+    pool.distillations[distillation_id] = {
+        "id": distillation_id,
+        "content": "One possible explanation is that repair feels risky after prior withdrawal.",
+        "confidence": "medium",
+        "status": "active",
+        "sensitivity": "medium",
+        "visibility": "private",
+        "shareable_summary": None,
+        "source_user_ids": [source_user_id],
+        "related_memory_ids": [],
+        "related_observation_ids": list(related_observation_ids or []),
+        "related_theme_ids": [],
+        "supporting_message_ids": list(supporting_message_ids or []),
+        "created_from_tool_call_id": None,
+        "triggering_message_id": None,
+        "supersedes_distillation_id": None,
+        "superseded_by_distillation_id": None,
+        "revision_note": None,
+        "revision_count": 0,
+        "created_at": datetime.now(UTC),
+        "updated_at": datetime.now(UTC),
+        "revised_at": None,
+        "retired_at": None,
+    }
+    return distillation_id
 
 
 def _seed_oob(pool, user_id):
@@ -236,6 +506,46 @@ def _seed_message(pool, user_id, partner_id, *, direction="inbound", content="so
     return message_id
 
 
+def _distillation_add_call(ctx):
+    observation_id = _seed_observation(ctx.pool, ctx.user.id)
+    message_id = _seed_message(ctx.pool, ctx.user.id, ctx.partner.id)
+    return (
+        write_tools.add_distillation,
+        AddDistillationInput(
+            content="One possible explanation is that repair feels risky after prior withdrawal.",
+            source_user_ids=[ctx.user.id],
+            related_observation_ids=[observation_id],
+            supporting_message_ids=[message_id],
+        ),
+    )
+
+
+def _distillation_update_call(ctx):
+    observation_id = _seed_observation(ctx.pool, ctx.user.id)
+    distillation_id = _seed_distillation(ctx.pool, ctx.user.id, related_observation_ids=[observation_id])
+    return (
+        write_tools.update_distillation,
+        UpdateDistillationInput(distillation_id=distillation_id, revision_note="wording cleanup"),
+    )
+
+
+def _distillation_revise_call(ctx):
+    observation_id = _seed_observation(ctx.pool, ctx.user.id)
+    message_id = _seed_message(ctx.pool, ctx.user.id, ctx.partner.id)
+    distillation_id = _seed_distillation(ctx.pool, ctx.user.id, related_observation_ids=[observation_id])
+    return (
+        write_tools.revise_distillation,
+        ReviseDistillationInput(
+            old_distillation_id=distillation_id,
+            new_content="One possible revised explanation is that repair feels pressured when timing is rushed.",
+            source_user_ids=[ctx.user.id],
+            related_observation_ids=[observation_id],
+            supporting_message_ids=[message_id],
+            revision_note="new observation changed the synthesis",
+        ),
+    )
+
+
 @pytest.mark.parametrize(
     ("tool_name", "call_factory"),
     [
@@ -251,6 +561,9 @@ def _seed_message(pool, user_id, partner_id, *, direction="inbound", content="so
         ("address_watch_item", lambda ctx: (write_tools.address_watch_item, AddressWatchItemInput(watch_item_id=_seed_watch(ctx.pool, ctx.user.id), addressing_note="handled"))),
         ("log_observation", lambda ctx: (write_tools.log_observation, LogObservationInput(content="obs", about_user_id=ctx.user.id, confidence=Confidence.medium, significance=3))),
         ("update_observation", lambda ctx: (write_tools.update_observation, UpdateObservationInput(observation_id=_seed_observation(ctx.pool, ctx.user.id), content="new"))),
+        ("add_distillation", _distillation_add_call),
+        ("update_distillation", _distillation_update_call),
+        ("revise_distillation", _distillation_revise_call),
         ("add_oob", lambda ctx: (write_tools.add_oob, AddOOBInput(owner_id=ctx.user.id, sensitive_core="private", severity=OOBSeverity.firm))),
         ("update_oob", lambda ctx: (write_tools.update_oob, UpdateOOBInput(oob_id=_seed_oob(ctx.pool, ctx.user.id), sensitive_core="new"))),
         ("lift_oob", lambda ctx: (write_tools.lift_oob, LiftOOBInput(oob_id=_seed_oob(ctx.pool, ctx.user.id)))),
@@ -288,6 +601,85 @@ async def test_every_write_tool_inserts_tool_call(tool_ctx, monkeypatch, tool_na
     assert isinstance(row["arguments"], dict)
     assert isinstance(row["result"], dict)
     assert row["duration_ms"] is not None
+
+
+async def test_distillation_read_write_update_revise_lifecycle_preserves_observations(tool_ctx):
+    observation_id = _seed_observation(tool_ctx.pool, tool_ctx.user.id)
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    tool_ctx.triggering_message_ids = [source_message_id]
+
+    created = await write_tools.add_distillation(
+        tool_ctx,
+        AddDistillationInput(
+            content="One possible explanation is that repair feels risky after prior withdrawal.",
+            source_user_ids=[tool_ctx.user.id],
+            related_observation_ids=[observation_id],
+        ),
+    )
+
+    created_row = tool_ctx.pool.distillations[created.id]
+    assert created_row["supporting_message_ids"] == [source_message_id]
+    assert created_row["triggering_message_id"] == source_message_id
+    assert created_row["related_observation_ids"] == [observation_id]
+
+    updated = await write_tools.update_distillation(
+        tool_ctx,
+        UpdateDistillationInput(
+            distillation_id=created.id,
+            shareable_summary="Repair may feel pressured when timing is rushed.",
+            visibility="dyad_shareable",
+            revision_note="safe summary added",
+        ),
+    )
+    assert updated.id == created.id
+    assert tool_ctx.pool.distillations[created.id]["visibility"] == "dyad_shareable"
+    assert tool_ctx.pool.distillations[created.id]["shareable_summary"] == "Repair may feel pressured when timing is rushed."
+
+    revised = await write_tools.revise_distillation(
+        tool_ctx,
+        ReviseDistillationInput(
+            old_distillation_id=created.id,
+            new_content="One possible revised explanation is that repair feels pressured when it arrives before Maya has calmed down.",
+            source_user_ids=[tool_ctx.user.id],
+            related_observation_ids=[observation_id],
+            revision_note="new observation narrowed the synthesis",
+        ),
+    )
+
+    old_row = tool_ctx.pool.distillations[created.id]
+    new_row = tool_ctx.pool.distillations[revised.new_id]
+    assert old_row["status"] == "revised"
+    assert old_row["superseded_by_distillation_id"] == revised.new_id
+    assert new_row["supersedes_distillation_id"] == created.id
+    assert new_row["revision_count"] == 1
+    assert observation_id in tool_ctx.pool.observations
+
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    found = await read_tools.get_distillations(
+        read_ctx,
+        GetDistillationsInput(related_observation_id=observation_id, limit=10),
+    )
+    assert [row.id for row in found.distillations] == [revised.new_id]
+    assert [row["tool_name"] for row in tool_ctx.pool.tool_calls[-3:]] == [
+        "add_distillation",
+        "update_distillation",
+        "revise_distillation",
+    ]
+
+
+async def test_get_distillations_gates_hidden_partner_sources(tool_ctx):
+    observation_id = _seed_observation(tool_ctx.pool, tool_ctx.partner.id)
+    private_id = _seed_distillation(tool_ctx.pool, tool_ctx.partner.id, related_observation_ids=[observation_id])
+    shareable_id = _seed_distillation(tool_ctx.pool, tool_ctx.partner.id, related_observation_ids=[observation_id])
+    tool_ctx.pool.distillations[shareable_id]["visibility"] = "dyad_shareable"
+    tool_ctx.pool.distillations[shareable_id]["shareable_summary"] = "A reviewed safe summary."
+    tool_ctx.pool.users[tool_ctx.partner.id]["cross_thread_sharing_default"] = "opt_out"
+
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    result = await read_tools.get_distillations(read_ctx, GetDistillationsInput(limit=10))
+
+    assert private_id not in [row.id for row in result.distillations]
+    assert [(row.id, row.content) for row in result.distillations] == [(shareable_id, "A reviewed safe summary.")]
 
 
 async def test_supersede_memory_flips_old_and_links_new(tool_ctx):
@@ -419,6 +811,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
             target_user_id=tool_ctx.partner.id,
             kind="repair",
             sensitivity="low",
+            partner_path="message_partner",
             source_message_ids=[source_message_id],
             related_memory_ids=[memory_id],
             related_observation_ids=[observation_id],
@@ -428,6 +821,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
     )
 
     assert created.candidate.status == "ready"
+    assert created.candidate.partner_path == "message_partner"
     assert created.candidate.source_message_ids == [source_message_id]
     assert tool_ctx.pool.tool_calls[-1]["tool_name"] == "create_bridge_candidate"
 
@@ -439,6 +833,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
                 target_user_id=tool_ctx.user.id,
                 kind="repair",
                 sensitivity="low",
+                partner_path="message_partner",
                 source_message_ids=[source_message_id],
                 shareable_summary="Not allowed from the target side.",
             ),
@@ -447,11 +842,13 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
     read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
     listed = await read_tools.list_bridge_candidates(read_ctx, ListBridgeCandidatesInput())
     assert listed.candidates[0].internal_note == "raw-ish note stays internal"
+    assert listed.candidates[0].partner_path == "message_partner"
 
     target_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="read")
     target_listed = await read_tools.list_bridge_candidates(target_ctx, ListBridgeCandidatesInput())
     assert target_listed.candidates[0].shareable_summary == "Maya wants to repair this carefully."
     assert target_listed.candidates[0].internal_note is None
+    assert target_listed.candidates[0].partner_path == "message_partner"
 
     with pytest.raises(write_tools.ToolCallRejected):
         await write_tools.update_bridge_candidate(
@@ -488,6 +885,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
             target_user_id=tool_ctx.partner.id,
             kind="process",
             sensitivity="medium",
+            partner_path="message_partner",
             source_message_ids=[source_message_id],
             shareable_summary="Maya can talk after dinner.",
         ),
@@ -525,6 +923,7 @@ async def test_bridge_candidate_send_rejects_non_ready_and_blocks_on_oob(tool_ct
             target_user_id=tool_ctx.partner.id,
             kind="clarification",
             sensitivity="high",
+            partner_path="message_partner",
             source_message_ids=[source_message_id],
             shareable_summary="Sensitive summary.",
         ),
@@ -544,6 +943,7 @@ async def test_bridge_candidate_send_rejects_non_ready_and_blocks_on_oob(tool_ct
             target_user_id=tool_ctx.partner.id,
             kind="clarification",
             sensitivity="low",
+            partner_path="message_partner",
             source_message_ids=[source_message_id],
             shareable_summary="Allowed-looking summary.",
         ),
@@ -566,9 +966,131 @@ async def test_bridge_candidate_send_rejects_non_ready_and_blocks_on_oob(tool_ct
     )
 
     assert blocked.candidate.status == "blocked"
+    assert blocked.candidate.partner_path == "message_partner"
     assert "too revealing" in (blocked.candidate.internal_note or "")
     assert blocked.candidate.resolved_at is not None
     assert sent == []
+
+
+async def test_bridge_candidate_partner_path_persists_and_updates(tool_ctx):
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+
+    created = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="process",
+            sensitivity="low",
+            partner_path="coach_in_person",
+            source_message_ids=[source_message_id],
+            shareable_summary="Maya should raise this directly.",
+        ),
+    )
+
+    assert created.candidate.status == "ready"
+    assert created.candidate.partner_path == "coach_in_person"
+
+    updated = await write_tools.update_bridge_candidate(
+        tool_ctx,
+        UpdateBridgeCandidateInput(
+            candidate_id=created.candidate.id,
+            partner_path="do_not_bridge",
+        ),
+    )
+
+    assert updated.candidate.partner_path == "do_not_bridge"
+    assert updated.candidate.status == "declined"
+    assert updated.candidate.resolved_at is not None
+
+
+async def test_bridge_candidate_target_cannot_change_partner_path(tool_ctx):
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    created = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="repair",
+            sensitivity="low",
+            partner_path="message_partner",
+            source_message_ids=[source_message_id],
+            shareable_summary="Maya wants this understood.",
+        ),
+    )
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.update_bridge_candidate(
+            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+            UpdateBridgeCandidateInput(
+                candidate_id=created.candidate.id,
+                status="addressed",
+                partner_path="hold_for_context",
+            ),
+        )
+
+
+async def test_bridge_candidate_path_locked_after_terminal_status(tool_ctx):
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    created = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="clarification",
+            sensitivity="low",
+            partner_path="message_partner",
+            source_message_ids=[source_message_id],
+            shareable_summary="Maya clarified the timing.",
+        ),
+    )
+    addressed = await write_tools.update_bridge_candidate(
+        tool_ctx,
+        UpdateBridgeCandidateInput(candidate_id=created.candidate.id, status="addressed"),
+    )
+    assert addressed.candidate.status == "addressed"
+
+    with pytest.raises(write_tools.ToolCallRejected):
+        await write_tools.update_bridge_candidate(
+            tool_ctx,
+            UpdateBridgeCandidateInput(
+                candidate_id=created.candidate.id,
+                partner_path="hold_for_context",
+            ),
+        )
+
+
+async def test_list_bridge_candidates_hides_non_message_partner_ready_from_target(tool_ctx):
+    tool_ctx.pool.users[tool_ctx.user.id]["cross_thread_sharing_default"] = "opt_in"
+    source_message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id)
+    hidden = await write_tools.create_bridge_candidate(
+        tool_ctx,
+        CreateBridgeCandidateInput(
+            source_user_id=tool_ctx.user.id,
+            target_user_id=tool_ctx.partner.id,
+            kind="context",
+            sensitivity="low",
+            partner_path="hold_for_context",
+            source_message_ids=[source_message_id],
+            shareable_summary="Maya is holding this for later context.",
+        ),
+    )
+
+    source_list = await read_tools.list_bridge_candidates(
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read"),
+        ListBridgeCandidatesInput(),
+    )
+    target_list = await read_tools.list_bridge_candidates(
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="read"),
+        ListBridgeCandidatesInput(),
+    )
+
+    assert hidden.candidate.id in {candidate.id for candidate in source_list.candidates}
+    assert hidden.candidate.partner_path == "hold_for_context"
+    assert hidden.candidate.id not in {candidate.id for candidate in target_list.candidates}
 
 
 async def test_schedule_checkin_supersedes_prior_pending(tool_ctx):
@@ -1082,3 +1604,28 @@ async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):
     assert action["triggering_content"] == "why did you tell her that?"
     assert action["final_outbound_content"] == "because you asked me to"
     assert action["tool_calls"][0]["tool_name"] == "escalate_to_partner"
+
+
+async def test_get_bot_actions_filters_distillation_target(tool_ctx):
+    tool_ctx.phase = "read"
+    tool_ctx.pool.bot_turns[tool_ctx.turn_id].update(
+        started_at=datetime.now(UTC),
+        user_in_context=tool_ctx.user.id,
+        triggered_by_message_id=None,
+        final_output_message_id=None,
+        reasoning="distillation audit",
+    )
+    tool_ctx.pool.tool_calls.append(
+        {
+            "turn_id": tool_ctx.turn_id,
+            "tool_name": "revise_distillation",
+            "arguments": {},
+            "result": {},
+            "called_at": datetime.now(UTC),
+            "duration_ms": 1,
+        }
+    )
+
+    result = await call_tool("get_bot_actions", {"target_type": "distillation"}, tool_ctx)
+
+    assert result["actions"][0]["tool_calls"][0]["tool_name"] == "revise_distillation"

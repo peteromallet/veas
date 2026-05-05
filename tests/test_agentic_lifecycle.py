@@ -109,7 +109,7 @@ async def test_run_agentic_turn_lifecycle_ordering(fake_pool, app_env, monkeypat
     calls = []
 
     async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        calls.append((ctx.phase, seed_messages, fake_pool.messages[message_id]["processing_state"]))
+        calls.append((ctx.phase, seed_messages, fake_pool.messages[message_id]["processing_state"], ctx.trigger_metadata))
         assert "## You" in hot_context_rendered
         if ctx.phase == "read":
             assert fake_pool.messages[message_id]["processing_state"] == "raw"
@@ -144,6 +144,8 @@ async def test_run_agentic_turn_lifecycle_ordering(fake_pool, app_env, monkeypat
     assert fake_pool.messages[message_id]["processing_state"] == "processed"
     assert [call[0] for call in calls] == ["read", "write"]
     assert calls[0][2] == "raw"
+    assert [call[3].get("kind", "inbound") for call in calls] == ["inbound", "inbound"]
+    assert all("job_id" not in call[3].get("context", {}) for call in calls)
     assert turn["tool_call_count"] == 5
     assert turn["final_output_message_id"] is not None
     assert turn["completed_at"] is not None
@@ -235,6 +237,49 @@ async def test_run_agentic_turn_with_metadata_seeds_compact_pacing_context(fake_
     assert "pacing" in turn["prompt_snapshot"]
     assert "I hear the whole thought." == fake_pool.messages[turn["final_output_message_id"]]["content"]
     assert fake_pool.messages[message_id]["processing_state"] == "processed"
+
+
+async def test_run_agentic_job_propagates_scheduled_task_trigger_metadata(fake_pool, app_env, monkeypatch):
+    user = User(uuid4(), "Maya", "15555550100", "UTC")
+    partner = User(uuid4(), "Ben", "15555550101", "UTC")
+    fake_pool.users[user.id] = {"id": user.id, "name": user.name, "phone": user.phone, "timezone": user.timezone}
+    fake_pool.users[partner.id] = {
+        "id": partner.id,
+        "name": partner.name,
+        "phone": partner.phone,
+        "timezone": partner.timezone,
+    }
+    job_id = uuid4()
+    task_id = uuid4()
+    trigger_metadata = {
+        "kind": "scheduled_task",
+        "context": {
+            "job_id": str(job_id),
+            "task_id": str(task_id),
+            "brief": "Draft tomorrow's repair prompt",
+            "recurrence": {"type": "daily", "interval": 1},
+        },
+    }
+    seen = []
+
+    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
+        seen.append((ctx.phase, ctx.triggering_message_ids, ctx.trigger_metadata))
+        assert "scheduled_task" in hot_context_rendered
+        return "", [], 0
+
+    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+
+    await agentic.run_agentic_job_with_pool(
+        fake_pool,
+        user,
+        trigger_metadata,
+        prompt_version="v1",
+    )
+
+    assert [phase for phase, _, _ in seen] == ["read", "write"]
+    assert all(message_ids == [] for _, message_ids, _ in seen)
+    assert all(metadata["kind"] == "scheduled_task" for _, _, metadata in seen)
+    assert all(metadata["context"]["job_id"] == str(job_id) for _, _, metadata in seen)
 
 
 async def test_run_agentic_records_outbound_before_phase_b(fake_pool, app_env, monkeypatch):
@@ -339,7 +384,11 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives(fake_poo
                 "edited_at": None,
             }
             return "I was mid-reply.", [], 0
-        assert seed_messages[-1]["content"] == "You sent: [silence]. Now record any state changes (memories, observations, theme updates, watch items) and optionally schedule one follow-up check-in. Do not produce user-facing text."
+        assert seed_messages[-1]["content"] == (
+            "You sent: [silence]. Now record any state changes (memories, observations, "
+            "distillations, theme updates, watch items, scheduled tasks) and optionally "
+            "schedule, update, or cancel follow-ups. Do not produce user-facing text."
+        )
         return "", [], 0
 
     async def fake_send(*args, **kwargs):

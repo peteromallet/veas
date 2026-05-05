@@ -6,6 +6,7 @@ import json
 import logging
 from datetime import UTC, datetime
 from typing import Any
+from uuid import uuid4
 
 from pydantic import BaseModel
 
@@ -18,7 +19,11 @@ from app.services.messaging import send_outbound, _append_turn_reasoning, _call_
 from app.services import discord, scoring
 from app.services.templates import TemplateCall
 from app.services.turn_context import TurnContext
+from app.services.scheduled_task_recurrence import normalize_recurrence
+from app.services.tools.common import current_scheduled_task
 from tool_schemas import (
+    AddDistillationInput,
+    AddDistillationOutput,
     AddMemoryInput,
     AddMemoryOutput,
     AddOOBInput,
@@ -28,6 +33,7 @@ from tool_schemas import (
     AddressWatchItemInput,
     AddressWatchItemOutput,
     BridgeCandidate,
+    BridgeCandidatePartnerPath,
     BridgeCandidateSensitivity,
     BridgeCandidateStatus,
     CancelScheduledCheckinInput,
@@ -46,20 +52,29 @@ from tool_schemas import (
     ExplainMediaItemOutput,
     LiftOOBInput,
     LiftOOBOutput,
+    ListScheduledTasksInput,
+    ListScheduledTasksOutput,
     LogFeedbackInput,
     LogFeedbackOutput,
     LogObservationInput,
     LogObservationOutput,
     ReactToMessageInput,
     ReactToMessageOutput,
+    ReviseDistillationInput,
+    ReviseDistillationOutput,
     ScheduleCheckinInput,
     ScheduleCheckinOutput,
+    ScheduleTaskInput,
+    ScheduleTaskOutput,
+    ScheduledTaskRow,
     SendBridgeCandidateInput,
     SendBridgeCandidateOutput,
     SupersedeMemoryInput,
     SupersedeMemoryOutput,
     UpdateBridgeCandidateInput,
     UpdateBridgeCandidateOutput,
+    UpdateDistillationInput,
+    UpdateDistillationOutput,
     UpdateMemoryInput,
     UpdateMemoryOutput,
     UpdateCrossThreadSharingDefaultInput,
@@ -68,12 +83,16 @@ from tool_schemas import (
     UpdateOOBOutput,
     UpdateObservationInput,
     UpdateObservationOutput,
+    UpdateScheduledTaskInput,
+    UpdateScheduledTaskOutput,
     UpdateThemeInput,
     UpdateThemeOutput,
     UpdateUserStyleNotesInput,
     UpdateUserStyleNotesOutput,
     UpdateWatchItemInput,
     UpdateWatchItemOutput,
+    CancelScheduledTaskInput,
+    CancelScheduledTaskOutput,
 )
 
 logger = logging.getLogger(__name__)
@@ -221,13 +240,32 @@ async def create_bridge_candidate(
     args: CreateBridgeCandidateInput,
 ) -> CreateBridgeCandidateOutput:
     started = _start()
-    if args.status is not None and args.status != BridgeCandidateStatus.blocked:
+    if args.partner_path == BridgeCandidatePartnerPath.do_not_bridge:
+        if args.status is not None and args.status != BridgeCandidateStatus.declined:
+            result = {
+                "error": "bridge_candidate_status_rejected",
+                "reason": "do_not_bridge candidates are audit-only and must be created as declined",
+            }
+            await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+            raise ToolCallRejected(result)
+    elif args.status == BridgeCandidateStatus.declined:
         result = {
             "error": "bridge_candidate_status_rejected",
-            "reason": "create_bridge_candidate only accepts explicit blocked status; otherwise status is derived",
+            "reason": "declined status is only accepted when partner_path is do_not_bridge",
         }
         await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
         raise ToolCallRejected(result)
+    if args.status is not None and args.status != BridgeCandidateStatus.blocked:
+        if not (
+            args.partner_path == BridgeCandidatePartnerPath.do_not_bridge
+            and args.status == BridgeCandidateStatus.declined
+        ):
+            result = {
+                "error": "bridge_candidate_status_rejected",
+                "reason": "create_bridge_candidate only accepts explicit blocked status; otherwise status is derived",
+            }
+            await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
+            raise ToolCallRejected(result)
     if args.source_user_id != ctx.user.id:
         result = {
             "error": "bridge_candidate_rejected",
@@ -246,7 +284,9 @@ async def create_bridge_candidate(
     await _require_existing_ids(ctx, "memories", args.related_memory_ids)
     await _require_existing_ids(ctx, "observations", args.related_observation_ids)
 
-    if args.status == BridgeCandidateStatus.blocked:
+    if args.partner_path == BridgeCandidatePartnerPath.do_not_bridge:
+        status = BridgeCandidateStatus.declined
+    elif args.status == BridgeCandidateStatus.blocked:
         status = BridgeCandidateStatus.blocked
     else:
         source_default = await _sharing_default_for_user(ctx, args.source_user_id)
@@ -259,12 +299,12 @@ async def create_bridge_candidate(
     row = await ctx.pool.fetchrow(
         f"""
         INSERT INTO bridge_candidates (
-            source_user_id, target_user_id, kind, status, sensitivity,
+            source_user_id, target_user_id, kind, status, sensitivity, partner_path,
             source_message_ids, related_memory_ids, related_observation_ids,
             internal_note, shareable_summary, resolved_at
         )
-        VALUES ($1, $2, $3, $4, $5, $6::uuid[], $7::uuid[], $8::uuid[], $9, $10, {resolved_at_sql})
-        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8::uuid[], $9::uuid[], $10, $11, {resolved_at_sql})
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                   COALESCE(source_message_ids, '{{}}'::uuid[]) AS source_message_ids,
                   COALESCE(related_memory_ids, '{{}}'::uuid[]) AS related_memory_ids,
                   COALESCE(related_observation_ids, '{{}}'::uuid[]) AS related_observation_ids,
@@ -276,6 +316,7 @@ async def create_bridge_candidate(
         args.kind.value,
         status.value,
         args.sensitivity.value,
+        args.partner_path.value,
         args.source_message_ids,
         args.related_memory_ids,
         args.related_observation_ids,
@@ -315,6 +356,7 @@ async def update_bridge_candidate(
             or args.related_observation_ids is not None
             or args.internal_note is not None
             or args.shareable_summary is not None
+            or args.partner_path is not None
             or args.status not in target_allowed_statuses
         ):
             result = {
@@ -323,6 +365,23 @@ async def update_bridge_candidate(
             }
             await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
             raise ToolCallRejected(result)
+    status_update = args.status
+    if args.partner_path is not None and existing["status"] in _BRIDGE_RESOLVED_STATUSES:
+        result = {
+            "error": "bridge_candidate_partner_path_locked",
+            "reason": "partner_path cannot be changed after a bridge candidate reaches a terminal status",
+        }
+        await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
+        raise ToolCallRejected(result)
+    if args.partner_path == BridgeCandidatePartnerPath.do_not_bridge:
+        if status_update is not None and status_update != BridgeCandidateStatus.declined:
+            result = {
+                "error": "bridge_candidate_status_rejected",
+                "reason": "do_not_bridge candidates must be marked declined",
+            }
+            await _log_tool_call(ctx, "update_bridge_candidate", args, started, result)
+            raise ToolCallRejected(result)
+        status_update = BridgeCandidateStatus.declined
     if args.source_message_ids is not None:
         await _require_existing_source_messages(ctx, args.source_message_ids, existing["source_user_id"])
     if args.related_memory_ids is not None:
@@ -335,11 +394,12 @@ async def update_bridge_candidate(
         SET kind=COALESCE($2::text, kind),
             status=COALESCE($3::text, status),
             sensitivity=COALESCE($4::text, sensitivity),
-            source_message_ids=COALESCE($5::uuid[], source_message_ids),
-            related_memory_ids=COALESCE($6::uuid[], related_memory_ids),
-            related_observation_ids=COALESCE($7::uuid[], related_observation_ids),
-            internal_note=COALESCE($8::text, internal_note),
-            shareable_summary=COALESCE($9::text, shareable_summary),
+            partner_path=COALESCE($5::text, partner_path),
+            source_message_ids=COALESCE($6::uuid[], source_message_ids),
+            related_memory_ids=COALESCE($7::uuid[], related_memory_ids),
+            related_observation_ids=COALESCE($8::uuid[], related_observation_ids),
+            internal_note=COALESCE($9::text, internal_note),
+            shareable_summary=COALESCE($10::text, shareable_summary),
             updated_at=now(),
             resolved_at=CASE
                 WHEN $3::text IN ('sent', 'declined', 'blocked', 'addressed', 'expired')
@@ -347,7 +407,7 @@ async def update_bridge_candidate(
                 ELSE resolved_at
             END
         WHERE id=$1
-        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                   COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
                   COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
                   COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
@@ -356,8 +416,9 @@ async def update_bridge_candidate(
         """,
         args.candidate_id,
         args.kind.value if args.kind is not None else None,
-        args.status.value if args.status is not None else None,
+        status_update.value if status_update is not None else None,
         args.sensitivity.value if args.sensitivity is not None else None,
+        args.partner_path.value if args.partner_path is not None else None,
         args.source_message_ids,
         args.related_memory_ids,
         args.related_observation_ids,
@@ -491,10 +552,69 @@ async def _require_existing_ids(ctx: TurnContext, table: str, ids: list[Any]) ->
         )
 
 
+async def _require_existing_distillation_links(
+    ctx: TurnContext,
+    *,
+    source_user_ids: list[Any] | None = None,
+    related_memory_ids: list[Any] | None = None,
+    related_observation_ids: list[Any] | None = None,
+    related_theme_ids: list[Any] | None = None,
+    supporting_message_ids: list[Any] | None = None,
+) -> None:
+    dyad_ids = {ctx.user.id, ctx.partner.id}
+    if source_user_ids is not None:
+        invalid_sources = [user_id for user_id in source_user_ids if user_id not in dyad_ids]
+        if invalid_sources:
+            raise ToolCallRejected(
+                {
+                    "error": "distillation_source_users_rejected",
+                    "reason": f"source_user_ids must stay within the current dyad: {invalid_sources}",
+                }
+            )
+    for table, ids in (
+        ("memories", related_memory_ids or []),
+        ("observations", related_observation_ids or []),
+        ("themes", related_theme_ids or []),
+        ("messages", supporting_message_ids or []),
+    ):
+        if not ids:
+            continue
+        if table == "messages":
+            rows = await ctx.pool.fetch(
+                """
+                SELECT id
+                FROM messages
+                WHERE id = ANY($1::uuid[])
+                  AND deleted_at IS NULL
+                  AND (
+                    sender_id = ANY($2::uuid[])
+                    OR recipient_id = ANY($2::uuid[])
+                  )
+                """,
+                ids,
+                list(dyad_ids),
+            )
+        else:
+            rows = await ctx.pool.fetch(f"SELECT id FROM {table} WHERE id = ANY($1::uuid[])", ids)
+        found = {row["id"] for row in rows}
+        missing = [row_id for row_id in ids if row_id not in found]
+        if missing:
+            raise ToolCallRejected(
+                {
+                    "error": "distillation_related_ids_not_found",
+                    "reason": f"{table} ids were not found or not visible: {missing}",
+                }
+            )
+
+
+def _default_supporting_message_ids(ctx: TurnContext, message_ids: list[Any]) -> list[Any]:
+    return message_ids or list(ctx.triggering_message_ids)
+
+
 async def _fetch_bridge_candidate_row(ctx: TurnContext, candidate_id: Any) -> Any | None:
     return await ctx.pool.fetchrow(
         """
-        SELECT id, source_user_id, target_user_id, kind, status, sensitivity,
+        SELECT id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
                COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
                COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
@@ -534,7 +654,7 @@ async def _set_bridge_candidate_status(
                 ELSE resolved_at
             END
         WHERE id=$1
-        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity,
+        RETURNING id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                   COALESCE(source_message_ids, '{}'::uuid[]) AS source_message_ids,
                   COALESCE(related_memory_ids, '{}'::uuid[]) AS related_memory_ids,
                   COALESCE(related_observation_ids, '{}'::uuid[]) AS related_observation_ids,
@@ -554,6 +674,7 @@ def _append_note(existing: str | None, note: str) -> str:
 
 def _bridge_candidate(row: Any) -> BridgeCandidate:
     data = dict(row)
+    data.setdefault("partner_path", "message_partner")
     data["source_message_ids"] = list(data.get("source_message_ids") or [])
     data["related_memory_ids"] = list(data.get("related_memory_ids") or [])
     data["related_observation_ids"] = list(data.get("related_observation_ids") or [])
@@ -790,6 +911,193 @@ async def update_observation(ctx: TurnContext, args: UpdateObservationInput) -> 
     return result
 
 
+async def add_distillation(ctx: TurnContext, args: AddDistillationInput) -> AddDistillationOutput:
+    started = _start()
+    supporting_message_ids = _default_supporting_message_ids(ctx, args.supporting_message_ids)
+    logged_args = args.model_copy(update={"supporting_message_ids": supporting_message_ids})
+    try:
+        await _require_existing_distillation_links(
+            ctx,
+            source_user_ids=args.source_user_ids,
+            related_memory_ids=args.related_memory_ids,
+            related_observation_ids=args.related_observation_ids,
+            related_theme_ids=args.related_theme_ids,
+            supporting_message_ids=supporting_message_ids,
+        )
+    except ToolCallRejected as exc:
+        await _log_tool_call(ctx, "add_distillation", logged_args, started, exc.result)
+        raise
+    triggering_message_id = args.triggering_message_id
+    if triggering_message_id is None and supporting_message_ids:
+        triggering_message_id = supporting_message_ids[0]
+    row = await ctx.pool.fetchrow(
+        """
+        INSERT INTO distillations (
+            content, content_encrypted, confidence, sensitivity, visibility,
+            shareable_summary, shareable_summary_encrypted, source_user_ids,
+            related_memory_ids, related_observation_ids, related_theme_ids,
+            supporting_message_ids, triggering_message_id
+        )
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid[], $9::uuid[], $10::uuid[], $11::uuid[], $12::uuid[], $13)
+        RETURNING id
+        """,
+        args.content,
+        encrypt_value(args.content),
+        args.confidence.value,
+        args.sensitivity.value,
+        args.visibility.value,
+        args.shareable_summary,
+        encrypt_value(args.shareable_summary) if args.shareable_summary is not None else None,
+        args.source_user_ids,
+        args.related_memory_ids,
+        args.related_observation_ids,
+        args.related_theme_ids,
+        supporting_message_ids,
+        triggering_message_id,
+    )
+    result = AddDistillationOutput(id=row["id"])
+    await _log_tool_call(ctx, "add_distillation", logged_args, started, result)
+    return result
+
+
+async def update_distillation(ctx: TurnContext, args: UpdateDistillationInput) -> UpdateDistillationOutput:
+    started = _start()
+    try:
+        await _require_existing_distillation_links(
+            ctx,
+            source_user_ids=args.source_user_ids,
+            related_memory_ids=args.related_memory_ids,
+            related_observation_ids=args.related_observation_ids,
+            related_theme_ids=args.related_theme_ids,
+            supporting_message_ids=args.supporting_message_ids,
+        )
+    except ToolCallRejected as exc:
+        await _log_tool_call(ctx, "update_distillation", args, started, exc.result)
+        raise
+    sets = ["updated_at=now()"]
+    params: list[Any] = []
+    for field in (
+        "content",
+        "confidence",
+        "status",
+        "sensitivity",
+        "visibility",
+        "shareable_summary",
+        "source_user_ids",
+        "related_memory_ids",
+        "related_observation_ids",
+        "related_theme_ids",
+        "supporting_message_ids",
+        "revision_note",
+    ):
+        field_value = getattr(args, field)
+        if field_value is None:
+            continue
+        value = field_value.value if hasattr(field_value, "value") else field_value
+        params.append(value)
+        cast = "::uuid[]" if field.endswith("_ids") else ""
+        sets.append(f"{field}=${len(params)}{cast}")
+        if field == "content":
+            params.append(encrypt_value(value))
+            sets.append(f"content_encrypted=${len(params)}")
+        elif field == "shareable_summary":
+            params.append(encrypt_value(value))
+            sets.append(f"shareable_summary_encrypted=${len(params)}")
+    if args.status is not None and args.status.value == "retired":
+        sets.append("retired_at=COALESCE(retired_at, now())")
+    params.append(args.distillation_id)
+    row = await ctx.pool.fetchrow(
+        f"UPDATE distillations SET {', '.join(sets)} WHERE id=${len(params)} RETURNING id",
+        *params,
+    )
+    result = UpdateDistillationOutput(id=row["id"])
+    await _log_tool_call(ctx, "update_distillation", args, started, result)
+    return result
+
+
+async def revise_distillation(ctx: TurnContext, args: ReviseDistillationInput) -> ReviseDistillationOutput:
+    started = _start()
+    supporting_message_ids = _default_supporting_message_ids(ctx, args.supporting_message_ids)
+    logged_args = args.model_copy(update={"supporting_message_ids": supporting_message_ids})
+    try:
+        await _require_existing_distillation_links(
+            ctx,
+            source_user_ids=args.source_user_ids,
+            related_memory_ids=args.related_memory_ids,
+            related_observation_ids=args.related_observation_ids,
+            related_theme_ids=args.related_theme_ids,
+            supporting_message_ids=supporting_message_ids,
+        )
+    except ToolCallRejected as exc:
+        await _log_tool_call(ctx, "revise_distillation", logged_args, started, exc.result)
+        raise
+    triggering_message_id = args.triggering_message_id
+    if triggering_message_id is None and supporting_message_ids:
+        triggering_message_id = supporting_message_ids[0]
+    row = await ctx.pool.fetchrow(
+        """
+        WITH old AS (
+            SELECT id, revision_count
+            FROM distillations
+            WHERE id=$1 AND status='active'
+        ),
+        new AS (
+            INSERT INTO distillations (
+                content, content_encrypted, confidence, sensitivity, visibility,
+                shareable_summary, shareable_summary_encrypted, source_user_ids,
+                related_memory_ids, related_observation_ids, related_theme_ids,
+                supporting_message_ids, triggering_message_id, supersedes_distillation_id,
+                revision_note, revision_count
+            )
+            SELECT $2, $3, $4, $5, $6, $7, $8, $9::uuid[], $10::uuid[], $11::uuid[], $12::uuid[],
+                   $13::uuid[], $14, old.id, $15, old.revision_count + 1
+            FROM old
+            RETURNING id, supersedes_distillation_id
+        ),
+        revised_old AS (
+            UPDATE distillations d
+            SET status='revised',
+                superseded_by_distillation_id=new.id,
+                revision_note=$15,
+                revision_count=d.revision_count + 1,
+                revised_at=now(),
+                updated_at=now()
+            FROM new
+            WHERE d.id=new.supersedes_distillation_id
+            RETURNING d.id
+        )
+        SELECT new.id AS new_id, revised_old.id AS old_id
+        FROM new
+        JOIN revised_old ON revised_old.id = new.supersedes_distillation_id
+        """,
+        args.old_distillation_id,
+        args.new_content,
+        encrypt_value(args.new_content),
+        args.confidence.value,
+        args.sensitivity.value,
+        args.visibility.value,
+        args.shareable_summary,
+        encrypt_value(args.shareable_summary) if args.shareable_summary is not None else None,
+        args.source_user_ids,
+        args.related_memory_ids,
+        args.related_observation_ids,
+        args.related_theme_ids,
+        supporting_message_ids,
+        triggering_message_id,
+        args.revision_note,
+    )
+    if row is None:
+        result = {
+            "error": "distillation_revision_rejected",
+            "reason": "old_distillation_id was not found or is not active",
+        }
+        await _log_tool_call(ctx, "revise_distillation", logged_args, started, result)
+        raise ToolCallRejected(result)
+    result = ReviseDistillationOutput(new_id=row["new_id"], old_id=row["old_id"])
+    await _log_tool_call(ctx, "revise_distillation", logged_args, started, result)
+    return result
+
+
 async def add_oob(ctx: TurnContext, args: AddOOBInput) -> AddOOBOutput:
     started = _start()
     row = await ctx.pool.fetchrow(
@@ -896,6 +1204,208 @@ async def cancel_scheduled_checkin(ctx: TurnContext, args: CancelScheduledChecki
         cancelled_job_id=row["id"] if row is not None else None,
     )
     await _log_tool_call(ctx, "cancel_scheduled_checkin", args, started, result)
+    return result
+
+
+def _as_utc(value: datetime) -> datetime:
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("datetime must be timezone-aware")
+    return value.astimezone(UTC)
+
+
+def _scheduled_task_recurrence_payload(value: Any) -> dict[str, Any] | None:
+    if value is None:
+        return None
+    raw = value.model_dump(mode="json") if isinstance(value, BaseModel) else value
+    return normalize_recurrence(raw)
+
+
+def _scheduled_task_context(*, task_id: Any, brief: str, recurrence: dict[str, Any] | None) -> dict[str, Any]:
+    return {
+        "task_id": str(task_id),
+        "brief": brief,
+        "recurrence": recurrence,
+    }
+
+
+def _row_value(row: Any, key: str, default: Any = None) -> Any:
+    try:
+        value = row[key]
+    except (KeyError, TypeError, IndexError):
+        return default
+    return default if value is None else value
+
+
+def _scheduled_task_row(row: Any) -> ScheduledTaskRow:
+    context = _row_value(row, "context", {})
+    return ScheduledTaskRow(
+        task_id=context["task_id"],
+        job_id=_row_value(row, "job_id", _row_value(row, "id")),
+        brief=context["brief"],
+        scheduled_for=row["scheduled_for"],
+        recurrence=context.get("recurrence"),
+        delayed=bool(_row_value(row, "delayed", False)),
+        created_at=_row_value(row, "created_at"),
+    )
+
+
+def _scheduled_task_target(args: UpdateScheduledTaskInput | CancelScheduledTaskInput, ctx: TurnContext) -> tuple[Any | None, str | None]:
+    if args.current_task:
+        current = current_scheduled_task(ctx)
+        if current is None:
+            raise ToolCallRejected({"error": "current_task=true is only valid during a scheduled_task turn"})
+        return current["job_id"], None
+    return args.job_id, str(args.task_id) if args.task_id is not None else None
+
+
+async def list_scheduled_tasks(ctx: TurnContext, args: ListScheduledTasksInput) -> ListScheduledTasksOutput:
+    started = _start()
+    rows = await ctx.pool.fetch(
+        """
+        SELECT id AS job_id, scheduled_for, context, delayed, created_at
+        FROM scheduled_jobs
+        WHERE user_id=$1
+          AND job_type='scheduled_task'
+          AND status='pending'
+          AND ($2::boolean OR context->'recurrence' IS NULL OR context->'recurrence' = 'null'::jsonb)
+        ORDER BY scheduled_for ASC, created_at ASC
+        LIMIT $3
+        """,
+        ctx.user.id,
+        args.include_recurring,
+        args.limit,
+    )
+    result = ListScheduledTasksOutput(tasks=[_scheduled_task_row(row) for row in rows])
+    await _log_tool_call(ctx, "list_scheduled_tasks", args, started, result)
+    return result
+
+
+async def schedule_task(ctx: TurnContext, args: ScheduleTaskInput) -> ScheduleTaskOutput:
+    started = _start()
+    task_id = uuid4()
+    recurrence = _scheduled_task_recurrence_payload(args.recurrence)
+    scheduled_for = _as_utc(args.when)
+    context = _scheduled_task_context(task_id=task_id, brief=args.brief, recurrence=recurrence)
+    row = await ctx.pool.fetchrow(
+        """
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
+        VALUES ($1, 'scheduled_task', $2, $3::jsonb, 'pending')
+        RETURNING id AS job_id, scheduled_for, context
+        """,
+        ctx.user.id,
+        scheduled_for,
+        context,
+    )
+    result = ScheduleTaskOutput(
+        task_id=task_id,
+        job_id=row["job_id"],
+        scheduled_for=row["scheduled_for"],
+        recurrence=recurrence,
+    )
+    await _log_tool_call(ctx, "schedule_task", args, started, result)
+    return result
+
+
+def _reject_unauthorized_current_scheduled_task(ctx: TurnContext, current_task: bool) -> None:
+    if current_task and current_scheduled_task(ctx) is None:
+        raise ToolCallRejected({"error": "current_task=true is only valid during a scheduled_task turn"})
+
+
+async def update_scheduled_task(ctx: TurnContext, args: UpdateScheduledTaskInput) -> UpdateScheduledTaskOutput:
+    started = _start()
+    target_job_id, target_task_id = _scheduled_task_target(args, ctx)
+    scheduled_for = _as_utc(args.when) if args.when is not None else None
+    context_patch: dict[str, Any] = {}
+    if args.brief is not None:
+        context_patch["brief"] = args.brief
+    recurrence_was_set = "recurrence" in args.model_fields_set
+    if recurrence_was_set:
+        context_patch["recurrence"] = _scheduled_task_recurrence_payload(args.recurrence)
+    row = await ctx.pool.fetchrow(
+        """
+        UPDATE scheduled_jobs
+        SET scheduled_for=COALESCE($4, scheduled_for),
+            context=COALESCE(context, '{}'::jsonb) || $5::jsonb,
+            updated_at=now()
+        WHERE user_id=$1
+          AND job_type='scheduled_task'
+          AND status='pending'
+          AND (($2::uuid IS NOT NULL AND id=$2) OR ($3::text IS NOT NULL AND context->>'task_id'=$3))
+        RETURNING id AS job_id, scheduled_for, context
+        """,
+        ctx.user.id,
+        target_job_id,
+        target_task_id,
+        scheduled_for,
+        context_patch,
+    )
+    if row is None:
+        result = UpdateScheduledTaskOutput(action="noop", job_id=target_job_id, task_id=target_task_id)
+    else:
+        task = _scheduled_task_row(row)
+        result = UpdateScheduledTaskOutput(
+            action="updated",
+            task_id=task.task_id,
+            job_id=task.job_id,
+            scheduled_for=task.scheduled_for,
+            recurrence=task.recurrence,
+        )
+    await _log_tool_call(ctx, "update_scheduled_task", args, started, result)
+    return result
+
+
+async def cancel_scheduled_task(ctx: TurnContext, args: CancelScheduledTaskInput) -> CancelScheduledTaskOutput:
+    started = _start()
+    target_job_id, target_task_id = _scheduled_task_target(args, ctx)
+    if args.current_task:
+        row = await ctx.pool.fetchrow(
+            """
+            UPDATE scheduled_jobs
+            SET context=COALESCE(context, '{}'::jsonb) || $3::jsonb,
+                updated_at=now()
+            WHERE user_id=$1
+              AND job_type='scheduled_task'
+              AND status='pending'
+              AND id=$2
+            RETURNING id AS job_id, context
+            """,
+            ctx.user.id,
+            target_job_id,
+            {
+                "scheduled_task_control": {
+                    "cancel_after_current_fire": True,
+                    "reason": args.reason,
+                }
+            },
+        )
+    else:
+        row = await ctx.pool.fetchrow(
+            """
+            UPDATE scheduled_jobs
+            SET status='cancelled',
+                cancellation_reason=$4,
+                updated_at=now()
+            WHERE user_id=$1
+              AND job_type='scheduled_task'
+              AND status='pending'
+              AND (($2::uuid IS NOT NULL AND id=$2) OR ($3::text IS NOT NULL AND context->>'task_id'=$3))
+            RETURNING id AS job_id, context
+            """,
+            ctx.user.id,
+            target_job_id,
+            target_task_id,
+            args.reason,
+        )
+    if row is None:
+        result = CancelScheduledTaskOutput(action="noop", job_id=target_job_id, task_id=target_task_id)
+    else:
+        context = row["context"]
+        result = CancelScheduledTaskOutput(
+            action="cancelled",
+            job_id=row["job_id"],
+            task_id=context.get("task_id"),
+        )
+    await _log_tool_call(ctx, "cancel_scheduled_task", args, started, result)
     return result
 
 

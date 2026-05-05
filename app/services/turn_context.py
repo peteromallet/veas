@@ -1,6 +1,6 @@
 """Per-turn context shared by the agentic loop and tool implementations."""
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from collections.abc import Awaitable, Callable
 from typing import Any, Literal
 from uuid import UUID
@@ -29,6 +29,7 @@ class TurnContext:
     before_paced_send: BeforePacedSend | None = None
     sent_message_parts: list[dict[str, Any]] | None = None
     hot_context_rendered: str | None = None
+    trigger_metadata: dict[str, Any] = field(default_factory=dict)
 
 
 async def partner_of(pool: Any, user: User) -> User:

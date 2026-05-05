@@ -113,6 +113,7 @@ class FakePool:
         self.themes = {}
         self.watch_items = {}
         self.observations = {}
+        self.distillations = {}
         self.out_of_bounds = {}
         self.withheld_outbound_reviews = {}
         self.bridge_candidates = {}
@@ -403,18 +404,34 @@ class FakePool:
             self.users[user_id]["cross_thread_sharing_default"] = sharing_default
             return {"user_id": user_id, "cross_thread_sharing_default": sharing_default, "updated_at": datetime.now(UTC)}
         if compact.startswith("INSERT INTO bridge_candidates"):
-            (
-                source_user_id,
-                target_user_id,
-                kind,
-                status,
-                sensitivity,
-                source_message_ids,
-                related_memory_ids,
-                related_observation_ids,
-                internal_note,
-                shareable_summary,
-            ) = args
+            if "partner_path" in compact:
+                (
+                    source_user_id,
+                    target_user_id,
+                    kind,
+                    status,
+                    sensitivity,
+                    partner_path,
+                    source_message_ids,
+                    related_memory_ids,
+                    related_observation_ids,
+                    internal_note,
+                    shareable_summary,
+                ) = args
+            else:
+                (
+                    source_user_id,
+                    target_user_id,
+                    kind,
+                    status,
+                    sensitivity,
+                    source_message_ids,
+                    related_memory_ids,
+                    related_observation_ids,
+                    internal_note,
+                    shareable_summary,
+                ) = args
+                partner_path = "message_partner"
             now = datetime.now(UTC)
             row = {
                 "id": uuid4(),
@@ -423,6 +440,7 @@ class FakePool:
                 "kind": kind,
                 "status": status,
                 "sensitivity": sensitivity,
+                "partner_path": partner_path,
                 "source_message_ids": list(source_message_ids or []),
                 "related_memory_ids": list(related_memory_ids or []),
                 "related_observation_ids": list(related_observation_ids or []),
@@ -434,7 +452,7 @@ class FakePool:
                 "resolved_at": now if status in {"sent", "declined", "blocked", "addressed", "expired"} else None,
             }
             self.bridge_candidates[row["id"]] = row
-            return dict(row)
+            return {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
         if compact.startswith("SELECT id, source_user_id, target_user_id") and "FROM bridge_candidates" in compact:
             candidate_id, user_id, partner_id = args
             row = self.bridge_candidates.get(candidate_id)
@@ -442,19 +460,34 @@ class FakePool:
                 return None
             if {row["source_user_id"], row["target_user_id"]} != {user_id, partner_id}:
                 return None
-            return dict(row)
+            return {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
         if compact.startswith("UPDATE bridge_candidates SET kind=COALESCE"):
-            (
-                candidate_id,
-                kind,
-                status,
-                sensitivity,
-                source_message_ids,
-                related_memory_ids,
-                related_observation_ids,
-                internal_note,
-                shareable_summary,
-            ) = args
+            if "partner_path=COALESCE" in compact:
+                (
+                    candidate_id,
+                    kind,
+                    status,
+                    sensitivity,
+                    partner_path,
+                    source_message_ids,
+                    related_memory_ids,
+                    related_observation_ids,
+                    internal_note,
+                    shareable_summary,
+                ) = args
+            else:
+                (
+                    candidate_id,
+                    kind,
+                    status,
+                    sensitivity,
+                    source_message_ids,
+                    related_memory_ids,
+                    related_observation_ids,
+                    internal_note,
+                    shareable_summary,
+                ) = args
+                partner_path = None
             row = self.bridge_candidates[candidate_id]
             if kind is not None:
                 row["kind"] = kind
@@ -464,6 +497,8 @@ class FakePool:
                     row["resolved_at"] = datetime.now(UTC)
             if sensitivity is not None:
                 row["sensitivity"] = sensitivity
+            if partner_path is not None:
+                row["partner_path"] = partner_path
             if source_message_ids is not None:
                 row["source_message_ids"] = list(source_message_ids)
             if related_memory_ids is not None:
@@ -475,7 +510,7 @@ class FakePool:
             if shareable_summary is not None:
                 row["shareable_summary"] = shareable_summary
             row["updated_at"] = datetime.now(UTC)
-            return dict(row)
+            return {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
         if compact.startswith("UPDATE bridge_candidates SET status=$2"):
             candidate_id, status, sent_message_id, internal_note = args
             row = self.bridge_candidates[candidate_id]
@@ -487,7 +522,7 @@ class FakePool:
             if status in {"sent", "declined", "blocked", "addressed", "expired"} and row.get("resolved_at") is None:
                 row["resolved_at"] = datetime.now(UTC)
             row["updated_at"] = datetime.now(UTC)
-            return dict(row)
+            return {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
         if compact.startswith("INSERT INTO memories (about_user_id"):
             # (about_user_id, content, content_encrypted, related_theme_ids)
             about_user_id, content, _content_encrypted, related_theme_ids = args
@@ -590,6 +625,145 @@ class FakePool:
             observation_id = args[-1]
             self.observations.setdefault(observation_id, {"id": observation_id, "status": "active"})
             return {"id": observation_id}
+        if compact.startswith("INSERT INTO distillations"):
+            (
+                content,
+                content_encrypted,
+                confidence,
+                sensitivity,
+                visibility,
+                shareable_summary,
+                shareable_summary_encrypted,
+                source_user_ids,
+                related_memory_ids,
+                related_observation_ids,
+                related_theme_ids,
+                supporting_message_ids,
+                triggering_message_id,
+            ) = args
+            row = {
+                "id": uuid4(),
+                "content": content,
+                "content_encrypted": content_encrypted,
+                "confidence": confidence,
+                "status": "active",
+                "sensitivity": sensitivity,
+                "visibility": visibility,
+                "shareable_summary": shareable_summary,
+                "shareable_summary_encrypted": shareable_summary_encrypted,
+                "source_user_ids": list(source_user_ids or []),
+                "related_memory_ids": list(related_memory_ids or []),
+                "related_observation_ids": list(related_observation_ids or []),
+                "related_theme_ids": list(related_theme_ids or []),
+                "supporting_message_ids": list(supporting_message_ids or []),
+                "created_from_tool_call_id": None,
+                "triggering_message_id": triggering_message_id,
+                "supersedes_distillation_id": None,
+                "superseded_by_distillation_id": None,
+                "revision_note": None,
+                "revision_count": 0,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+                "revised_at": None,
+                "retired_at": None,
+            }
+            self.distillations[row["id"]] = row
+            return {"id": row["id"]}
+        if compact.startswith("UPDATE distillations SET"):
+            distillation_id = args[-1]
+            row = self.distillations.setdefault(
+                distillation_id,
+                {
+                    "id": distillation_id,
+                    "status": "active",
+                    "created_at": datetime.now(UTC),
+                    "updated_at": datetime.now(UTC),
+                },
+            )
+            fields = [
+                "content",
+                "confidence",
+                "status",
+                "sensitivity",
+                "visibility",
+                "shareable_summary",
+                "source_user_ids",
+                "related_memory_ids",
+                "related_observation_ids",
+                "related_theme_ids",
+                "supporting_message_ids",
+                "revision_note",
+            ]
+            param_index = 0
+            for field in fields:
+                if f"{field}=$" not in compact:
+                    continue
+                row[field] = args[param_index]
+                param_index += 1
+                if field in {"content", "shareable_summary"}:
+                    encrypted_field = f"{field}_encrypted" if field == "content" else "shareable_summary_encrypted"
+                    row[encrypted_field] = args[param_index]
+                    param_index += 1
+            if "retired_at=COALESCE" in compact:
+                row["retired_at"] = row.get("retired_at") or datetime.now(UTC)
+            row["updated_at"] = datetime.now(UTC)
+            return {"id": distillation_id}
+        if compact.startswith("WITH old AS ( SELECT id, revision_count FROM distillations"):
+            (
+                old_id,
+                new_content,
+                new_content_encrypted,
+                confidence,
+                sensitivity,
+                visibility,
+                shareable_summary,
+                shareable_summary_encrypted,
+                source_user_ids,
+                related_memory_ids,
+                related_observation_ids,
+                related_theme_ids,
+                supporting_message_ids,
+                triggering_message_id,
+                revision_note,
+            ) = args
+            old = self.distillations.get(old_id)
+            if old is None or old.get("status") != "active":
+                return None
+            old_revision_count = old.get("revision_count", 0)
+            new = {
+                "id": uuid4(),
+                "content": new_content,
+                "content_encrypted": new_content_encrypted,
+                "confidence": confidence,
+                "status": "active",
+                "sensitivity": sensitivity,
+                "visibility": visibility,
+                "shareable_summary": shareable_summary,
+                "shareable_summary_encrypted": shareable_summary_encrypted,
+                "source_user_ids": list(source_user_ids or []),
+                "related_memory_ids": list(related_memory_ids or []),
+                "related_observation_ids": list(related_observation_ids or []),
+                "related_theme_ids": list(related_theme_ids or []),
+                "supporting_message_ids": list(supporting_message_ids or []),
+                "created_from_tool_call_id": None,
+                "triggering_message_id": triggering_message_id,
+                "supersedes_distillation_id": old_id,
+                "superseded_by_distillation_id": None,
+                "revision_note": revision_note,
+                "revision_count": old_revision_count + 1,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+                "revised_at": None,
+                "retired_at": None,
+            }
+            self.distillations[new["id"]] = new
+            old["status"] = "revised"
+            old["superseded_by_distillation_id"] = new["id"]
+            old["revision_note"] = revision_note
+            old["revision_count"] = old_revision_count + 1
+            old["revised_at"] = datetime.now(UTC)
+            old["updated_at"] = datetime.now(UTC)
+            return {"new_id": new["id"], "old_id": old_id}
         if compact.startswith("INSERT INTO out_of_bounds"):
             # (owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at)
             owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at = args
@@ -688,6 +862,54 @@ class FakePool:
             }
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
+        if compact.startswith("INSERT INTO scheduled_jobs") and "'scheduled_task'" in compact and "WHERE NOT EXISTS" in compact:
+            user_id, scheduled_for, context_json, source_job_id = args
+            if any(
+                job.get("job_type") == "scheduled_task"
+                and job.get("status") == "pending"
+                and str(job.get("context", {}).get("source_job_id")) == str(source_job_id)
+                for job in self.scheduled_jobs.values()
+            ):
+                return None
+            row = {
+                "id": uuid4(),
+                "user_id": user_id,
+                "job_type": "scheduled_task",
+                "scheduled_for": scheduled_for,
+                "context": _coerce_jsonb(context_json),
+                "status": "pending",
+                "attempt_count": 0,
+                "max_attempts": 2,
+                "delayed": False,
+                "claimed_at": None,
+                "claimed_by": None,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+            }
+            self.scheduled_jobs[row["id"]] = row
+            return {"id": row["id"], "scheduled_for": scheduled_for}
+        if compact.startswith("INSERT INTO scheduled_jobs") and "'scheduled_task'" in compact:
+            user_id, scheduled_for, context_json = args
+            row = {
+                "id": uuid4(),
+                "user_id": user_id,
+                "job_type": "scheduled_task",
+                "scheduled_for": scheduled_for,
+                "context": _coerce_jsonb(context_json),
+                "status": "pending",
+                "attempt_count": 0,
+                "max_attempts": 2,
+                "delayed": False,
+                "claimed_at": None,
+                "claimed_by": None,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+            }
+            self.scheduled_jobs[row["id"]] = row
+            return {"job_id": row["id"], "scheduled_for": scheduled_for, "context": row["context"]}
+        if compact.startswith("SELECT id, user_id, scheduled_for, context, status FROM scheduled_jobs WHERE id"):
+            row = self.scheduled_jobs.get(args[0])
+            return dict(row) if row is not None else None
         if compact.startswith("INSERT INTO scheduled_jobs") and ("'watch_item_due'" in compact or "VALUES ($1, $2, $3, $4::jsonb, 'pending')" in compact and args[1] == "watch_item_due"):
             if len(args) == 4:
                 user_id, job_type, scheduled_for, context_json = args
@@ -748,11 +970,67 @@ class FakePool:
             self.scheduled_jobs[row["id"]] = row
             return {"job_id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("UPDATE scheduled_jobs SET status='cancelled'"):
+            if "job_type='scheduled_task'" in compact:
+                user_id, target_job_id, target_task_id, reason = args
+                for job in self.scheduled_jobs.values():
+                    if (
+                        job.get("user_id") == user_id
+                        and job.get("job_type") == "scheduled_task"
+                        and job.get("status") == "pending"
+                        and (
+                            (target_job_id is not None and str(job["id"]) == str(target_job_id))
+                            or (
+                                target_task_id is not None
+                                and str(job.get("context", {}).get("task_id")) == str(target_task_id)
+                            )
+                        )
+                    ):
+                        job["status"] = "cancelled"
+                        job["cancellation_reason"] = reason
+                        job["updated_at"] = datetime.now(UTC)
+                        return {"job_id": job["id"], "context": job.get("context", {})}
+                return None
             user_id = args[0]
             for job in self.scheduled_jobs.values():
                 if job["user_id"] == user_id and job["job_type"] == "checkin" and job["status"] == "pending":
                     job["status"] = "cancelled"
                     return {"id": job["id"]}
+            return None
+        if compact.startswith("UPDATE scheduled_jobs SET scheduled_for=COALESCE"):
+            user_id, target_job_id, target_task_id, scheduled_for, context_patch = args
+            patch = _coerce_jsonb(context_patch) or {}
+            for job in self.scheduled_jobs.values():
+                if (
+                    job.get("user_id") == user_id
+                    and job.get("job_type") == "scheduled_task"
+                    and job.get("status") == "pending"
+                    and (
+                        (target_job_id is not None and str(job["id"]) == str(target_job_id))
+                        or (
+                            target_task_id is not None
+                            and str(job.get("context", {}).get("task_id")) == str(target_task_id)
+                        )
+                    )
+                ):
+                    if scheduled_for is not None:
+                        job["scheduled_for"] = scheduled_for
+                    job.setdefault("context", {}).update(patch)
+                    job["updated_at"] = datetime.now(UTC)
+                    return {"job_id": job["id"], "scheduled_for": job["scheduled_for"], "context": job["context"]}
+            return None
+        if compact.startswith("UPDATE scheduled_jobs SET context=COALESCE") and "job_type='scheduled_task'" in compact:
+            user_id, target_job_id, context_patch = args
+            patch = _coerce_jsonb(context_patch) or {}
+            for job in self.scheduled_jobs.values():
+                if (
+                    job.get("user_id") == user_id
+                    and job.get("job_type") == "scheduled_task"
+                    and job.get("status") == "pending"
+                    and str(job["id"]) == str(target_job_id)
+                ):
+                    job.setdefault("context", {}).update(patch)
+                    job["updated_at"] = datetime.now(UTC)
+                    return {"job_id": job["id"], "context": job["context"]}
             return None
         if compact.startswith("SELECT ( SELECT COUNT(*) FROM messages"):
             user_id = args[0]
@@ -981,23 +1259,29 @@ class FakePool:
         if "FROM bridge_candidates" in compact and "WHERE target_user_id=$1 AND source_user_id=$2" in compact:
             target_user_id, source_user_id = args
             rows = [
-                dict(row)
+                {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
                 for row in self.bridge_candidates.values()
                 if row["target_user_id"] == target_user_id
                 and row["source_user_id"] == source_user_id
-                and row["status"] in {"ready", "sent", "addressed"}
+                and row["status"] == "ready"
+                and row.get("partner_path", "message_partner") == "message_partner"
             ]
             rows.sort(key=lambda row: row["created_at"], reverse=True)
-            return rows[:3]
+            return rows[:5]
         if "FROM bridge_candidates" in compact:
-            user_id, partner_id, source_filter, target_filter, status_filter, limit = args
+            if "partner_path" in compact:
+                user_id, partner_id, source_filter, target_filter, status_filter, partner_path_filter, limit = args
+            else:
+                user_id, partner_id, source_filter, target_filter, status_filter, limit = args
+                partner_path_filter = None
             rows = [
-                dict(row)
+                {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
                 for row in self.bridge_candidates.values()
                 if {row["source_user_id"], row["target_user_id"]} == {user_id, partner_id}
                 and (source_filter is None or row["source_user_id"] == source_filter)
                 and (target_filter is None or row["target_user_id"] == target_filter)
                 and (status_filter is None or row["status"] == status_filter)
+                and (partner_path_filter is None or row.get("partner_path", "message_partner") == partner_path_filter)
             ]
             rows.sort(key=lambda row: row["created_at"], reverse=True)
             return rows[:limit]
@@ -1076,6 +1360,35 @@ class FakePool:
                 }
                 for row in self.observations.values()
                 if row.get("status", "active") == "active" and row.get("significance", 0) >= 3
+            ]
+        if "FROM distillations" in compact:
+            return [
+                {
+                    "id": row["id"],
+                    "content": row.get("content", ""),
+                    "confidence": row.get("confidence", "medium"),
+                    "status": row.get("status", "active"),
+                    "sensitivity": row.get("sensitivity", "medium"),
+                    "visibility": row.get("visibility", "private"),
+                    "shareable_summary": row.get("shareable_summary"),
+                    "source_user_ids": row.get("source_user_ids", []),
+                    "related_memory_ids": row.get("related_memory_ids", []),
+                    "related_observation_ids": row.get("related_observation_ids", []),
+                    "related_theme_ids": row.get("related_theme_ids", []),
+                    "supporting_message_ids": row.get("supporting_message_ids", []),
+                    "created_from_tool_call_id": row.get("created_from_tool_call_id"),
+                    "triggering_message_id": row.get("triggering_message_id"),
+                    "supersedes_distillation_id": row.get("supersedes_distillation_id"),
+                    "superseded_by_distillation_id": row.get("superseded_by_distillation_id"),
+                    "revision_note": row.get("revision_note"),
+                    "revision_count": row.get("revision_count", 0),
+                    "created_at": row.get("created_at", datetime.now(UTC)),
+                    "updated_at": row.get("updated_at", datetime.now(UTC)),
+                    "revised_at": row.get("revised_at"),
+                    "retired_at": row.get("retired_at"),
+                }
+                for row in self.distillations.values()
+                if row.get("status", "active") == "active"
             ]
         if "FROM messages" in compact and "WHERE id = ANY" in compact:
             message_ids = set(args[0])
@@ -1238,6 +1551,28 @@ class FakePool:
                 )
             rows.sort(key=lambda row: row["started_at"], reverse=True)
             limit = args[-1] if args and isinstance(args[-1], int) else 50
+            return rows[:limit]
+        if "FROM scheduled_jobs" in compact and "job_type='scheduled_task'" in compact:
+            user_id, include_recurring, limit = args
+            rows = []
+            for job in self.scheduled_jobs.values():
+                recurrence = job.get("context", {}).get("recurrence")
+                if (
+                    job.get("user_id") == user_id
+                    and job.get("job_type") == "scheduled_task"
+                    and job.get("status") == "pending"
+                    and (include_recurring or recurrence is None)
+                ):
+                    rows.append(
+                        {
+                            "job_id": job["id"],
+                            "scheduled_for": job["scheduled_for"],
+                            "context": job.get("context", {}),
+                            "delayed": job.get("delayed", False),
+                            "created_at": job.get("created_at", datetime.now(UTC)),
+                        }
+                    )
+            rows.sort(key=lambda row: (row["scheduled_for"], row["created_at"]))
             return rows[:limit]
         if "FROM feedback" in compact:
             rows = list(self.feedback.values())

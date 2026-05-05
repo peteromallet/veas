@@ -77,6 +77,24 @@ class ObservationStatus(str, Enum):
     stale = "stale"
 
 
+class DistillationStatus(str, Enum):
+    active = "active"
+    revised = "revised"
+    retired = "retired"
+    invalidated = "invalidated"
+
+
+class DistillationSensitivity(str, Enum):
+    low = "low"
+    medium = "medium"
+    high = "high"
+
+
+class DistillationVisibility(str, Enum):
+    private = "private"
+    dyad_shareable = "dyad_shareable"
+
+
 class OOBSeverity(str, Enum):
     soft = "soft"
     firm = "firm"
@@ -125,6 +143,24 @@ class BridgeCandidateSensitivity(str, Enum):
     high = "high"
 
 
+class BridgeCandidatePartnerPath(str, Enum):
+    """How a bridge candidate should be handled across the partner bridge."""
+
+    # Keep the ready row in the target partner prompt/hot context until it is
+    # substantively addressed; this does not proactively send it now.
+    message_partner = "message_partner"
+    # Coach the source user to discuss the bridge in person.
+    coach_in_person = "coach_in_person"
+    # Suggest a casual source-side share without creating target prompt pressure.
+    casual_share = "casual_share"
+    # Hold as source-side context/bookkeeping until a better opening appears.
+    hold_for_context = "hold_for_context"
+    # Ask the source user for explicit permission before creating a target-facing bridge.
+    ask_permission = "ask_permission"
+    # Audit-only path: record that the material should not become a bridge.
+    do_not_bridge = "do_not_bridge"
+
+
 class PerspectiveTemplate(str, Enum):
     nvc = "nvc"
     gottman = "gottman"
@@ -139,6 +175,12 @@ Significance = Annotated[int, Field(ge=1, le=5)]
 class DateRange(BaseModel):
     start: datetime | None = None
     end: datetime | None = None
+
+
+def _require_timezone_aware(value: datetime, field_name: str) -> datetime:
+    if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
+        raise ValueError(f"{field_name} must be timezone-aware")
+    return value
 
 
 # ---------------------------------------------------------------------------
@@ -370,6 +412,83 @@ class GetObservationsOutput(BaseModel):
     observations: list[ObservationRow]
 
 
+# --- get_distillations ---
+
+
+def _has_supporting_links(model: BaseModel) -> bool:
+    for field_name in (
+        "related_memory_ids",
+        "related_observation_ids",
+        "related_theme_ids",
+        "supporting_message_ids",
+    ):
+        if getattr(model, field_name, None):
+            return True
+    return False
+
+
+def _has_distillation_shareable_summary(model: BaseModel) -> bool:
+    summary = getattr(model, "shareable_summary", None)
+    return bool(summary and summary.strip())
+
+
+class DistillationEvidenceMixin(BaseModel):
+    related_memory_ids: list[UUID] = Field(default_factory=list)
+    related_observation_ids: list[UUID] = Field(default_factory=list)
+    related_theme_ids: list[UUID] = Field(default_factory=list)
+    supporting_message_ids: list[UUID] = Field(default_factory=list)
+
+
+class DistillationRow(DistillationEvidenceMixin):
+    id: UUID
+    content: str
+    confidence: Confidence
+    status: DistillationStatus
+    sensitivity: DistillationSensitivity
+    visibility: DistillationVisibility
+    shareable_summary: str | None = None
+    source_user_ids: list[UUID] = Field(min_length=1)
+    created_from_tool_call_id: UUID | None = None
+    triggering_message_id: UUID | None = None
+    supersedes_distillation_id: UUID | None = None
+    superseded_by_distillation_id: UUID | None = None
+    revision_note: str | None = None
+    revision_count: int = Field(ge=0)
+    created_at: datetime
+    updated_at: datetime
+    revised_at: datetime | None = None
+    retired_at: datetime | None = None
+
+    @model_validator(mode="after")
+    def validate_distillation_row(self) -> "DistillationRow":
+        if not _has_supporting_links(self):
+            raise ValueError("distillations must link to at least one supporting memory, observation, theme, or message")
+        if self.visibility == DistillationVisibility.dyad_shareable and not _has_distillation_shareable_summary(self):
+            raise ValueError("dyad_shareable distillations require a non-empty shareable_summary")
+        return self
+
+
+class GetDistillationsInput(BaseModel):
+    status: DistillationStatus = DistillationStatus.active
+    source_user_id: UUID | None = Field(
+        default=None,
+        description="If set, return distillations whose source_user_ids include this user.",
+    )
+    related_theme_id: UUID | None = None
+    related_memory_id: UUID | None = None
+    related_observation_id: UUID | None = None
+    supporting_message_id: UUID | None = None
+    text_contains: str | None = Field(
+        default=None,
+        description="Case-insensitive search across content, shareable_summary, and revision_note.",
+    )
+    limit: int = Field(default=100, ge=1, le=500)
+
+
+class GetDistillationsOutput(BaseModel):
+    distillations: list[DistillationRow]
+
+
 # --- get_oob ---
 
 
@@ -479,6 +598,7 @@ class BotActionTargetType(str, Enum):
     message = "message"
     memory = "memory"
     observation = "observation"
+    distillation = "distillation"
     theme = "theme"
     watch_item = "watch_item"
     oob = "oob"
@@ -556,6 +676,7 @@ class BridgeCandidate(BaseModel):
     kind: BridgeCandidateKind
     status: BridgeCandidateStatus
     sensitivity: BridgeCandidateSensitivity
+    partner_path: BridgeCandidatePartnerPath
     source_message_ids: list[UUID]
     related_memory_ids: list[UUID] = Field(default_factory=list)
     related_observation_ids: list[UUID] = Field(default_factory=list)
@@ -571,6 +692,9 @@ class CreateBridgeCandidateInput(BaseModel):
     source_user_id: UUID
     target_user_id: UUID
     kind: BridgeCandidateKind
+    partner_path: BridgeCandidatePartnerPath = Field(
+        description="Partner bridge path. Use message_partner for a ready target-facing bridge that stays in the target prompt until addressed; use do_not_bridge for audit-only non-bridges."
+    )
     sensitivity: BridgeCandidateSensitivity = BridgeCandidateSensitivity.medium
     source_message_ids: list[UUID] = Field(min_length=1)
     related_memory_ids: list[UUID] = Field(default_factory=list)
@@ -591,6 +715,7 @@ class ListBridgeCandidatesInput(BaseModel):
     source_user_id: UUID | None = None
     target_user_id: UUID | None = None
     status: BridgeCandidateStatus | None = None
+    partner_path: BridgeCandidatePartnerPath | None = None
     limit: int = Field(default=10, ge=1, le=50)
 
 
@@ -604,6 +729,10 @@ class UpdateBridgeCandidateInput(BaseModel):
     kind: BridgeCandidateKind | None = None
     status: BridgeCandidateStatus | None = None
     sensitivity: BridgeCandidateSensitivity | None = None
+    partner_path: BridgeCandidatePartnerPath | None = Field(
+        default=None,
+        description="Optional partner bridge path update. Runtime authorization determines which side may change it.",
+    )
     source_message_ids: list[UUID] | None = Field(default=None, min_length=1)
     related_memory_ids: list[UUID] | None = None
     related_observation_ids: list[UUID] | None = None
@@ -769,6 +898,93 @@ class UpdateObservationOutput(WriteUpdated):
     pass
 
 
+# --- distillations ---
+
+
+class AddDistillationInput(DistillationEvidenceMixin):
+    content: str = Field(min_length=1)
+    confidence: Confidence = Confidence.medium
+    sensitivity: DistillationSensitivity = DistillationSensitivity.medium
+    visibility: DistillationVisibility = DistillationVisibility.private
+    shareable_summary: str | None = None
+    source_user_ids: list[UUID] = Field(min_length=1)
+    triggering_message_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_distillation(self) -> "AddDistillationInput":
+        if not _has_supporting_links(self):
+            raise ValueError("distillations must link to at least one supporting memory, observation, theme, or message")
+        if self.visibility == DistillationVisibility.dyad_shareable and not _has_distillation_shareable_summary(self):
+            raise ValueError("dyad_shareable distillations require a non-empty shareable_summary")
+        return self
+
+
+class AddDistillationOutput(WriteCreated):
+    pass
+
+
+class UpdateDistillationInput(BaseModel):
+    distillation_id: UUID
+    content: str | None = Field(default=None, min_length=1)
+    confidence: Confidence | None = None
+    status: DistillationStatus | None = None
+    sensitivity: DistillationSensitivity | None = None
+    visibility: DistillationVisibility | None = None
+    shareable_summary: str | None = None
+    source_user_ids: list[UUID] | None = Field(default=None, min_length=1)
+    related_memory_ids: list[UUID] | None = None
+    related_observation_ids: list[UUID] | None = None
+    related_theme_ids: list[UUID] | None = None
+    supporting_message_ids: list[UUID] | None = None
+    revision_note: str | None = None
+
+    @model_validator(mode="after")
+    def validate_distillation_update(self) -> "UpdateDistillationInput":
+        if self.status == DistillationStatus.revised:
+            raise ValueError("use revise_distillation to mark a distillation revised")
+        evidence_fields = (
+            self.related_memory_ids,
+            self.related_observation_ids,
+            self.related_theme_ids,
+            self.supporting_message_ids,
+        )
+        if any(field is not None for field in evidence_fields) and not any(evidence_fields):
+            raise ValueError("distillation updates cannot clear all supporting links")
+        if self.visibility == DistillationVisibility.dyad_shareable and not _has_distillation_shareable_summary(self):
+            raise ValueError("dyad_shareable distillations require a non-empty shareable_summary")
+        return self
+
+
+class UpdateDistillationOutput(WriteUpdated):
+    pass
+
+
+class ReviseDistillationInput(DistillationEvidenceMixin):
+    old_distillation_id: UUID
+    new_content: str = Field(min_length=1)
+    confidence: Confidence = Confidence.medium
+    sensitivity: DistillationSensitivity = DistillationSensitivity.medium
+    visibility: DistillationVisibility = DistillationVisibility.private
+    shareable_summary: str | None = None
+    source_user_ids: list[UUID] = Field(min_length=1)
+    revision_note: str = Field(min_length=1)
+    triggering_message_id: UUID | None = None
+
+    @model_validator(mode="after")
+    def validate_revision(self) -> "ReviseDistillationInput":
+        if not _has_supporting_links(self):
+            raise ValueError("distillation revisions must link to at least one supporting memory, observation, theme, or message")
+        if self.visibility == DistillationVisibility.dyad_shareable and not _has_distillation_shareable_summary(self):
+            raise ValueError("dyad_shareable distillations require a non-empty shareable_summary")
+        return self
+
+
+class ReviseDistillationOutput(BaseModel):
+    action: Literal["revised"] = "revised"
+    new_id: UUID
+    old_id: UUID
+
+
 # --- OOB ---
 
 
@@ -810,6 +1026,147 @@ class LiftOOBOutput(BaseModel):
 # --- scheduling ---
 
 
+class ScheduledTaskRecurrence(BaseModel):
+    version: Literal[1] = 1
+    type: Literal["daily", "weekly"]
+    interval: int = Field(default=1, ge=1)
+    weekdays: list[int] | None = Field(
+        default=None,
+        description="Weekly rules only. Integers use Python weekday numbering: Monday=0 through Sunday=6.",
+    )
+    until: datetime | None = Field(
+        default=None,
+        description="Optional inclusive UTC end bound. Must be timezone-aware.",
+    )
+    remaining_occurrences: int | None = Field(
+        default=None,
+        ge=1,
+        description="Optional total occurrences remaining, including the next scheduled fire.",
+    )
+
+    @field_validator("until")
+    @classmethod
+    def require_until_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_timezone_aware(value, "recurrence.until")
+
+    @model_validator(mode="after")
+    def validate_rule_shape(self) -> "ScheduledTaskRecurrence":
+        if self.type == "weekly":
+            if not self.weekdays:
+                raise ValueError("weekly recurrence requires weekdays")
+            if any(day < 0 or day > 6 for day in self.weekdays):
+                raise ValueError("recurrence.weekdays values must be between 0 and 6")
+        elif self.weekdays:
+            raise ValueError("daily recurrence must not set weekdays")
+        return self
+
+
+class ScheduledTaskRow(BaseModel):
+    task_id: UUID
+    job_id: UUID
+    brief: str
+    scheduled_for: datetime
+    recurrence: ScheduledTaskRecurrence | None = None
+    delayed: bool = False
+    created_at: datetime | None = None
+
+
+class ScheduleTaskInput(BaseModel):
+    brief: str = Field(min_length=1, max_length=2000)
+    when: datetime = Field(
+        description="Absolute first fire time. Required for one-shot and recurring tasks. Must be timezone-aware.",
+    )
+    recurrence: ScheduledTaskRecurrence | None = None
+
+    @field_validator("when")
+    @classmethod
+    def require_when_timezone(cls, value: datetime) -> datetime:
+        return _require_timezone_aware(value, "when")
+
+
+class ScheduleTaskOutput(BaseModel):
+    action: Literal["scheduled"] = "scheduled"
+    task_id: UUID
+    job_id: UUID
+    scheduled_for: datetime
+    recurrence: ScheduledTaskRecurrence | None = None
+
+
+class ListScheduledTasksInput(BaseModel):
+    include_recurring: bool = True
+    limit: int = Field(default=50, ge=1, le=200)
+
+
+class ListScheduledTasksOutput(BaseModel):
+    tasks: list[ScheduledTaskRow]
+
+
+class UpdateScheduledTaskInput(BaseModel):
+    task_id: UUID | None = None
+    job_id: UUID | None = None
+    current_task: bool = Field(
+        default=False,
+        description="Only valid during a scheduled_task turn; targets the currently firing task.",
+    )
+    brief: str | None = Field(default=None, min_length=1, max_length=2000)
+    when: datetime | None = Field(default=None, description="Replacement next fire time. Must be timezone-aware.")
+    recurrence: ScheduledTaskRecurrence | None = Field(
+        default=None,
+        description="Replacement recurrence. Explicit null makes the task one-shot.",
+    )
+    reason: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("when")
+    @classmethod
+    def require_update_when_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_timezone_aware(value, "when")
+
+    @model_validator(mode="after")
+    def validate_update_target_and_payload(self) -> "UpdateScheduledTaskInput":
+        targets = [self.task_id is not None, self.job_id is not None, self.current_task]
+        if sum(targets) != 1:
+            raise ValueError("provide exactly one of task_id, job_id, or current_task=true")
+        has_recurrence_update = "recurrence" in self.model_fields_set
+        if self.brief is None and self.when is None and not has_recurrence_update:
+            raise ValueError("provide at least one update: brief, when, or recurrence")
+        return self
+
+
+class UpdateScheduledTaskOutput(BaseModel):
+    action: Literal["updated", "noop"]
+    task_id: UUID | None = None
+    job_id: UUID | None = None
+    scheduled_for: datetime | None = None
+    recurrence: ScheduledTaskRecurrence | None = None
+
+
+class CancelScheduledTaskInput(BaseModel):
+    task_id: UUID | None = None
+    job_id: UUID | None = None
+    current_task: bool = Field(
+        default=False,
+        description="Only valid during a scheduled_task turn; targets the currently firing task.",
+    )
+    reason: str | None = Field(default=None, max_length=1000)
+
+    @model_validator(mode="after")
+    def validate_cancel_target(self) -> "CancelScheduledTaskInput":
+        targets = [self.task_id is not None, self.job_id is not None, self.current_task]
+        if sum(targets) != 1:
+            raise ValueError("provide exactly one of task_id, job_id, or current_task=true")
+        return self
+
+
+class CancelScheduledTaskOutput(BaseModel):
+    action: Literal["cancelled", "noop"]
+    task_id: UUID | None = None
+    job_id: UUID | None = None
+
+
 class ScheduleCheckinInput(BaseModel):
     user_id: UUID
     when: datetime = Field(description="Absolute time to fire. Caller must convert relative to absolute.")
@@ -819,9 +1176,7 @@ class ScheduleCheckinInput(BaseModel):
     @field_validator("when")
     @classmethod
     def require_timezone(cls, value: datetime) -> datetime:
-        if value.tzinfo is None or value.tzinfo.utcoffset(value) is None:
-            raise ValueError("when must be timezone-aware")
-        return value
+        return _require_timezone_aware(value, "when")
 
 
 class ScheduleCheckinOutput(BaseModel):
@@ -1047,6 +1402,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "get_memories": (GetMemoriesInput, GetMemoriesOutput),
     "list_watch_items": (ListWatchItemsInput, ListWatchItemsOutput),
     "get_observations": (GetObservationsInput, GetObservationsOutput),
+    "get_distillations": (GetDistillationsInput, GetDistillationsOutput),
     "get_oob": (GetOOBInput, GetOOBOutput),
     "summarize_oob_topics": (SummarizeOOBTopicsInput, SummarizeOOBTopicsOutput),
     "check_oob": (CheckOOBInput, CheckOOBOutput),
@@ -1055,6 +1411,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "send_message_part": (SendMessagePartInput, SendMessagePartOutput),
     "consult_perspective": (ConsultPerspectiveInput, ConsultPerspectiveOutput),
     "list_bridge_candidates": (ListBridgeCandidatesInput, ListBridgeCandidatesOutput),
+    "list_scheduled_tasks": (ListScheduledTasksInput, ListScheduledTasksOutput),
     # write
     "update_user_style_notes": (UpdateUserStyleNotesInput, UpdateUserStyleNotesOutput),
     "update_cross_thread_sharing_default": (UpdateCrossThreadSharingDefaultInput, UpdateCrossThreadSharingDefaultOutput),
@@ -1071,11 +1428,17 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "address_watch_item": (AddressWatchItemInput, AddressWatchItemOutput),
     "log_observation": (LogObservationInput, LogObservationOutput),
     "update_observation": (UpdateObservationInput, UpdateObservationOutput),
+    "add_distillation": (AddDistillationInput, AddDistillationOutput),
+    "update_distillation": (UpdateDistillationInput, UpdateDistillationOutput),
+    "revise_distillation": (ReviseDistillationInput, ReviseDistillationOutput),
     "add_oob": (AddOOBInput, AddOOBOutput),
     "update_oob": (UpdateOOBInput, UpdateOOBOutput),
     "lift_oob": (LiftOOBInput, LiftOOBOutput),
     "schedule_checkin": (ScheduleCheckinInput, ScheduleCheckinOutput),
     "cancel_scheduled_checkin": (CancelScheduledCheckinInput, CancelScheduledCheckinOutput),
+    "schedule_task": (ScheduleTaskInput, ScheduleTaskOutput),
+    "update_scheduled_task": (UpdateScheduledTaskInput, UpdateScheduledTaskOutput),
+    "cancel_scheduled_task": (CancelScheduledTaskInput, CancelScheduledTaskOutput),
     "escalate_to_partner": (EscalateToPartnerInput, EscalateToPartnerOutput),
     "edit_outbound_message": (EditOutboundMessageInput, EditOutboundMessageOutput),
     "delete_outbound_message": (DeleteOutboundMessageInput, DeleteOutboundMessageOutput),
