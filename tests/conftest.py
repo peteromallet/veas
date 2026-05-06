@@ -1363,6 +1363,10 @@ class FakePool:
                     "owner_user_id": row["owner_user_id"],
                     "content": row["content"],
                     "due_at": row.get("due_at"),
+                    "status": row.get("status", "open"),
+                    "addressing_note": row.get("addressing_note"),
+                    "created_at": row.get("created_at", datetime.now(UTC)),
+                    "addressed_at": row.get("addressed_at"),
                     "related_theme_ids": row.get("related_theme_ids", []),
                 }
                 for row in self.watch_items.values()
@@ -1445,10 +1449,17 @@ class FakePool:
             params = list(args)
             limit = params[-1]
             text_filter = next((arg.strip("%").lower() for arg in params if isinstance(arg, str) and arg.startswith("%")), None)
-            id_filters = [arg for arg in params if not isinstance(arg, (str, int))]
+            datetimes = [arg for arg in params if isinstance(arg, datetime)]
+            start = datetimes[0] if len(datetimes) >= 1 else None
+            end = datetimes[1] if len(datetimes) >= 2 else None
+            id_filters = [arg for arg in params if not isinstance(arg, (str, int, datetime))]
             rows = []
             for row in self.messages.values():
                 if row.get("deleted_at") is not None:
+                    continue
+                if start is not None and row["sent_at"] < start:
+                    continue
+                if end is not None and row["sent_at"] >= end:
                     continue
                 analysis = row.get("media_analysis") or {}
                 analysis_text = " ".join(

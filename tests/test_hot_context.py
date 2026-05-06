@@ -225,6 +225,8 @@ async def test_build_hot_context_returns_expected_fields(hot_context_seed):
     assert [item["significance"] for item in hc.observations] == [3]
     assert all(item["significance"] is not None for item in hc.observations)
     assert len(hc.recent_messages) == 20
+    assert hc.recent_messages[-1]["sent_at_time"]["local_day_label"] == "today"
+    assert "relative_to_now" in hc.recent_messages[-1]["sent_at_time"]
     assert any(item["direction"] == "outbound" for item in hc.recent_messages)
     assert hc.conversation_load["total_count"] == 25
     assert hc.conversation_load["inbound_count"] == 24
@@ -425,6 +427,7 @@ async def test_render_hot_context_respects_default_token_budget(hot_context_seed
     assert "must stay private" not in text
     assert "core=" not in text
     assert "## Trigger" in text
+    assert "; utc=" in text
     assert "[raw partner content hidden by sharing_default]" in text
 
 
@@ -575,6 +578,56 @@ def test_render_hot_context_includes_current_time_for_relative_scheduling(monkey
     assert "local_day_bounds: 2026-05-06T00:00:00+02:00 to 2026-05-07T00:00:00+02:00" in text
     assert "Default to scheduling tool delay fields" in text
     assert "Use local_when for concrete local clock phrases" in text
+    get_settings.cache_clear()
+
+
+def test_render_hot_context_uses_relative_local_message_time(monkeypatch):
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "2000")
+    get_settings.cache_clear()
+    user_id = uuid4()
+    partner_id = uuid4()
+    message_id = uuid4()
+    hc = HotContext(
+        current_user={"id": user_id, "name": "Maya", "phone": "1", "timezone": "Europe/Berlin", "style_notes": "", "onboarding_state": "welcomed"},
+        partner_user={"id": partner_id, "name": "Ben", "phone": "2", "timezone": "Europe/Berlin", "style_notes": "", "onboarding_state": "pending"},
+        conversation_load={"period": "today", "timezone": "Europe/Berlin", "period_start": "2026-05-06T00:00:00+02:00", "period_end": "2026-05-07T00:00:00+02:00", "total_count": 1, "inbound_count": 1, "outbound_count": 0},
+        temporal_context={"local_day_start": "2026-05-06T00:00:00+02:00", "local_day_end": "2026-05-07T00:00:00+02:00"},
+        active_oob=[],
+        memories=[],
+        active_themes=[],
+        open_watch_items=[],
+        observations=[],
+        recent_messages=[
+            {
+                "id": message_id,
+                "direction": "inbound",
+                "sender_id": user_id,
+                "recipient_id": partner_id,
+                "content": "Yeah, I'm all good.",
+                "sent_at": "2026-05-06T21:03:00+00:00",
+                "sent_at_time": {
+                    "utc": "2026-05-06T21:03:00+00:00",
+                    "local": "2026-05-06T23:03:00+02:00",
+                    "timezone": "Europe/Berlin",
+                    "local_date": "2026-05-06",
+                    "local_time": "23:03",
+                    "local_weekday": "Wednesday",
+                    "local_day_label": "today",
+                    "relative_to_now": "about 4 minutes ago",
+                    "display": "today 23:03 Berlin",
+                },
+                "charge": "routine",
+            }
+        ],
+        time_since_last_message="4m",
+        trigger_metadata={"triggering_message_ids": [message_id], "messages": []},
+    )
+
+    text = render_hot_context(hc)
+
+    assert "today 23:03 Berlin (about 4 minutes ago; utc=2026-05-06T21:03:00+00:00) inbound" in text
+    assert "local_period_bounds: 2026-05-06T00:00:00+02:00 to 2026-05-07T00:00:00+02:00" in text
+    assert "utc_period_bounds: 2026-05-06T00:00:00+02:00 to 2026-05-07T00:00:00+02:00" in text
     get_settings.cache_clear()
 
 

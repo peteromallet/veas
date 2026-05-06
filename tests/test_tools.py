@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from datetime import UTC, date, datetime, time, timedelta, timezone
+from dataclasses import replace
 from uuid import uuid4
 
 import pytest
@@ -1713,6 +1714,48 @@ async def test_recent_activity_returns_period_and_stub_digest(tool_ctx):
     user_thread = next(thread for thread in result["threads"] if thread["user_id"] == str(tool_ctx.user.id))
     assert user_thread["message_count"] == 1
     assert user_thread["summary"] == '1 messages this period; latest: "latest context"'
+    assert user_thread["last_message_at_time"]["relative_to_now"] == "about 2 hours ago"
+    assert user_thread["last_message_at_time"]["local_day_label"] == "today"
+    assert result["period_time"]["start"]["display"]
+
+
+async def test_search_messages_returns_temporal_metadata_and_local_day_filter(tool_ctx):
+    tool_ctx.current_step = "read"
+    tool_ctx.user = replace(tool_ctx.user, timezone="Europe/Berlin")
+    tool_ctx.turn_started_at = datetime(2026, 5, 6, 22, 30, tzinfo=UTC)
+    included_id = uuid4()
+    excluded_id = uuid4()
+    tool_ctx.pool.messages[included_id] = {
+        "id": included_id,
+        "direction": "inbound",
+        "sender_id": tool_ctx.user.id,
+        "recipient_id": None,
+        "content": "after Berlin midnight",
+        "processing_state": "processed",
+        "sent_at": datetime(2026, 5, 6, 22, 15, tzinfo=UTC),
+        "charge": "routine",
+        "deleted_at": None,
+    }
+    tool_ctx.pool.messages[excluded_id] = {
+        "id": excluded_id,
+        "direction": "inbound",
+        "sender_id": tool_ctx.user.id,
+        "recipient_id": None,
+        "content": "before Berlin midnight",
+        "processing_state": "processed",
+        "sent_at": datetime(2026, 5, 6, 21, 30, tzinfo=UTC),
+        "charge": "routine",
+        "deleted_at": None,
+    }
+
+    result = await call_tool("search_messages", {"local_day": "today", "text_contains": "Berlin midnight"}, tool_ctx)
+
+    assert "error" not in result
+    assert [hit["id"] for hit in result["hits"]] == [str(included_id)]
+    hit_time = result["hits"][0]["sent_at_time"]
+    assert hit_time["display"] == "today 00:15 Berlin"
+    assert hit_time["relative_to_now"] == "about 15 minutes ago"
+    assert hit_time["utc"] == "2026-05-06T22:15:00+00:00"
 
 
 async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):

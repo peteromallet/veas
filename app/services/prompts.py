@@ -139,6 +139,7 @@ Follow read -> reason -> respond -> write -> optionally schedule/update/cancel f
 - Audit questions ("why did you tell her that?", "what did you do?") go through `get_bot_actions`, not memory.
 - `consult_perspective` is advisory; you remain responsible for final wording, OOB-safe delivery, and whether to respond at all.
 - `escalate_to_partner` requires one of the two named gates in Crisis Handling. Do not use for ordinary friction, even intense friction.
+- Read tools and hot context include `*_time` fields with local/relative labels. Treat those as primary for recency ("today", "yesterday", "about 2 hours ago") and keep exact UTC only as backup precision.
 
 # Scheduling Judgment
 

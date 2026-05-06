@@ -19,6 +19,7 @@ from app.services.vision import explain_stored_image
 from app.services.messaging import send_outbound, _append_turn_reasoning, _call_oob_hook
 from app.services import discord, scoring
 from app.services.templates import TemplateCall
+from app.services.time_context import temporal_reference
 from app.services.turn_context import TurnContext
 from app.services.scheduled_task_recurrence import normalize_recurrence
 from app.services.tools.common import current_scheduled_task
@@ -1300,16 +1301,20 @@ def _row_value(row: Any, key: str, default: Any = None) -> Any:
     return default if value is None else value
 
 
-def _scheduled_task_row(row: Any) -> ScheduledTaskRow:
+def _scheduled_task_row(row: Any, ctx: TurnContext) -> ScheduledTaskRow:
     context = _row_value(row, "context", {})
+    now = ctx.turn_started_at or datetime.now(UTC)
+    timezone = ctx.user.timezone or "UTC"
     return ScheduledTaskRow(
         task_id=context["task_id"],
         job_id=_row_value(row, "job_id", _row_value(row, "id")),
         brief=context["brief"],
         scheduled_for=row["scheduled_for"],
+        scheduled_for_time=temporal_reference(row["scheduled_for"], timezone, now=now),
         recurrence=context.get("recurrence"),
         delayed=bool(_row_value(row, "delayed", False)),
         created_at=_row_value(row, "created_at"),
+        created_at_time=temporal_reference(_row_value(row, "created_at"), timezone, now=now),
     )
 
 
@@ -1339,7 +1344,7 @@ async def list_scheduled_tasks(ctx: TurnContext, args: ListScheduledTasksInput) 
         args.include_recurring,
         args.limit,
     )
-    result = ListScheduledTasksOutput(tasks=[_scheduled_task_row(row) for row in rows])
+    result = ListScheduledTasksOutput(tasks=[_scheduled_task_row(row, ctx) for row in rows])
     await _log_tool_call(ctx, "list_scheduled_tasks", args, started, result)
     return result
 
@@ -1410,7 +1415,7 @@ async def update_scheduled_task(ctx: TurnContext, args: UpdateScheduledTaskInput
     if row is None:
         result = UpdateScheduledTaskOutput(action="noop", job_id=target_job_id, task_id=target_task_id)
     else:
-        task = _scheduled_task_row(row)
+        task = _scheduled_task_row(row, ctx)
         result = UpdateScheduledTaskOutput(
             action="updated",
             task_id=task.task_id,

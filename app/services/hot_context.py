@@ -6,7 +6,6 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
-from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import get_settings
 from app.models.user import User
@@ -16,6 +15,7 @@ from app.services.cross_thread_privacy import (
     raw_message_visibility,
 )
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
+from app.services.time_context import temporal_reference, timezone_or_utc
 from app.services.tools.common import media_analysis_text
 
 
@@ -49,19 +49,12 @@ def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None and hasattr(value, "isoformat") else None
 
 
-def _timezone_or_utc(value: Any) -> ZoneInfo:
-    try:
-        return ZoneInfo(str(value or "UTC"))
-    except ZoneInfoNotFoundError:
-        return ZoneInfo("UTC")
-
-
 def _temporal_context(timezone_name: str | None, now_utc: datetime | None = None) -> dict[str, Any]:
     now = now_utc or datetime.now(UTC)
     if now.tzinfo is None:
         now = now.replace(tzinfo=UTC)
     now = now.astimezone(UTC)
-    tz = _timezone_or_utc(timezone_name)
+    tz = timezone_or_utc(timezone_name)
     now_local = now.astimezone(tz)
     local_day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     local_day_end = local_day_start + timedelta(days=1)
@@ -77,6 +70,19 @@ def _temporal_context(timezone_name: str | None, now_utc: datetime | None = None
         "local_day_start_utc": local_day_start.astimezone(UTC).isoformat(),
         "local_day_end_utc": local_day_end.astimezone(UTC).isoformat(),
     }
+
+
+def _time_context(value: datetime | None, timezone_name: str | None, now_utc: datetime) -> dict[str, str] | None:
+    return temporal_reference(value, timezone_name, now=now_utc)
+
+
+def _time_label(item: dict[str, Any], key: str) -> str | None:
+    ref = item.get(f"{key}_time")
+    if isinstance(ref, dict):
+        exact = ref.get("utc")
+        suffix = f"; utc={exact}" if exact else ""
+        return f"{ref.get('display')} ({ref.get('relative_to_now')}{suffix})"
+    return item.get(key)
 
 
 def _duration_since(value: datetime | None) -> str | None:
@@ -167,7 +173,8 @@ async def build_hot_context(
 ) -> HotContext:
     current_user = await _user_profile(pool, user)
     partner_user = await _user_profile(pool, partner)
-    user_timezone = current_user.get("timezone") or user.timezone
+    now_utc = datetime.now(UTC)
+    user_timezone = timezone_or_utc(current_user.get("timezone") or user.timezone).key
     conversation_load_row = await pool.fetchrow(
         """
         WITH bounds AS (
@@ -209,6 +216,7 @@ async def build_hot_context(
             "shareable_context": row["shareable_context"],
             "protected_summary": row["shareable_context"] or "[protected]",
             "review_at": _iso(row["review_at"]),
+            "review_at_time": _time_context(row["review_at"], user_timezone, now_utc),
         }
         for row in await pool.fetch(
             """
@@ -228,6 +236,8 @@ async def build_hot_context(
             "related_theme_ids": _clean_list(row["related_theme_ids"]),
             "last_referenced_at": _iso(row["last_referenced_at"]),
             "created_at": _iso(row["created_at"]),
+            "last_referenced_at_time": _time_context(row["last_referenced_at"], user_timezone, now_utc),
+            "created_at_time": _time_context(row["created_at"], user_timezone, now_utc),
         }
         for row in await pool.fetch(
             """
@@ -251,6 +261,8 @@ async def build_hot_context(
             "description": row["description"],
             "last_reinforced_at": _iso(row["last_reinforced_at"]),
             "last_active_at": _iso(row["last_active_at"]),
+            "last_reinforced_at_time": _time_context(row["last_reinforced_at"], user_timezone, now_utc),
+            "last_active_at_time": _time_context(row["last_active_at"], user_timezone, now_utc),
         }
         for row in await pool.fetch(
             """
@@ -268,6 +280,7 @@ async def build_hot_context(
             "owner_user_id": row["owner_user_id"],
             "content": row["content"],
             "due_at": _iso(row["due_at"]),
+            "due_at_time": _time_context(row["due_at"], user_timezone, now_utc),
             "related_theme_ids": _clean_list(row["related_theme_ids"]),
         }
         for row in await pool.fetch(
@@ -290,6 +303,8 @@ async def build_hot_context(
             "related_theme_ids": _clean_list(row["related_theme_ids"]),
             "last_reinforced_at": _iso(row["last_reinforced_at"]),
             "created_at": _iso(row["created_at"]),
+            "last_reinforced_at_time": _time_context(row["last_reinforced_at"], user_timezone, now_utc),
+            "created_at_time": _time_context(row["created_at"], user_timezone, now_utc),
         }
         for row in await pool.fetch(
             """
@@ -371,6 +386,7 @@ async def build_hot_context(
                 "related_theme_ids": _clean_list(row["related_theme_ids"]),
                 "supporting_message_ids": _clean_list(row["supporting_message_ids"]),
                 "updated_at": _iso(row["updated_at"]),
+                "updated_at_time": _time_context(row["updated_at"], user_timezone, now_utc),
             }
         )
     recent_messages = [
@@ -393,6 +409,7 @@ async def build_hot_context(
                 thread_owner_sharing_default=sharing_defaults.get(_message_thread_owner_id(row)),
             ).visible,
             "sent_at": _iso(row["sent_at"]),
+            "sent_at_time": _time_context(row["sent_at"], user_timezone, now_utc),
             "charge": row["charge"],
         }
         for row in reversed(message_rows)
@@ -441,7 +458,7 @@ async def build_hot_context(
     return HotContext(
         current_user=current_user,
         partner_user=partner_user,
-        temporal_context=_temporal_context(user_timezone),
+        temporal_context=_temporal_context(user_timezone, now_utc),
         conversation_load=conversation_load,
         active_oob=active_oob,
         memories=memories,
@@ -460,6 +477,7 @@ async def build_hot_context(
                     "id": row["id"],
                     "charge": row["charge"],
                     "sent_at": _iso(row["sent_at"]),
+                    "sent_at_time": _time_context(row["sent_at"], user_timezone, now_utc),
                     "content": row["content"]
                     if "content" in row
                     and raw_message_visibility(
@@ -547,6 +565,8 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
             "## Conversation load",
             f"- period: {_clip(hc.conversation_load.get('period', 'today'), clip_limit)}",
             f"- timezone: {_clip(hc.conversation_load.get('timezone'), clip_limit)}",
+            f"- local_period_bounds: {_clip(hc.temporal_context.get('local_day_start') if hc.temporal_context else None, clip_limit)} to {_clip(hc.temporal_context.get('local_day_end') if hc.temporal_context else None, clip_limit)}",
+            f"- utc_period_bounds: {_clip(hc.conversation_load.get('period_start'), clip_limit)} to {_clip(hc.conversation_load.get('period_end'), clip_limit)}",
             f"- total_messages: {_clip(hc.conversation_load.get('total_count', 0), clip_limit)}",
             f"- inbound_messages: {_clip(hc.conversation_load.get('inbound_count', 0), clip_limit)}",
             f"- outbound_messages: {_clip(hc.conversation_load.get('outbound_count', 0), clip_limit)}",
@@ -558,24 +578,24 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     if hc.active_oob:
         for item in hc.active_oob:
             lines.append(
-                f"- id={_clip_id(item['id'], clip_limit)} {item['severity']} owner={_clip_id(item['owner_id'], clip_limit)} context={_clip(item.get('protected_summary') or item.get('shareable_context') or '[protected]', clip_limit)}"
+                f"- id={_clip_id(item['id'], clip_limit)} {item['severity']} owner={_clip_id(item['owner_id'], clip_limit)} review={_clip(_time_label(item, 'review_at') or 'none', clip_limit)} context={_clip(item.get('protected_summary') or item.get('shareable_context') or '[protected]', clip_limit)}"
             )
     else:
         lines.append("- none")
     lines += ["", "## Active themes"]
     lines.extend(
-        f"- id={_clip_id(theme['id'], clip_limit)} {_clip(theme['title'], clip_limit)} ({theme['status']}, {theme['sentiment']}, {theme['health']}): {_clip(theme['description'], clip_limit)}"
+        f"- id={_clip_id(theme['id'], clip_limit)} last={_clip(_time_label(theme, 'last_reinforced_at') or _time_label(theme, 'last_active_at') or 'unknown', clip_limit)} {_clip(theme['title'], clip_limit)} ({theme['status']}, {theme['sentiment']}, {theme['health']}): {_clip(theme['description'], clip_limit)}"
         for theme in hc.active_themes
     )
     lines += ["", "## Memories"]
-    lines.extend(f"- id={_clip_id(item['id'], clip_limit)} about={_clip_id(item['about_user_id'], clip_limit)}: {_clip(item['content'], clip_limit)}" for item in hc.memories)
+    lines.extend(f"- id={_clip_id(item['id'], clip_limit)} time={_clip(_time_label(item, 'last_referenced_at') or _time_label(item, 'created_at') or 'unknown', clip_limit)} about={_clip_id(item['about_user_id'], clip_limit)}: {_clip(item['content'], clip_limit)}" for item in hc.memories)
     if truncations.get("memories"):
         lines.append(f"- [truncated, {truncations['memories']} more]")
     lines += ["", "## Open watch items"]
-    lines.extend(f"- id={_clip_id(item['id'], clip_limit)} due={item['due_at']} {_clip(item['content'], clip_limit)}" for item in hc.open_watch_items)
+    lines.extend(f"- id={_clip_id(item['id'], clip_limit)} due={_clip(_time_label(item, 'due_at') or 'none', clip_limit)} {_clip(item['content'], clip_limit)}" for item in hc.open_watch_items)
     lines += ["", "## High-significance observations"]
     lines.extend(
-        f"- id={_clip_id(item['id'], clip_limit)} sig={item['significance']} confidence={item['confidence']} about={_clip_id(item['about_user_id'], clip_limit)}: {_clip(item['content'], clip_limit)}"
+        f"- id={_clip_id(item['id'], clip_limit)} time={_clip(_time_label(item, 'last_reinforced_at') or _time_label(item, 'created_at') or 'unknown', clip_limit)} sig={item['significance']} confidence={item['confidence']} about={_clip_id(item['about_user_id'], clip_limit)}: {_clip(item['content'], clip_limit)}"
         for item in hc.observations
     )
     if truncations.get("observations"):
@@ -583,7 +603,7 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     lines += ["", "## Distillations"]
     if hc.distillations:
         lines.extend(
-            f"- id={_clip_id(item['id'], clip_limit)} display={item['display']} confidence={item['confidence']} sensitivity={item['sensitivity']} visibility={item['visibility']} sources={_clip(', '.join(str(source) for source in item['source_user_ids']), clip_limit)}: {_clip(item['content'], clip_limit)}"
+            f"- id={_clip_id(item['id'], clip_limit)} time={_clip(_time_label(item, 'updated_at') or 'unknown', clip_limit)} display={item['display']} confidence={item['confidence']} sensitivity={item['sensitivity']} visibility={item['visibility']} sources={_clip(', '.join(str(source) for source in item['source_user_ids']), clip_limit)}: {_clip(item['content'], clip_limit)}"
             for item in hc.distillations
         )
         lines.append("- use get_distillations before adding or revising synthesized explanations.")
@@ -602,7 +622,7 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
         lines.append("- none")
     lines += ["", "## Recent messages"]
     lines.extend(
-        f"- {item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}"
+        f"- {_time_label(item, 'sent_at') or item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}"
         for item in hc.recent_messages
     )
     if truncations.get("recent_messages"):
@@ -617,7 +637,7 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     if hc.trigger_metadata.get("context") is not None:
         lines.append(f"- context: {_clip(hc.trigger_metadata['context'], clip_limit)}")
     lines.extend(
-        f"- trigger_message id={msg['id']} charge={msg['charge']} sent_at={msg['sent_at']}{_message_content(msg, clip_limit)}"
+        f"- trigger_message id={msg['id']} charge={msg['charge']} sent_at={_time_label(msg, 'sent_at') or msg['sent_at']}{_message_content(msg, clip_limit)}"
         for msg in hc.trigger_metadata["messages"]
     )
     return "\n".join(lines).strip()

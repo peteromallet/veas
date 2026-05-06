@@ -14,6 +14,7 @@ from app.config import get_settings
 from app.services.messaging import send_outbound_part
 from app.services.oob_check import check_oob_with_policy, summarize_partner_oob
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
+from app.services.time_context import local_day_bounds_utc, temporal_reference
 from app.services.tools.common import (
     add_date_range,
     distillation_row,
@@ -83,6 +84,28 @@ _EMOJI_FALLBACK = {
     "🧩": ("puzzle piece", ["missing piece", "complex", "fit"]),
     "🤲": ("palms up together", ["offering", "gentle", "receiving"]),
 }
+
+
+def _ctx_timezone(ctx: TurnContext, override: str | None = None) -> str:
+    return override or ctx.user.timezone or "UTC"
+
+
+def _ctx_now(ctx: TurnContext) -> datetime:
+    return ctx.turn_started_at or datetime.now(UTC)
+
+
+def _time(value_: datetime | None, ctx: TurnContext, *, timezone: str | None = None) -> dict[str, str] | None:
+    return temporal_reference(value_, _ctx_timezone(ctx, timezone), now=_ctx_now(ctx))
+
+
+def _with_audit_event_times(events: list[dict], ctx: TurnContext) -> list[dict]:
+    out = []
+    for event in events:
+        item = dict(event)
+        if item.get("occurred_at") is not None:
+            item["occurred_at_time"] = _time(item["occurred_at"], ctx)
+        out.append(item)
+    return out
 
 _EMOJI_QUERY_EXPANSIONS = {
     "support": {"help", "hand", "hands", "holding", "hug", "care", "heart", "buoy"},
@@ -285,7 +308,13 @@ async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> Search
                 OR media_analysis->>'summary' ILIKE ${len(params)}
             )"""
         )
-    add_date_range(clauses, params, "sent_at", args.date_range)
+    if args.local_day is not None:
+        start, end = local_day_bounds_utc(args.local_day, _ctx_timezone(ctx, args.timezone), now=_ctx_now(ctx))
+        params.extend([start, end])
+        clauses.append(f"sent_at >= ${len(params) - 1}")
+        clauses.append(f"sent_at < ${len(params)}")
+    else:
+        add_date_range(clauses, params, "sent_at", args.date_range)
     params.append(args.limit)
     rows = await ctx.pool.fetch(
         f"""
@@ -313,7 +342,7 @@ async def search_messages(ctx: TurnContext, args: SearchMessagesInput) -> Search
             thread_owner_sharing_default=sharing_defaults.get(owner_id),
         ).visible:
             continue
-        hits.append(message_hit(row))
+        hits.append(message_hit(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)))
     return SearchMessagesOutput(hits=hits, truncated=len(rows) == args.limit)
 
 
@@ -414,7 +443,7 @@ async def search_emojis(ctx: TurnContext, args: SearchEmojisInput) -> SearchEmoj
 
 async def recent_activity(ctx: TurnContext, args: RecentActivityInput) -> RecentActivityOutput:
     logger.info("read tool recent_activity turn_id=%s", ctx.turn_id)
-    end = datetime.now(UTC)
+    end = _ctx_now(ctx)
     start = end - timedelta(days=args.days)
     rows = await ctx.pool.fetch(
         """
@@ -460,10 +489,15 @@ async def recent_activity(ctx: TurnContext, args: RecentActivityInput) -> Recent
                 user_name=row["user_name"],
                 message_count=count,
                 last_message_at=row["last_message_at"],
+                last_message_at_time=_time(row["last_message_at"], ctx),
                 summary=summary,
             )
         )
-    return RecentActivityOutput(threads=threads, period=DateRange(start=start, end=end))
+    return RecentActivityOutput(
+        threads=threads,
+        period=DateRange(start=start, end=end),
+        period_time={"start": _time(start, ctx), "end": _time(end, ctx)},
+    )
 
 
 def _message_thread_owner_id(row: Any) -> Any:
@@ -492,7 +526,7 @@ async def list_themes(ctx: TurnContext, args: ListThemesInput) -> ListThemesOutp
         """,
         args.limit,
     )
-    return ListThemesOutput(themes=[theme_summary(row) for row in rows])
+    return ListThemesOutput(themes=[theme_summary(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows])
 
 
 async def get_theme(ctx: TurnContext, args: GetThemeInput) -> GetThemeOutput:
@@ -518,9 +552,10 @@ async def get_theme(ctx: TurnContext, args: GetThemeInput) -> GetThemeOutput:
     )
     return GetThemeOutput(
         theme=ThemeDetail(
-            **theme_summary(row).model_dump(),
+            **theme_summary(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)).model_dump(),
             description=row["description"],
             first_seen_at=row["first_seen_at"],
+            first_seen_at_time=_time(row["first_seen_at"], ctx),
             related_memory_ids=[r["id"] for r in memory_rows],
             related_observation_ids=[r["id"] for r in observation_rows],
         )
@@ -551,7 +586,7 @@ async def get_memories(ctx: TurnContext, args: GetMemoriesInput) -> GetMemoriesO
         """,
         *params,
     )
-    return GetMemoriesOutput(memories=[memory_row(row) for row in rows])
+    return GetMemoriesOutput(memories=[memory_row(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows])
 
 
 async def list_watch_items(ctx: TurnContext, args: ListWatchItemsInput) -> ListWatchItemsOutput:
@@ -578,7 +613,7 @@ async def list_watch_items(ctx: TurnContext, args: ListWatchItemsInput) -> ListW
         """,
         *params,
     )
-    return ListWatchItemsOutput(items=[watch_item_row(row) for row in rows])
+    return ListWatchItemsOutput(items=[watch_item_row(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows])
 
 
 async def get_observations(ctx: TurnContext, args: GetObservationsInput) -> GetObservationsOutput:
@@ -609,7 +644,7 @@ async def get_observations(ctx: TurnContext, args: GetObservationsInput) -> GetO
         """,
         *params,
     )
-    return GetObservationsOutput(observations=[observation_row(row) for row in rows])
+    return GetObservationsOutput(observations=[observation_row(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows])
 
 
 async def get_distillations(ctx: TurnContext, args: GetDistillationsInput) -> GetDistillationsOutput:
@@ -683,7 +718,9 @@ async def get_distillations(ctx: TurnContext, args: GetDistillationsInput) -> Ge
             safe_row["content"] = row["shareable_summary"]
             safe_row["revision_note"] = None
             visible_rows.append(safe_row)
-    return GetDistillationsOutput(distillations=[distillation_row(row) for row in visible_rows])
+    return GetDistillationsOutput(
+        distillations=[distillation_row(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in visible_rows]
+    )
 
 
 async def get_oob(ctx: TurnContext, args: GetOOBInput) -> GetOOBOutput:
@@ -705,7 +742,7 @@ async def get_oob(ctx: TurnContext, args: GetOOBInput) -> GetOOBOutput:
         """,
         *params,
     )
-    return GetOOBOutput(entries=[oob_row(row) for row in rows])
+    return GetOOBOutput(entries=[oob_row(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows])
 
 
 async def check_oob(ctx: TurnContext, args: CheckOOBInput) -> CheckOOBOutput:
@@ -832,6 +869,7 @@ async def get_bot_actions(ctx: TurnContext, args: GetBotActionsInput) -> GetBotA
             BotAction(
                 turn_id=row["turn_id"],
                 started_at=row["started_at"],
+                started_at_time=_time(row["started_at"], ctx),
                 user_in_context=row["user_in_context"],
                 triggered_by_message_id=row["triggered_by_message_id"],
                 final_output_message_id=row["final_output_message_id"],
@@ -839,7 +877,7 @@ async def get_bot_actions(ctx: TurnContext, args: GetBotActionsInput) -> GetBotA
                 final_outbound_content=row["final_outbound_content"],
                 reasoning=row["reasoning"],
                 tool_calls=list(row["tool_calls"] or []),
-                audit_events=list(row.get("audit_events") or []),
+                audit_events=_with_audit_event_times(list(row.get("audit_events") or []), ctx),
             )
             for row in rows
         ]

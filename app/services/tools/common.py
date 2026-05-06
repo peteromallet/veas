@@ -14,6 +14,7 @@ from tool_schemas import (
     ThemeSummary,
     WatchItemRow,
 )
+from app.services.time_context import temporal_reference
 from app.services.turn_context import TurnContext
 
 
@@ -70,19 +71,24 @@ def current_scheduled_task(ctx: TurnContext) -> dict[str, Any] | None:
     }
 
 
-def message_hit(row: Any) -> MessageHit:
+def _time(value_: Any, timezone: str | None, now: Any = None) -> dict[str, str] | None:
+    return temporal_reference(value_, timezone, now=now)
+
+
+def message_hit(row: Any, *, timezone: str | None = None, now: Any = None) -> MessageHit:
     content = value(row, "content", "") or media_analysis_text(row)
     return MessageHit(
         id=row["id"],
         sender_id=row["sender_id"],
         sent_at=row["sent_at"],
+        sent_at_time=_time(row["sent_at"], timezone, now),
         content=content,
         charge=value(row, "charge", "routine"),
         direction=row["direction"],
     )
 
 
-def theme_summary(row: Any) -> ThemeSummary:
+def theme_summary(row: Any, *, timezone: str | None = None, now: Any = None) -> ThemeSummary:
     return ThemeSummary(
         id=row["id"],
         title=row["title"],
@@ -91,10 +97,12 @@ def theme_summary(row: Any) -> ThemeSummary:
         health=row["health"],
         last_reinforced_at=row["last_reinforced_at"],
         last_active_at=row["last_active_at"],
+        last_reinforced_at_time=_time(row["last_reinforced_at"], timezone, now),
+        last_active_at_time=_time(row["last_active_at"], timezone, now),
     )
 
 
-def memory_row(row: Any) -> MemoryRow:
+def memory_row(row: Any, *, timezone: str | None = None, now: Any = None) -> MemoryRow:
     return MemoryRow(
         id=row["id"],
         about_user_id=row["about_user_id"],
@@ -103,10 +111,12 @@ def memory_row(row: Any) -> MemoryRow:
         related_theme_ids=list_value(row, "related_theme_ids"),
         created_at=row["created_at"],
         last_referenced_at=row["last_referenced_at"],
+        created_at_time=_time(row["created_at"], timezone, now),
+        last_referenced_at_time=_time(row["last_referenced_at"], timezone, now),
     )
 
 
-def watch_item_row(row: Any) -> WatchItemRow:
+def watch_item_row(row: Any, *, timezone: str | None = None, now: Any = None) -> WatchItemRow:
     return WatchItemRow(
         id=row["id"],
         owner_user_id=row["owner_user_id"],
@@ -117,10 +127,13 @@ def watch_item_row(row: Any) -> WatchItemRow:
         created_at=row["created_at"],
         addressed_at=row["addressed_at"],
         related_theme_ids=list_value(row, "related_theme_ids"),
+        due_at_time=_time(row["due_at"], timezone, now),
+        created_at_time=_time(row["created_at"], timezone, now),
+        addressed_at_time=_time(row["addressed_at"], timezone, now),
     )
 
 
-def observation_row(row: Any) -> ObservationRow:
+def observation_row(row: Any, *, timezone: str | None = None, now: Any = None) -> ObservationRow:
     return ObservationRow(
         id=row["id"],
         content=row["content"],
@@ -133,10 +146,12 @@ def observation_row(row: Any) -> ObservationRow:
         created_at=row["created_at"],
         last_reinforced_at=row["last_reinforced_at"],
         surfaced_count=value(row, "surfaced_count", 0),
+        created_at_time=_time(row["created_at"], timezone, now),
+        last_reinforced_at_time=_time(row["last_reinforced_at"], timezone, now),
     )
 
 
-def distillation_row(row: Any) -> DistillationRow:
+def distillation_row(row: Any, *, timezone: str | None = None, now: Any = None) -> DistillationRow:
     return DistillationRow(
         id=row["id"],
         content=row["content"],
@@ -160,10 +175,14 @@ def distillation_row(row: Any) -> DistillationRow:
         updated_at=row["updated_at"],
         revised_at=value(row, "revised_at"),
         retired_at=value(row, "retired_at"),
+        created_at_time=_time(row["created_at"], timezone, now),
+        updated_at_time=_time(row["updated_at"], timezone, now),
+        revised_at_time=_time(value(row, "revised_at"), timezone, now),
+        retired_at_time=_time(value(row, "retired_at"), timezone, now),
     )
 
 
-def oob_row(row: Any) -> OOBRow:
+def oob_row(row: Any, *, timezone: str | None = None, now: Any = None) -> OOBRow:
     shareable_context = row["shareable_context"]
     return OOBRow(
         id=row["id"],
@@ -174,4 +193,6 @@ def oob_row(row: Any) -> OOBRow:
         status=row["status"],
         created_at=row["created_at"],
         review_at=row["review_at"],
+        created_at_time=_time(row["created_at"], timezone, now),
+        review_at_time=_time(row["review_at"], timezone, now),
     )

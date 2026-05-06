@@ -24,6 +24,18 @@ from pydantic import BaseModel, Field, field_validator, model_validator
 # ---------------------------------------------------------------------------
 
 
+class TemporalReference(BaseModel):
+    utc: str
+    local: str
+    timezone: str
+    local_date: str
+    local_time: str
+    local_weekday: str
+    local_day_label: str = Field(description="today, yesterday, tomorrow, N days ago, or an ISO date.")
+    relative_to_now: str = Field(description="Human-relative age such as about 2 hours ago or in 3 days.")
+    display: str = Field(description="Compact primary label, e.g. today 21:03 Berlin.")
+
+
 class Charge(str, Enum):
     routine = "routine"
     notable = "notable"
@@ -219,17 +231,32 @@ class SearchMessagesInput(BaseModel):
         default=None, description="If set, restrict to that partner's thread."
     )
     date_range: DateRange | None = None
+    local_day: Literal["today", "yesterday"] | dt_date | None = Field(
+        default=None,
+        description="Search one local calendar day in the current user's timezone, e.g. today, yesterday, or 2026-05-06. Do not combine with date_range.",
+    )
+    timezone: str | None = Field(
+        default=None,
+        description="Optional timezone for local_day; defaults to the current user's timezone.",
+    )
     text_contains: str | None = Field(
         default=None,
         description="Plain substring match. Case-insensitive. Empty string = no filter.",
     )
     limit: int = Field(default=50, ge=1, le=500)
 
+    @model_validator(mode="after")
+    def validate_temporal_filters(self) -> "SearchMessagesInput":
+        if self.local_day is not None and self.date_range is not None:
+            raise ValueError("Use either local_day or date_range, not both.")
+        return self
+
 
 class MessageHit(BaseModel):
     id: UUID
     sender_id: UUID | None
     sent_at: datetime
+    sent_at_time: TemporalReference | None = None
     content: str
     charge: Charge
     direction: Literal["inbound", "outbound"]
@@ -278,12 +305,14 @@ class ThreadDigest(BaseModel):
     user_name: str
     message_count: int
     last_message_at: datetime | None
+    last_message_at_time: TemporalReference | None = None
     summary: str  # LLM-generated digest, prepared by the tool
 
 
 class RecentActivityOutput(BaseModel):
     threads: list[ThreadDigest]
     period: DateRange
+    period_time: dict[str, TemporalReference | None] | None = None
 
 
 # --- list_themes / get_theme ---
@@ -309,6 +338,8 @@ class ThemeSummary(BaseModel):
     health: ThemeHealth
     last_reinforced_at: datetime | None
     last_active_at: datetime | None
+    last_reinforced_at_time: TemporalReference | None = None
+    last_active_at_time: TemporalReference | None = None
 
 
 class ListThemesOutput(BaseModel):
@@ -322,6 +353,7 @@ class GetThemeInput(BaseModel):
 class ThemeDetail(ThemeSummary):
     description: str
     first_seen_at: datetime
+    first_seen_at_time: TemporalReference | None = None
     related_memory_ids: list[UUID]
     related_observation_ids: list[UUID]
 
@@ -352,6 +384,8 @@ class MemoryRow(BaseModel):
     related_theme_ids: list[UUID]
     created_at: datetime
     last_referenced_at: datetime | None
+    created_at_time: TemporalReference | None = None
+    last_referenced_at_time: TemporalReference | None = None
 
 
 class GetMemoriesOutput(BaseModel):
@@ -376,6 +410,9 @@ class WatchItemRow(BaseModel):
     addressing_note: str | None
     created_at: datetime
     addressed_at: datetime | None
+    due_at_time: TemporalReference | None = None
+    created_at_time: TemporalReference | None = None
+    addressed_at_time: TemporalReference | None = None
     related_theme_ids: list[UUID]
 
 
@@ -405,6 +442,8 @@ class ObservationRow(BaseModel):
     supporting_message_ids: list[UUID]
     created_at: datetime
     last_reinforced_at: datetime | None
+    created_at_time: TemporalReference | None = None
+    last_reinforced_at_time: TemporalReference | None = None
     surfaced_count: int
 
 
@@ -458,6 +497,10 @@ class DistillationRow(DistillationEvidenceMixin):
     updated_at: datetime
     revised_at: datetime | None = None
     retired_at: datetime | None = None
+    created_at_time: TemporalReference | None = None
+    updated_at_time: TemporalReference | None = None
+    revised_at_time: TemporalReference | None = None
+    retired_at_time: TemporalReference | None = None
 
     @model_validator(mode="after")
     def validate_distillation_row(self) -> "DistillationRow":
@@ -506,6 +549,8 @@ class OOBRow(BaseModel):
     status: OOBStatus
     created_at: datetime
     review_at: datetime | None
+    created_at_time: TemporalReference | None = None
+    review_at_time: TemporalReference | None = None
 
 
 class GetOOBOutput(BaseModel):
@@ -616,6 +661,7 @@ class GetBotActionsInput(BaseModel):
 class BotAction(BaseModel):
     turn_id: UUID
     started_at: datetime
+    started_at_time: TemporalReference | None = None
     user_in_context: UUID | None
     triggered_by_message_id: UUID | None
     final_output_message_id: UUID | None
@@ -1072,9 +1118,11 @@ class ScheduledTaskRow(BaseModel):
     job_id: UUID
     brief: str
     scheduled_for: datetime
+    scheduled_for_time: TemporalReference | None = None
     recurrence: ScheduledTaskRecurrence | None = None
     delayed: bool = False
     created_at: datetime | None = None
+    created_at_time: TemporalReference | None = None
 
 
 class ScheduleDelay(BaseModel):
