@@ -57,8 +57,8 @@ def normalize_recurrence(recurrence: Mapping[str, Any] | None) -> dict[str, Any]
     kind = str(recurrence.get("type") or recurrence.get("frequency") or "one_shot").strip().lower()
     if kind in {"", "none", "null", "one_shot", "once"}:
         return None
-    if kind not in {"daily", "weekly"}:
-        raise RecurrenceError("recurrence.type must be daily or weekly")
+    if kind not in {"hourly", "daily", "weekly"}:
+        raise RecurrenceError("recurrence.type must be hourly, daily, or weekly")
 
     normalized: dict[str, Any] = {
         "version": 1,
@@ -98,7 +98,9 @@ def next_occurrence_utc(current_occurrence: datetime, recurrence: Mapping[str, A
 
     current = _aware_datetime(current_occurrence, "current_occurrence")
     interval = normalized["interval"]
-    if normalized["type"] == "daily":
+    if normalized["type"] == "hourly":
+        candidate = current + timedelta(hours=interval)
+    elif normalized["type"] == "daily":
         candidate = current + timedelta(days=interval)
     else:
         candidate = _next_weekly_occurrence(current, normalized["weekdays"], interval)

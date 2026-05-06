@@ -1028,7 +1028,7 @@ class LiftOOBOutput(BaseModel):
 
 class ScheduledTaskRecurrence(BaseModel):
     version: Literal[1] = 1
-    type: Literal["daily", "weekly"]
+    type: Literal["hourly", "daily", "weekly"]
     interval: int = Field(default=1, ge=1)
     weekdays: list[int] | None = Field(
         default=None,
@@ -1059,7 +1059,7 @@ class ScheduledTaskRecurrence(BaseModel):
             if any(day < 0 or day > 6 for day in self.weekdays):
                 raise ValueError("recurrence.weekdays values must be between 0 and 6")
         elif self.weekdays:
-            raise ValueError("daily recurrence must not set weekdays")
+            raise ValueError("hourly and daily recurrence must not set weekdays")
         return self
 
 
@@ -1073,17 +1073,43 @@ class ScheduledTaskRow(BaseModel):
     created_at: datetime | None = None
 
 
+class ScheduleDelay(BaseModel):
+    weeks: int = Field(default=0, ge=0, le=52)
+    days: int = Field(default=0, ge=0, le=366)
+    hours: int = Field(default=0, ge=0, le=8784)
+    minutes: int = Field(default=0, ge=0, le=527040)
+
+    @model_validator(mode="after")
+    def validate_positive_duration(self) -> "ScheduleDelay":
+        if self.weeks == 0 and self.days == 0 and self.hours == 0 and self.minutes == 0:
+            raise ValueError("delay must be a positive duration")
+        return self
+
+
 class ScheduleTaskInput(BaseModel):
     brief: str = Field(min_length=1, max_length=2000)
-    when: datetime = Field(
-        description="Absolute first fire time. Required for one-shot and recurring tasks. Must be timezone-aware.",
+    when: datetime | None = Field(
+        default=None,
+        description="Absolute first fire time. Use only for concrete clock/calendar times or after resolving calendar-relative language such as 'tomorrow morning'. Must be timezone-aware and in the future.",
+    )
+    delay: ScheduleDelay | None = Field(
+        default=None,
+        description="Preferred/default for simple relative duration requests like 'in two hours', 'in 10 hours', or 'in two days'. Relative offset from the current server time. Provide exactly one of delay or when.",
     )
     recurrence: ScheduledTaskRecurrence | None = None
 
     @field_validator("when")
     @classmethod
-    def require_when_timezone(cls, value: datetime) -> datetime:
+    def require_when_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         return _require_timezone_aware(value, "when")
+
+    @model_validator(mode="after")
+    def validate_schedule_time(self) -> "ScheduleTaskInput":
+        if (self.when is None) == (self.delay is None):
+            raise ValueError("provide exactly one of when or delay")
+        return self
 
 
 class ScheduleTaskOutput(BaseModel):
@@ -1111,7 +1137,14 @@ class UpdateScheduledTaskInput(BaseModel):
         description="Only valid during a scheduled_task turn; targets the currently firing task.",
     )
     brief: str | None = Field(default=None, min_length=1, max_length=2000)
-    when: datetime | None = Field(default=None, description="Replacement next fire time. Must be timezone-aware.")
+    when: datetime | None = Field(
+        default=None,
+        description="Replacement next fire time. Use only for concrete clock/calendar times or after resolving calendar-relative language such as 'tomorrow morning'. Must be timezone-aware and in the future.",
+    )
+    delay: ScheduleDelay | None = Field(
+        default=None,
+        description="Preferred/default replacement time for simple relative duration requests like 'in two hours', 'in 10 hours', or 'in two days'. Relative offset from the current server time. Do not provide together with when.",
+    )
     recurrence: ScheduledTaskRecurrence | None = Field(
         default=None,
         description="Replacement recurrence. Explicit null makes the task one-shot.",
@@ -1131,7 +1164,9 @@ class UpdateScheduledTaskInput(BaseModel):
         if sum(targets) != 1:
             raise ValueError("provide exactly one of task_id, job_id, or current_task=true")
         has_recurrence_update = "recurrence" in self.model_fields_set
-        if self.brief is None and self.when is None and not has_recurrence_update:
+        if self.when is not None and self.delay is not None:
+            raise ValueError("provide at most one of when or delay")
+        if self.brief is None and self.when is None and self.delay is None and not has_recurrence_update:
             raise ValueError("provide at least one update: brief, when, or recurrence")
         return self
 
@@ -1169,14 +1204,29 @@ class CancelScheduledTaskOutput(BaseModel):
 
 class ScheduleCheckinInput(BaseModel):
     user_id: UUID
-    when: datetime = Field(description="Absolute time to fire. Caller must convert relative to absolute.")
+    when: datetime | None = Field(
+        default=None,
+        description="Absolute future time to fire. Use only for concrete clock/calendar times or after resolving calendar-relative language such as 'tomorrow morning'.",
+    )
+    delay: ScheduleDelay | None = Field(
+        default=None,
+        description="Preferred/default for simple relative duration requests like 'in two hours', 'in 10 hours', or 'in two days'. Relative offset from the current server time. Provide exactly one of delay or when.",
+    )
     about_what: str
     reason: str = Field(description="Why the bot decided this check-in is worth scheduling. Logged for audit.")
 
     @field_validator("when")
     @classmethod
-    def require_timezone(cls, value: datetime) -> datetime:
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
         return _require_timezone_aware(value, "when")
+
+    @model_validator(mode="after")
+    def validate_schedule_time(self) -> "ScheduleCheckinInput":
+        if (self.when is None) == (self.delay is None):
+            raise ValueError("provide exactly one of when or delay")
+        return self
 
 
 class ScheduleCheckinOutput(BaseModel):
@@ -1384,6 +1434,36 @@ class ConsultPerspectiveOutput(BaseModel):
         return self
 
 
+# --- adaptive turn plan ---
+
+
+TurnStepValue = Literal["read", "consult", "respond", "record", "schedule", "done"]
+
+
+class UpdateTurnPlanInput(BaseModel):
+    add_steps: list[TurnStepValue] | None = Field(
+        default=None,
+        description="Steps to add before done when the current turn needs more work than the initial skeleton.",
+    )
+    remove_steps: list[TurnStepValue] | None = Field(
+        default=None,
+        description="Steps to remove when they are unnecessary. The runtime always keeps done.",
+    )
+    mark_done: list[TurnStepValue] | None = Field(
+        default=None,
+        description="Steps that should be marked complete in the visible turn checklist.",
+    )
+    note: str | None = Field(default=None, max_length=500, description="A compact private note explaining the change.")
+
+
+class UpdateTurnPlanOutput(BaseModel):
+    plan: str
+    current: TurnStepValue
+    steps: list[TurnStepValue]
+    completed: list[TurnStepValue] = Field(default_factory=list)
+    notes: list[str] = Field(default_factory=list)
+
+
 # ---------------------------------------------------------------------------
 # Tool registry
 # ---------------------------------------------------------------------------
@@ -1393,6 +1473,7 @@ class ConsultPerspectiveOutput(BaseModel):
 # the JSON schema list passed to the Anthropic API.
 
 TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
+    "update_turn_plan": (UpdateTurnPlanInput, UpdateTurnPlanOutput),
     # read
     "search_messages": (SearchMessagesInput, SearchMessagesOutput),
     "search_emojis": (SearchEmojisInput, SearchEmojisOutput),

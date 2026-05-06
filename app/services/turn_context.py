@@ -7,6 +7,7 @@ from uuid import UUID
 from datetime import datetime
 
 from app.models.user import User
+from app.services.turn_plan import TurnPlan, TurnStep, make_turn_plan
 
 PacedSendKind = Literal["final", "incremental_first", "incremental_next"]
 BeforePacedSend = Callable[..., Awaitable[None]]
@@ -19,7 +20,9 @@ class TurnContext:
     user: User
     partner: User
     triggering_message_ids: list[UUID]
-    phase: Literal["read", "write", "consult"] = "read"
+    current_step: TurnStep = "respond"
+    turn_plan: TurnPlan = field(default_factory=lambda: make_turn_plan("quick_reply"))
+    tool_call_log: list[str] = field(default_factory=list)
     trigger_charge: str | None = None
     explicit_partner_alert_requested: bool = False
     turn_started_at: datetime | None = None

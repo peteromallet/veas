@@ -108,14 +108,19 @@ async def test_run_agentic_turn_lifecycle_ordering(fake_pool, app_env, monkeypat
     }
     calls = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        calls.append((ctx.phase, seed_messages, fake_pool.messages[message_id]["processing_state"], ctx.trigger_metadata))
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        calls.append((ctx.current_step, seed_messages, fake_pool.messages[message_id]["processing_state"], ctx.trigger_metadata))
         assert "## You" in hot_context_rendered
-        if ctx.phase == "read":
+        if ctx.current_step == "read":
             assert fake_pool.messages[message_id]["processing_state"] == "raw"
-            return "I hear you.", [{"role": "assistant", "content": "reason note"}], 2
-        assert seed_messages[-1]["content"].startswith("You sent: I hear you.")
-        return "", [{"role": "assistant", "content": "write note"}], 3
+            return "reason note", [{"role": "assistant", "content": "reason note"}], 2
+        if ctx.current_step == "respond":
+            return "I hear you.", [{"role": "assistant", "content": "reply note"}], 0
+        if ctx.current_step == "record":
+            assert seed_messages[-1]["content"].startswith("Next step: record.")
+            assert "You sent: I hear you." in seed_messages[-1]["content"]
+            return "write note", [{"role": "assistant", "content": "write note"}], 3
+        return "", [{"role": "assistant", "content": "schedule note"}], 0
 
     async def fake_send(pool, recipient, content, bot_turn_id=None, **kwargs):
         out_id = uuid4()
@@ -132,7 +137,7 @@ async def test_run_agentic_turn_lifecycle_ordering(fake_pool, app_env, monkeypat
         }
         return out_id
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 
@@ -142,9 +147,9 @@ async def test_run_agentic_turn_lifecycle_ordering(fake_pool, app_env, monkeypat
     assert "## You" in turn["prompt_snapshot"]
     assert "## Recent messages" in turn["prompt_snapshot"]
     assert fake_pool.messages[message_id]["processing_state"] == "processed"
-    assert [call[0] for call in calls] == ["read", "write"]
+    assert [call[0] for call in calls] == ["read", "respond", "record", "schedule"]
     assert calls[0][2] == "raw"
-    assert [call[3].get("kind", "inbound") for call in calls] == ["inbound", "inbound"]
+    assert [call[3].get("kind", "inbound") for call in calls] == ["inbound"] * 4
     assert all("job_id" not in call[3].get("context", {}) for call in calls)
     assert turn["tool_call_count"] == 5
     assert turn["final_output_message_id"] is not None
@@ -195,11 +200,11 @@ async def test_run_agentic_turn_with_metadata_seeds_compact_pacing_context(fake_
         },
         preference_snapshot={"conversation_pace": "standard", "allow_reactions": True, "ignored": "value"},
     )
-    read_seed_contents = []
+    seed_contents = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
-            read_seed_contents.append(seed_messages[-1]["content"])
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
+            seed_contents.append(seed_messages[-1]["content"])
             assert "pacing" in hot_context_rendered
             assert "burst settled after short wait" in hot_context_rendered
             return "I hear the whole thought.", [], 0
@@ -222,17 +227,17 @@ async def test_run_agentic_turn_with_metadata_seeds_compact_pacing_context(fake_
         }
         return out_id
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 
     await agentic.run_agentic_turn_with_metadata([message_id], user, pacing_context=decision)
 
-    assert read_seed_contents
-    assert '"pacing"' in read_seed_contents[0]
-    assert '"action": "answer"' in read_seed_contents[0]
-    assert '"source": "live"' in read_seed_contents[0]
-    assert "irrelevant_large_blob" not in read_seed_contents[0]
+    assert seed_contents
+    assert '"pacing"' in seed_contents[0]
+    assert '"action": "answer"' in seed_contents[0]
+    assert '"source": "live"' in seed_contents[0]
+    assert "irrelevant_large_blob" not in seed_contents[0]
     turn = next(iter(fake_pool.bot_turns.values()))
     assert "pacing" in turn["prompt_snapshot"]
     assert "I hear the whole thought." == fake_pool.messages[turn["final_output_message_id"]]["content"]
@@ -262,12 +267,12 @@ async def test_run_agentic_job_propagates_scheduled_task_trigger_metadata(fake_p
     }
     seen = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        seen.append((ctx.phase, ctx.triggering_message_ids, ctx.trigger_metadata))
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        seen.append((ctx.current_step, ctx.triggering_message_ids, ctx.trigger_metadata))
         assert "scheduled_task" in hot_context_rendered
         return "", [], 0
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
 
     await agentic.run_agentic_job_with_pool(
         fake_pool,
@@ -276,13 +281,13 @@ async def test_run_agentic_job_propagates_scheduled_task_trigger_metadata(fake_p
         prompt_version="v1",
     )
 
-    assert [phase for phase, _, _ in seen] == ["read", "write"]
+    assert [phase for phase, _, _ in seen] == ["read", "respond", "record", "schedule"]
     assert all(message_ids == [] for _, message_ids, _ in seen)
     assert all(metadata["kind"] == "scheduled_task" for _, _, metadata in seen)
     assert all(metadata["context"]["job_id"] == str(job_id) for _, _, metadata in seen)
 
 
-async def test_run_agentic_records_outbound_before_phase_b(fake_pool, app_env, monkeypatch):
+async def test_run_agentic_records_outbound_before_record_step(fake_pool, app_env, monkeypatch):
     user = User(uuid4(), "Maya", "15555550100", "UTC")
     partner = User(uuid4(), "Ben", "15555550101", "UTC")
     fake_pool.users[user.id] = {"id": user.id, "name": user.name, "phone": user.phone, "timezone": user.timezone}
@@ -307,11 +312,12 @@ async def test_run_agentic_records_outbound_before_phase_b(fake_pool, app_env, m
         "edited_at": None,
     }
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             return "I hear you.", [], 0
-        turn = next(iter(fake_pool.bot_turns.values()))
-        assert turn["final_output_message_id"] is not None
+        if ctx.current_step == "record":
+            turn = next(iter(fake_pool.bot_turns.values()))
+            assert turn["final_output_message_id"] is not None
         return "", [], 0
 
     async def fake_send(pool, recipient, content, bot_turn_id=None, **kwargs):
@@ -329,7 +335,7 @@ async def test_run_agentic_records_outbound_before_phase_b(fake_pool, app_env, m
         }
         return out_id
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 
@@ -362,8 +368,8 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives(fake_poo
     }
     sent = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             newer_id = uuid4()
             fake_pool.messages[newer_id] = {
                 "id": newer_id,
@@ -384,18 +390,13 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives(fake_poo
                 "edited_at": None,
             }
             return "I was mid-reply.", [], 0
-        assert seed_messages[-1]["content"] == (
-            "You sent: [silence]. Now record any state changes (memories, observations, "
-            "distillations, theme updates, watch items, scheduled tasks) and optionally "
-            "schedule, update, or cancel follow-ups. Do not produce user-facing text."
-        )
         return "", [], 0
 
     async def fake_send(*args, **kwargs):
         sent.append(args)
         return uuid4()
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 
@@ -436,8 +437,8 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives_before_t
     }
     sent = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             newer_id = uuid4()
             newer_sent_at = first_sent_at + timedelta(seconds=1)
             assert newer_sent_at < ctx.turn_started_at
@@ -466,7 +467,7 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives_before_t
         sent.append(args)
         return uuid4()
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 
@@ -478,7 +479,7 @@ async def test_run_agentic_skips_final_reply_when_newer_inbound_arrives_before_t
     assert "Final outbound skipped because a newer inbound message arrived before send." in turn["reasoning"]
 
 
-async def test_run_agentic_send_message_part_is_visible_to_phase_b(fake_pool, app_env, monkeypatch):
+async def test_run_agentic_send_message_part_is_visible_to_record_step(fake_pool, app_env, monkeypatch):
     monkeypatch.setenv("MESSAGING_PROVIDER", "discord")
     monkeypatch.setenv("DISCORD_MULTI_MESSAGE_DELAY_S", "0")
     get_settings.cache_clear()
@@ -518,14 +519,15 @@ async def test_run_agentic_send_message_part_is_visible_to_phase_b(fake_pool, ap
         "edited_at": None,
     }
     sent = []
-    phase_b_seed = []
+    record_seed = []
+    schedule_seed = []
 
     async def fake_discord_send(to, body, *, send_typing_indicator=True):
         sent.append((to, body, send_typing_indicator))
         return {"messages": [{"id": f"discord-out-{len(sent)}"}]}
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             assert "send_message_part" in allowed_tools
             assert "explicit multi-message requests" in seed_messages[-1]["content"]
             first = await call_tool(
@@ -546,10 +548,13 @@ async def test_run_agentic_send_message_part_is_visible_to_phase_b(fake_pool, ap
                 "What feels most impossible about it tonight?",
             ]
             return "", [{"role": "assistant", "content": "used incremental sends"}], 2
-        phase_b_seed.append(seed_messages[-1]["content"])
+        if ctx.current_step == "record":
+            record_seed.append(seed_messages[-1]["content"])
+        if ctx.current_step == "schedule":
+            schedule_seed.append(seed_messages[-1]["content"])
         return "", [], 0
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr("app.services.discord.send_text", fake_discord_send)
     agentic.set_pool(fake_pool)
 
@@ -564,9 +569,12 @@ async def test_run_agentic_send_message_part_is_visible_to_phase_b(fake_pool, ap
     assert fake_pool.messages[turn["final_output_message_id"]]["content"] == (
         "What feels most impossible about it tonight?"
     )
-    assert "You actually sent 2 messages" in phase_b_seed[0]
-    assert "1. That sounds bleak." in phase_b_seed[0]
-    assert "2. What feels most impossible about it tonight?" in phase_b_seed[0]
+    assert "You actually sent 2 messages" in record_seed[0]
+    assert "1. That sounds bleak." in record_seed[0]
+    assert "2. What feels most impossible about it tonight?" in record_seed[0]
+    assert "You actually sent 2 messages" in schedule_seed[0]
+    assert "1. That sounds bleak." in schedule_seed[0]
+    assert "2. What feels most impossible about it tonight?" in schedule_seed[0]
     assert fake_pool.users[user.id]["onboarding_state"] == "welcomed"
     get_settings.cache_clear()
 
@@ -601,19 +609,20 @@ async def test_run_agentic_can_react_instead_of_replying(fake_pool, app_env, mon
     }
     reactions = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             assert "search_emojis" in seed_messages[-1]["content"]
             assert "[react: emoji]" in seed_messages[-1]["content"]
             assert "do not claim Discord reactions are unavailable" in seed_messages[-1]["content"]
             return "[react: 👋]", [{"role": "assistant", "content": "[react: 👋]"}], 0
-        assert "[reaction 👋]" in seed_messages[-1]["content"]
+        if ctx.current_step == "record":
+            assert "[reaction 👋]" in seed_messages[-1]["content"]
         return "", [], 0
 
     async def fake_add_reaction(phone, discord_message_id, emoji):
         reactions.append((phone, discord_message_id, emoji))
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic.discord, "add_reaction", fake_add_reaction)
     agentic.set_pool(fake_pool)
 
@@ -658,10 +667,11 @@ async def test_run_agentic_can_react_alongside_reply(fake_pool, app_env, monkeyp
     reactions = []
     sent = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
-        if ctx.phase == "read":
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
+        if ctx.current_step == "respond":
             return "[react: ❤️]\nThat matters. Let it land for a bit.", [], 0
-        assert "That matters. Let it land for a bit." in seed_messages[-1]["content"]
+        if ctx.current_step == "record":
+            assert "That matters. Let it land for a bit." in seed_messages[-1]["content"]
         return "", [], 0
 
     async def fake_add_reaction(phone, discord_message_id, emoji):
@@ -683,7 +693,7 @@ async def test_run_agentic_can_react_alongside_reply(fake_pool, app_env, monkeyp
         }
         return out_id
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic.discord, "add_reaction", fake_add_reaction)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
@@ -724,7 +734,7 @@ async def test_text_cap_defers_original_messages_and_sends_notice_once(fake_pool
     }
     sent = []
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
         raise agentic.SpendCapExceeded("cap")
 
     async def fake_send(pool, recipient, content, bot_turn_id=None, **kwargs):
@@ -743,7 +753,7 @@ async def test_text_cap_defers_original_messages_and_sends_notice_once(fake_pool
         }
         return out_id
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     monkeypatch.setattr(agentic, "send_outbound", fake_send)
     agentic.set_pool(fake_pool)
 

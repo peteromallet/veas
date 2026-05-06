@@ -13,16 +13,18 @@ from uuid import UUID
 
 from app.bots.base import BotSpec
 from app.services.prompts import render_system_prompt
-from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS
+from app.services.turn_plan import TurnPlan
 
 
 class MediatorBotSpec(BotSpec):
-    def build_phase_a_seed(
+    def build_initial_seed(
         self,
         *,
         trigger_metadata: dict[str, Any],
         triggering_message_ids: list[UUID],
         charge: str | None,
+        orient_header: str,
+        plan: TurnPlan,
     ) -> list[dict[str, Any]]:
         pacing_context = trigger_metadata.get("pacing")
         pacing_seed = (
@@ -38,15 +40,17 @@ class MediatorBotSpec(BotSpec):
                     f"ids={triggering_message_ids} charge={charge or 'routine'} "
                     f"context={json.dumps(trigger_metadata.get('context', {}), default=str)}."
                     f"{pacing_seed} "
-                    f"{self.phase_a_instruction}"
+                    f"{orient_header}\n\n"
+                    f"Turn plan:\n{plan.render_checklist()}\n\n"
+                    f"Current step instruction: {self.step_instructions[plan.current]}"
                 ),
             }
         ]
 
 
-MEDIATOR_PHASE_A_INSTRUCTION = (
-    "Phase A: read what you need, then produce the user-facing response. "
-    "On Discord, prefer `send_message_part` during Phase A whenever the response should "
+MEDIATOR_RESPOND_INSTRUCTION = (
+    "Respond step: produce the user-facing response, a reaction directive, or silence. "
+    "On Discord, prefer `send_message_part` whenever the response should "
     "feel like separate chat bubbles: explicit multi-message requests, short acknowledgement "
     "then deeper thought, or otherwise stacked lines. Send each intended bubble with its own "
     "`send_message_part` call, see whether it actually sent, and continue from the returned "
@@ -58,20 +62,40 @@ MEDIATOR_PHASE_A_INSTRUCTION = (
     "directive on its own line before or after the reply; the directive will not be shown to the user. "
     "If the user asks you to emoji react, use a `[react: emoji]` directive; do not claim "
     "Discord reactions are unavailable. "
+    "If you intend to check in later, phrase it naturally in the user-facing response: "
+    "say \"I'll check in with you then\", \"I'll check in tomorrow morning\", or "
+    "\"I'll come back to this with you around 7\"; do not say \"I've scheduled that\", "
+    "\"I scheduled a task\", \"I'll set a reminder\", or mention scheduling machinery. "
     "Do not include scratch notes, analysis of the message, tool/read decisions, or separators."
 )
 
-MEDIATOR_PHASE_B_INSTRUCTION = (
-    "Now record any state changes (memories, observations, distillations, theme updates, "
-    "watch items, scheduled tasks) and optionally schedule, update, or cancel follow-ups. "
+MEDIATOR_RECORD_INSTRUCTION = (
+    "Record step: record any state changes (memories, observations, distillations, theme updates, "
+    "watch items, bridge candidates, style notes, feedback, OOB updates) that are justified by this turn. "
+    "Read before durable writes when needed. "
+    "If no durable update is justified, return an empty assistant response with no tool calls; the runner will advance automatically. "
     "Do not produce user-facing text."
 )
+
+MEDIATOR_SCHEDULE_INSTRUCTION = (
+    "Schedule step: final optional follow-up check. Ask yourself whether there is anything genuinely useful "
+    "to schedule as a follow-up or task. It is completely fine and often correct to do nothing. "
+    "Use scheduling only when future check-ins or scheduled tasks are genuinely useful and not duplicative. "
+    "If no schedule is needed, return an empty assistant response with no tool calls; the runner will advance automatically. "
+    "Do not produce user-facing text."
+)
+
+MEDIATOR_STEP_INSTRUCTIONS = {
+    "read": "Read step: gather only the context needed for this turn. If no extra context is needed, return an empty assistant response with no tool calls; the runner will advance automatically. Do not send user-facing text or write durable state.",
+    "consult": "Consult step: use `consult_perspective` only when the user explicitly asked for a second opinion, critique, review, or another perspective; otherwise return an empty assistant response with no tool calls.",
+    "respond": MEDIATOR_RESPOND_INSTRUCTION,
+    "record": MEDIATOR_RECORD_INSTRUCTION,
+    "schedule": MEDIATOR_SCHEDULE_INSTRUCTION,
+    "done": "Done step: end the turn without additional user-facing text.",
+}
 
 MEDIATOR_BOT = MediatorBotSpec(
     bot_id="mediator",
     prompt_renderer=render_system_prompt,
-    read_phase_tools=frozenset(READ_PHASE_TOOLS),
-    write_phase_tools=frozenset(WRITE_PHASE_TOOLS),
-    phase_a_instruction=MEDIATOR_PHASE_A_INSTRUCTION,
-    phase_b_instruction=MEDIATOR_PHASE_B_INSTRUCTION,
+    step_instructions=MEDIATOR_STEP_INSTRUCTIONS,
 )

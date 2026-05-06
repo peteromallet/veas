@@ -8,9 +8,9 @@ from uuid import uuid4
 import pytest
 
 from app.models.user import User
-from app.services.agentic import run_phase
+from app.services.agentic import run_step
 from app.services.turn_context import TurnContext
-from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS
+from app.services.tools.registry import READ_PHASE_TOOLS, STEP_ALLOWED_TOOLS, WRITE_PHASE_TOOLS
 from tests.conftest import FakePool
 
 pytestmark = pytest.mark.anyio
@@ -70,10 +70,10 @@ def _ctx(pool: FakePool) -> TurnContext:
     partner = User(uuid4(), "Ben", "15555550101", "UTC")
     pool.users[user.id] = {"id": user.id, "name": user.name, "phone": user.phone, "timezone": user.timezone}
     pool.users[partner.id] = {"id": partner.id, "name": partner.name, "phone": partner.phone, "timezone": partner.timezone}
-    return TurnContext(uuid4(), pool, user, partner, [uuid4()], phase="read")
+    return TurnContext(uuid4(), pool, user, partner, [uuid4()], current_step="read")
 
 
-async def test_run_phase_uses_tools_cache_markers_and_records_spend(app_env):
+async def test_run_step_uses_tools_cache_markers_and_records_spend(app_env):
     events: list[str] = []
     requests: list[dict] = []
     pool = TrackingPool(events)
@@ -99,7 +99,7 @@ async def test_run_phase_uses_tools_cache_markers_and_records_spend(app_env):
     client = FakeClient(responses, requests, events)
     hot_context = "x" * 4096
 
-    assistant_text, messages, tool_count = await run_phase(
+    assistant_text, messages, tool_count = await run_step(
         client,
         ctx,
         "system prompt",
@@ -128,25 +128,25 @@ async def test_run_phase_uses_tools_cache_markers_and_records_spend(app_env):
     assert pool.llm_spend_log["text"] == Decimal("0.004815")
 
 
-async def test_run_phase_applies_cache_markers_in_write_phase(app_env):
+async def test_run_step_applies_cache_markers_in_record_step(app_env):
     events: list[str] = []
     requests: list[dict] = []
     pool = TrackingPool(events)
     ctx = _ctx(pool)
-    ctx.phase = "write"
+    ctx.current_step = "record"
     client = FakeClient(
         [_response([{"type": "text", "text": "write note"}], _usage(100, 0, 0, 10))],
         requests,
         events,
     )
 
-    assistant_text, _, tool_count = await run_phase(
+    assistant_text, _, tool_count = await run_step(
         client,
         ctx,
         "system prompt",
         "small context",
-        WRITE_PHASE_TOOLS,
-        [{"role": "user", "content": "Phase B"}],
+        STEP_ALLOWED_TOOLS["record"],
+        [{"role": "user", "content": "Record"}],
     )
 
     assert assistant_text == "write note"
@@ -156,7 +156,7 @@ async def test_run_phase_applies_cache_markers_in_write_phase(app_env):
     assert requests[0]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
 
 
-async def test_run_phase_records_spend_without_blocking_on_caps(app_env):
+async def test_run_step_records_spend_without_blocking_on_caps(app_env):
     events: list[str] = []
     requests: list[dict] = []
     pool = TrackingPool(events)
@@ -168,7 +168,7 @@ async def test_run_phase_records_spend_without_blocking_on_caps(app_env):
         events,
     )
 
-    assistant_text, _, tool_count = await run_phase(
+    assistant_text, _, tool_count = await run_step(
         client,
         ctx,
         "system",

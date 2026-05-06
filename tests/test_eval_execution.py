@@ -75,6 +75,17 @@ def test_prompt_pushes_balanced_perspective_without_forced_optimism() -> None:
     assert "are there moments they do make you feel loved?" in rendered
 
 
+def test_prompt_includes_scheduling_judgment_and_relative_time_guidance() -> None:
+    rendered = render_system_prompt("Mediator", "Maya", "Ben")
+
+    assert "# Scheduling Judgment" in rendered
+    assert "Use scheduling proactively" in rendered
+    assert "Default to the scheduling tool's `delay` field" in rendered
+    assert "simple duration requests" in rendered
+    assert "now_local" in rendered
+    assert "Never schedule in the past" in rendered
+
+
 def test_prompt_tells_agent_to_handle_first_contact() -> None:
     rendered = render_system_prompt(
         "Mediator", "Maya", "Ben", prompt_version="v1", onboarding_state="pending"
@@ -139,6 +150,20 @@ def test_prompt_closes_low_energy_conversations() -> None:
     assert "Silence is also acceptable" in rendered
     assert "Goodnight" in rendered
     assert "schedule one in Phase B rather than keeping the live chat open" in rendered
+
+
+def test_v3_prompt_uses_adaptive_step_language() -> None:
+    rendered = render_system_prompt(
+        "Mediator",
+        "Maya",
+        "Ben",
+        prompt_version="v3",
+        current_user_sharing_default="unset",
+    )
+
+    assert "# Adaptive Turn Shape" in rendered
+    assert "record step" in rendered
+    assert "Phase B" not in rendered
 
 
 def test_cross_thread_unset_branch_present_when_current_user_unset() -> None:
@@ -239,17 +264,17 @@ async def test_eval_turn_uses_explicit_pool_prompt_version_and_fake_whatsapp(fak
         assert pool is eval_pool
         return {"verdict": "ok", "reason": "test", "suggested_rewrite": None}
 
-    async def fake_run_phase(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages):
+    async def fake_run_step(client, ctx, system_prompt, hot_context_rendered, allowed_tools, seed_messages, **kwargs):
         assert ctx.pool is eval_pool
         assert "Maya" in system_prompt
         assert "## Recent messages" in hot_context_rendered
-        observed.setdefault("phases", []).append(ctx.phase)
-        if ctx.phase == "read":
-            return "I hear you.", [{"role": "assistant", "content": "read note"}], 0
-        return "", [{"role": "assistant", "content": "write note"}], 0
+        observed.setdefault("steps", []).append(ctx.current_step)
+        if ctx.current_step == "respond":
+            return "I hear you.", [{"role": "assistant", "content": "reply note"}], 0
+        return "", [{"role": "assistant", "content": "step note"}], 0
 
     monkeypatch.setattr(hooks, "check_oob", oob_ok)
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
     original_send_text = whatsapp.send_text
     agentic.set_pool(global_pool)
 
@@ -259,7 +284,7 @@ async def test_eval_turn_uses_explicit_pool_prompt_version_and_fake_whatsapp(fak
         agentic.set_pool(None)
 
     assert whatsapp.send_text is original_send_text
-    assert observed["phases"] == ["read", "write"]
+    assert observed["steps"] == ["read", "respond", "record", "schedule"]
     assert global_pool.bot_turns == {}
     assert len(eval_pool.bot_turns) == 1
     turn = next(iter(eval_pool.bot_turns.values()))
@@ -279,12 +304,12 @@ async def test_eval_turn_rejects_unknown_prompt_version_before_sending(fake_pool
     user, _, message_id = _seed_pair(fake_pool)
     called = False
 
-    async def fake_run_phase(*args, **kwargs):
+    async def fake_run_step(*args, **kwargs):
         nonlocal called
         called = True
         return "", [], 0
 
-    monkeypatch.setattr(agentic, "run_phase", fake_run_phase)
+    monkeypatch.setattr(agentic, "run_step", fake_run_step)
 
     with pytest.raises(UnknownPromptVersion, match="unknown system prompt version: missing"):
         await run_eval_turn(fake_pool, [message_id], user, prompt_version="missing")

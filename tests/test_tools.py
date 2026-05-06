@@ -45,6 +45,7 @@ from tool_schemas import (
     OOBSeverity,
     RecentActivityInput,
     ScheduleCheckinInput,
+    ScheduleDelay,
     ScheduleTaskInput,
     SearchMessagesInput,
     SearchEmojisInput,
@@ -143,7 +144,7 @@ def tool_ctx(fake_pool):
     fake_pool.users[partner.id] = {"id": partner.id, "name": partner.name, "phone": partner.phone, "timezone": partner.timezone}
     turn_id = uuid4()
     fake_pool.bot_turns[turn_id] = {"id": turn_id, "reasoning": "", "completed_at": None, "failure_reason": None}
-    return TurnContext(turn_id, fake_pool, user, partner, [uuid4()], phase="write")
+    return TurnContext(turn_id, fake_pool, user, partner, [uuid4()], current_step="record")
 
 
 def _seed_memory(pool, about_user_id):
@@ -187,7 +188,7 @@ def test_current_scheduled_task_helper_is_scoped_to_scheduled_task_turns(tool_ct
         tool_ctx.user,
         tool_ctx.partner,
         [],
-        phase="write",
+        current_step="schedule",
         trigger_metadata={
             "kind": "scheduled_task",
             "context": {
@@ -211,7 +212,7 @@ def test_current_scheduled_task_helper_is_scoped_to_scheduled_task_turns(tool_ct
         tool_ctx.user,
         tool_ctx.partner,
         [uuid4()],
-        phase="write",
+        current_step="record",
         trigger_metadata={
             "kind": "inbound",
             "context": {"job_id": str(job_id), "task_id": str(task_id), "brief": "ignore"},
@@ -221,6 +222,7 @@ def test_current_scheduled_task_helper_is_scoped_to_scheduled_task_turns(tool_ct
 
 
 async def test_scheduled_task_current_task_requires_scheduled_task_turn(tool_ctx):
+    tool_ctx.current_step = "schedule"
     update_result = await call_tool(
         "update_scheduled_task",
         {"current_task": True, "brief": "Update the current task."},
@@ -239,7 +241,7 @@ async def test_scheduled_task_current_task_requires_scheduled_task_turn(tool_ctx
 
 
 async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx):
-    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    scheduled_for = datetime.now(UTC) + timedelta(days=2)
     created = await write_tools.schedule_task(
         tool_ctx,
         ScheduleTaskInput(
@@ -269,7 +271,7 @@ async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx
     assert [task.job_id for task in listed.tasks] == [created.job_id]
     assert listed.tasks[0].task_id == created.task_id
 
-    updated_for = datetime(2026, 5, 6, 10, 45, tzinfo=UTC)
+    updated_for = scheduled_for + timedelta(days=1, hours=1, minutes=15)
     updated = await write_tools.update_scheduled_task(
         tool_ctx,
         UpdateScheduledTaskInput(
@@ -304,8 +306,39 @@ async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx
     ]
 
 
+async def test_scheduled_task_tools_reject_past_times(tool_ctx):
+    with pytest.raises(write_tools.ToolCallRejected) as create_exc:
+        await write_tools.schedule_task(
+            tool_ctx,
+            ScheduleTaskInput(brief="Past task.", when=datetime.now(UTC) - timedelta(minutes=1)),
+        )
+    assert create_exc.value.result["error"] == "schedule_time_in_past"
+
+    created = await write_tools.schedule_task(
+        tool_ctx,
+        ScheduleTaskInput(brief="Future task.", when=datetime.now(UTC) + timedelta(days=1)),
+    )
+    with pytest.raises(write_tools.ToolCallRejected) as update_exc:
+        await write_tools.update_scheduled_task(
+            tool_ctx,
+            UpdateScheduledTaskInput(task_id=created.task_id, when=datetime.now(UTC) - timedelta(minutes=1)),
+        )
+    assert update_exc.value.result["error"] == "schedule_time_in_past"
+
+
+async def test_scheduled_task_tools_accept_relative_delay(tool_ctx):
+    before = datetime.now(UTC)
+    created = await write_tools.schedule_task(
+        tool_ctx,
+        ScheduleTaskInput(brief="Relative task.", delay=ScheduleDelay(days=2)),
+    )
+    scheduled_for = tool_ctx.pool.scheduled_jobs[created.job_id]["scheduled_for"]
+
+    assert before + timedelta(days=2) <= scheduled_for <= datetime.now(UTC) + timedelta(days=2, seconds=1)
+
+
 async def test_scheduled_task_current_task_update_and_cancel_mutate_current_row(tool_ctx):
-    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    scheduled_for = datetime.now(UTC) + timedelta(days=2)
     created = await write_tools.schedule_task(
         tool_ctx,
         ScheduleTaskInput(brief="Current brief.", when=scheduled_for),
@@ -316,7 +349,7 @@ async def test_scheduled_task_current_task_update_and_cancel_mutate_current_row(
         tool_ctx.user,
         tool_ctx.partner,
         [],
-        phase="write",
+        current_step="schedule",
         trigger_metadata={
             "kind": "scheduled_task",
             "context": {
@@ -355,7 +388,7 @@ async def test_scheduled_task_current_task_update_and_cancel_mutate_current_row(
 
 
 async def test_scheduled_task_current_task_call_tool_accepts_scheduled_turn(tool_ctx):
-    scheduled_for = datetime(2026, 5, 5, 9, 30, tzinfo=UTC)
+    scheduled_for = datetime.now(UTC) + timedelta(days=2)
     created = await write_tools.schedule_task(
         tool_ctx,
         ScheduleTaskInput(brief="Current call_tool brief.", when=scheduled_for),
@@ -366,7 +399,7 @@ async def test_scheduled_task_current_task_call_tool_accepts_scheduled_turn(tool
         tool_ctx.user,
         tool_ctx.partner,
         [],
-        phase="write",
+        current_step="schedule",
         trigger_metadata={
             "kind": "scheduled_task",
             "context": {
@@ -654,7 +687,7 @@ async def test_distillation_read_write_update_revise_lifecycle_preserves_observa
     assert new_row["revision_count"] == 1
     assert observation_id in tool_ctx.pool.observations
 
-    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], current_step="read")
     found = await read_tools.get_distillations(
         read_ctx,
         GetDistillationsInput(related_observation_id=observation_id, limit=10),
@@ -675,7 +708,7 @@ async def test_get_distillations_gates_hidden_partner_sources(tool_ctx):
     tool_ctx.pool.distillations[shareable_id]["shareable_summary"] = "A reviewed safe summary."
     tool_ctx.pool.users[tool_ctx.partner.id]["cross_thread_sharing_default"] = "opt_out"
 
-    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], current_step="read")
     result = await read_tools.get_distillations(read_ctx, GetDistillationsInput(limit=10))
 
     assert private_id not in [row.id for row in result.distillations]
@@ -720,7 +753,7 @@ async def test_update_cross_thread_sharing_default_records_choice(tool_ctx):
 
 
 async def test_search_messages_hides_partner_raw_until_opt_in(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     user_message_id = _seed_message(
         tool_ctx.pool,
         tool_ctx.user.id,
@@ -758,7 +791,7 @@ async def test_search_messages_hides_partner_raw_until_opt_in(tool_ctx):
 
 
 async def test_search_messages_finds_saved_media_explanations(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     message_id = _seed_message(tool_ctx.pool, tool_ctx.user.id, tool_ctx.partner.id, content=None)
     tool_ctx.pool.messages[message_id]["media_type"] = "image"
     tool_ctx.pool.messages[message_id]["media_analysis"] = {
@@ -773,7 +806,7 @@ async def test_search_messages_finds_saved_media_explanations(tool_ctx):
 
 
 async def test_recent_activity_hides_partner_latest_content_until_opt_in(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     _seed_message(
         tool_ctx.pool,
         tool_ctx.partner.id,
@@ -839,12 +872,12 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
             ),
         )
 
-    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read")
+    read_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], current_step="read")
     listed = await read_tools.list_bridge_candidates(read_ctx, ListBridgeCandidatesInput())
     assert listed.candidates[0].internal_note == "raw-ish note stays internal"
     assert listed.candidates[0].partner_path == "message_partner"
 
-    target_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="read")
+    target_ctx = TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], current_step="read")
     target_listed = await read_tools.list_bridge_candidates(target_ctx, ListBridgeCandidatesInput())
     assert target_listed.candidates[0].shareable_summary == "Maya wants to repair this carefully."
     assert target_listed.candidates[0].internal_note is None
@@ -852,7 +885,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
 
     with pytest.raises(write_tools.ToolCallRejected):
         await write_tools.update_bridge_candidate(
-            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], current_step="record"),
             UpdateBridgeCandidateInput(
                 candidate_id=created.candidate.id,
                 status="ready",
@@ -861,7 +894,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
         )
 
     target_addressed = await write_tools.update_bridge_candidate(
-        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], current_step="record"),
         UpdateBridgeCandidateInput(candidate_id=created.candidate.id, status="addressed"),
     )
     assert target_addressed.candidate.status == "addressed"
@@ -1023,7 +1056,7 @@ async def test_bridge_candidate_target_cannot_change_partner_path(tool_ctx):
 
     with pytest.raises(write_tools.ToolCallRejected):
         await write_tools.update_bridge_candidate(
-            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="write"),
+            TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], current_step="record"),
             UpdateBridgeCandidateInput(
                 candidate_id=created.candidate.id,
                 status="addressed",
@@ -1080,11 +1113,11 @@ async def test_list_bridge_candidates_hides_non_message_partner_ready_from_targe
     )
 
     source_list = await read_tools.list_bridge_candidates(
-        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], phase="read"),
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.user, tool_ctx.partner, [], current_step="read"),
         ListBridgeCandidatesInput(),
     )
     target_list = await read_tools.list_bridge_candidates(
-        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], phase="read"),
+        TurnContext(tool_ctx.turn_id, tool_ctx.pool, tool_ctx.partner, tool_ctx.user, [], current_step="read"),
         ListBridgeCandidatesInput(),
     )
 
@@ -1110,6 +1143,37 @@ async def test_schedule_checkin_supersedes_prior_pending(tool_ctx):
     assert tool_ctx.pool.scheduled_jobs[old_id]["status"] == "superseded"
     assert tool_ctx.pool.scheduled_jobs[result.job_id]["status"] == "pending"
     assert tool_ctx.pool.scheduled_jobs[result.job_id]["scheduled_for"].tzinfo == UTC
+
+
+async def test_schedule_checkin_rejects_past_time(tool_ctx):
+    with pytest.raises(write_tools.ToolCallRejected) as exc_info:
+        await write_tools.schedule_checkin(
+            tool_ctx,
+            ScheduleCheckinInput(
+                user_id=tool_ctx.user.id,
+                when=datetime.now(UTC) - timedelta(minutes=1),
+                about_what="the repair",
+                reason="past times should not be accepted",
+            ),
+        )
+
+    assert exc_info.value.result["error"] == "schedule_time_in_past"
+
+
+async def test_schedule_checkin_accepts_relative_delay(tool_ctx):
+    before = datetime.now(UTC)
+    result = await write_tools.schedule_checkin(
+        tool_ctx,
+        ScheduleCheckinInput(
+            user_id=tool_ctx.user.id,
+            delay=ScheduleDelay(days=2),
+            about_what="the repair",
+            reason="relative delay requested",
+        ),
+    )
+    scheduled_for = tool_ctx.pool.scheduled_jobs[result.job_id]["scheduled_for"]
+
+    assert before + timedelta(days=2) <= scheduled_for <= datetime.now(UTC) + timedelta(days=2, seconds=1)
 
 
 async def test_schedule_checkin_rejects_naive_datetime(tool_ctx):
@@ -1224,7 +1288,7 @@ async def test_consult_phase_check_oob_inherits_protected_owner_ids(tool_ctx, mo
         }
 
     monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
-    tool_ctx.phase = "consult"
+    tool_ctx.current_step = "consult"
     tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
 
     result = await call_tool(
@@ -1252,7 +1316,7 @@ async def test_consult_phase_check_oob_unions_partial_protected_owner_ids(tool_c
         }
 
     monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
-    tool_ctx.phase = "consult"
+    tool_ctx.current_step = "consult"
     tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
 
     result = await call_tool(
@@ -1283,7 +1347,7 @@ async def test_read_phase_check_oob_does_not_inject_protected_owner_ids(tool_ctx
         }
 
     monkeypatch.setattr(read_tools, "check_oob_with_policy", fake_check_oob_with_policy)
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     tool_ctx.protected_owner_ids = [tool_ctx.user.id, tool_ctx.partner.id]
 
     result = await call_tool(
@@ -1526,18 +1590,18 @@ async def test_escalation_allows_trusted_explicit_partner_alert(tool_ctx, monkey
     assert "ESCALATION_SENT gate=explicit_partner_alert" in tool_ctx.pool.bot_turns[tool_ctx.turn_id]["reasoning"]
 
 
-async def test_phase_enforcement_returns_typed_errors(tool_ctx):
-    tool_ctx.phase = "read"
+async def test_step_enforcement_returns_typed_errors(tool_ctx):
+    tool_ctx.current_step = "read"
     write_result = await call_tool("add_memory", {"about_user_id": str(tool_ctx.user.id), "content": "x"}, tool_ctx)
-    tool_ctx.phase = "write"
+    tool_ctx.current_step = "schedule"
     read_result = await call_tool("get_memories", {"about_user_id": str(tool_ctx.user.id)}, tool_ctx)
 
-    assert write_result["is_error"] is True and write_result["error"].startswith("phase:")
-    assert read_result["is_error"] is True and read_result["error"].startswith("phase:")
+    assert write_result["is_error"] is True and write_result["error"].startswith("step:")
+    assert read_result["is_error"] is True and read_result["error"].startswith("step:")
 
 
 async def test_recent_activity_returns_period_and_stub_digest(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     sent_at = datetime.now(UTC) - timedelta(hours=2)
     message_id = uuid4()
     tool_ctx.pool.messages[message_id] = {
@@ -1563,7 +1627,7 @@ async def test_recent_activity_returns_period_and_stub_digest(tool_ctx):
 
 
 async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     inbound_id = uuid4()
     outbound_id = uuid4()
     tool_ctx.pool.messages[inbound_id] = {
@@ -1607,7 +1671,7 @@ async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):
 
 
 async def test_get_bot_actions_filters_distillation_target(tool_ctx):
-    tool_ctx.phase = "read"
+    tool_ctx.current_step = "read"
     tool_ctx.pool.bot_turns[tool_ctx.turn_id].update(
         started_at=datetime.now(UTC),
         user_in_context=tool_ctx.user.id,

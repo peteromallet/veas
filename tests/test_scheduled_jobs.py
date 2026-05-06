@@ -69,6 +69,14 @@ def test_scheduled_task_recurrence_daily_weekly_and_end_conditions():
         30,
         tzinfo=UTC,
     )
+    assert next_occurrence_utc(current, {"type": "hourly", "interval": 3}) == datetime(
+        2026,
+        5,
+        5,
+        12,
+        30,
+        tzinfo=UTC,
+    )
     assert next_occurrence_utc(
         current,
         {"type": "weekly", "weekdays": [1, 4], "interval": 1},

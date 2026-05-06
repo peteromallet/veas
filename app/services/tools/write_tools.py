@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import uuid4
 
@@ -64,6 +64,7 @@ from tool_schemas import (
     ReviseDistillationOutput,
     ScheduleCheckinInput,
     ScheduleCheckinOutput,
+    ScheduleDelay,
     ScheduleTaskInput,
     ScheduleTaskOutput,
     ScheduledTaskRow,
@@ -1173,10 +1174,11 @@ async def lift_oob(ctx: TurnContext, args: LiftOOBInput) -> LiftOOBOutput:
 
 async def schedule_checkin(ctx: TurnContext, args: ScheduleCheckinInput) -> ScheduleCheckinOutput:
     started = _start()
+    scheduled_for = _scheduled_for_from_when_or_delay(args.when, args.delay)
     old, row = await schedule_checkin_record(
         ctx.pool,
         args.user_id,
-        scheduled_for=args.when,
+        scheduled_for=scheduled_for,
         context={"about_what": args.about_what, "reason": args.reason},
     )
     result = ScheduleCheckinOutput(
@@ -1211,6 +1213,25 @@ def _as_utc(value: datetime) -> datetime:
     if value.tzinfo is None or value.utcoffset() is None:
         raise ValueError("datetime must be timezone-aware")
     return value.astimezone(UTC)
+
+
+def _future_utc(value: datetime, *, field_name: str = "when") -> datetime:
+    scheduled_for = _as_utc(value)
+    if scheduled_for <= datetime.now(UTC):
+        raise ToolCallRejected({"error": "schedule_time_in_past", "field": field_name})
+    return scheduled_for
+
+
+def _delay_delta(delay: ScheduleDelay) -> timedelta:
+    return timedelta(weeks=delay.weeks, days=delay.days, hours=delay.hours, minutes=delay.minutes)
+
+
+def _scheduled_for_from_when_or_delay(when: datetime | None, delay: ScheduleDelay | None) -> datetime:
+    if delay is not None:
+        return datetime.now(UTC) + _delay_delta(delay)
+    if when is None:
+        raise ToolCallRejected({"error": "missing_schedule_time", "field": "when"})
+    return _future_utc(when)
 
 
 def _scheduled_task_recurrence_payload(value: Any) -> dict[str, Any] | None:
@@ -1284,7 +1305,7 @@ async def schedule_task(ctx: TurnContext, args: ScheduleTaskInput) -> ScheduleTa
     started = _start()
     task_id = uuid4()
     recurrence = _scheduled_task_recurrence_payload(args.recurrence)
-    scheduled_for = _as_utc(args.when)
+    scheduled_for = _scheduled_for_from_when_or_delay(args.when, args.delay)
     context = _scheduled_task_context(task_id=task_id, brief=args.brief, recurrence=recurrence)
     row = await ctx.pool.fetchrow(
         """
@@ -1314,7 +1335,11 @@ def _reject_unauthorized_current_scheduled_task(ctx: TurnContext, current_task: 
 async def update_scheduled_task(ctx: TurnContext, args: UpdateScheduledTaskInput) -> UpdateScheduledTaskOutput:
     started = _start()
     target_job_id, target_task_id = _scheduled_task_target(args, ctx)
-    scheduled_for = _as_utc(args.when) if args.when is not None else None
+    scheduled_for = (
+        _scheduled_for_from_when_or_delay(args.when, args.delay)
+        if args.when is not None or args.delay is not None
+        else None
+    )
     context_patch: dict[str, Any] = {}
     if args.brief is not None:
         context_patch["brief"] = args.brief

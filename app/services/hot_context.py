@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 
 from app.config import get_settings
 from app.models.user import User
@@ -31,6 +32,7 @@ class HotContext:
     recent_messages: list[dict[str, Any]]
     time_since_last_message: str | None
     trigger_metadata: dict[str, Any]
+    temporal_context: dict[str, Any] = field(default_factory=dict)
     distillations: list[dict[str, Any]] = field(default_factory=list)
     bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
 
@@ -45,6 +47,30 @@ def _clean_list(value: Any) -> list[Any]:
 
 def _iso(value: Any) -> str | None:
     return value.isoformat() if value is not None and hasattr(value, "isoformat") else None
+
+
+def _timezone_or_utc(value: Any) -> ZoneInfo:
+    try:
+        return ZoneInfo(str(value or "UTC"))
+    except ZoneInfoNotFoundError:
+        return ZoneInfo("UTC")
+
+
+def _temporal_context(timezone_name: str | None, now_utc: datetime | None = None) -> dict[str, Any]:
+    now = now_utc or datetime.now(UTC)
+    if now.tzinfo is None:
+        now = now.replace(tzinfo=UTC)
+    now = now.astimezone(UTC)
+    tz = _timezone_or_utc(timezone_name)
+    now_local = now.astimezone(tz)
+    return {
+        "now_utc": now.isoformat(),
+        "now_local": now_local.isoformat(),
+        "timezone": timezone_name or "UTC",
+        "local_date": now_local.date().isoformat(),
+        "local_time": now_local.strftime("%H:%M:%S"),
+        "local_weekday": now_local.strftime("%A"),
+    }
 
 
 def _duration_since(value: datetime | None) -> str | None:
@@ -135,6 +161,7 @@ async def build_hot_context(
 ) -> HotContext:
     current_user = await _user_profile(pool, user)
     partner_user = await _user_profile(pool, partner)
+    user_timezone = current_user.get("timezone") or user.timezone
     conversation_load_row = await pool.fetchrow(
         """
         WITH bounds AS (
@@ -157,11 +184,11 @@ async def build_hot_context(
         GROUP BY bounds.period_start, bounds.period_end
         """,
         user.id,
-        current_user.get("timezone") or user.timezone,
+        user_timezone,
     )
     conversation_load = {
         "period": "today",
-        "timezone": current_user.get("timezone") or user.timezone,
+        "timezone": user_timezone,
         "period_start": _iso(conversation_load_row["period_start"]) if conversation_load_row else None,
         "period_end": _iso(conversation_load_row["period_end"]) if conversation_load_row else None,
         "inbound_count": int(conversation_load_row["inbound_count"] or 0) if conversation_load_row else 0,
@@ -408,6 +435,7 @@ async def build_hot_context(
     return HotContext(
         current_user=current_user,
         partner_user=partner_user,
+        temporal_context=_temporal_context(user_timezone),
         conversation_load=conversation_load,
         active_oob=active_oob,
         memories=memories,
@@ -484,6 +512,18 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
         f"- sharing_default: {_clip(hc.partner_user.get('cross_thread_sharing_default') or 'unset', clip_limit)}",
         f"- style_notes: {_clip(hc.partner_user.get('style_notes', ''), clip_limit)}",
     ]
+    if hc.temporal_context:
+        lines += [
+            "",
+            "## Current time",
+            f"- now_utc: {_clip(hc.temporal_context.get('now_utc'), clip_limit)}",
+            f"- now_local: {_clip(hc.temporal_context.get('now_local'), clip_limit)}",
+            f"- timezone: {_clip(hc.temporal_context.get('timezone'), clip_limit)}",
+            f"- local_date: {_clip(hc.temporal_context.get('local_date'), clip_limit)}",
+            f"- local_time: {_clip(hc.temporal_context.get('local_time'), clip_limit)}",
+            f"- local_weekday: {_clip(hc.temporal_context.get('local_weekday'), clip_limit)}",
+            "- scheduling_note: Default to scheduling tool delay fields for simple duration phrases like 'in two hours', 'in 10 hours', or 'in two days'. Use absolute datetimes only for concrete clock/calendar times or calendar-relative phrases resolved against now_local.",
+        ]
     lines += [
         "",
         "## Sharing defaults",
@@ -585,6 +625,7 @@ def render_hot_context(hc: HotContext) -> str:
     working = HotContext(
         current_user=hc.current_user,
         partner_user=hc.partner_user,
+        temporal_context=hc.temporal_context,
         conversation_load=hc.conversation_load,
         active_oob=hc.active_oob,
         memories=list(hc.memories),

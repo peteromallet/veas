@@ -13,7 +13,6 @@ def test_tool_schemas_registry_importable() -> None:
 def test_mediator_bot_spec_owns_prompt_and_phase_tools() -> None:
     from app.bots.registry import get_bot_spec
     from app.models.user import User
-    from app.services.tools.registry import READ_PHASE_TOOLS, WRITE_PHASE_TOOLS
 
     user = User(uuid4(), "Maya", "15555550100", "UTC")
     partner = User(uuid4(), "Ben", "15555550101", "UTC")
@@ -27,11 +26,10 @@ def test_mediator_bot_spec_owns_prompt_and_phase_tools() -> None:
     )
 
     assert "You are Veas" in prompt
-    assert spec.read_phase_tools == frozenset(READ_PHASE_TOOLS)
-    assert spec.write_phase_tools == frozenset(WRITE_PHASE_TOOLS)
-    assert "Phase A:" in spec.phase_a_instruction
-    assert "state changes" in spec.phase_b_instruction
-    assert "scheduled tasks" in spec.phase_b_instruction
+    assert "I'll check in with you then" in spec.step_instructions["respond"]
+    assert "I've scheduled that" in spec.step_instructions["respond"]
+    assert "state changes" in spec.step_instructions["record"]
+    assert "scheduled tasks" in spec.step_instructions["schedule"]
 
 
 def test_check_oob_schema_accepts_optional_protected_owner_ids() -> None:
@@ -243,8 +241,8 @@ def test_system_prompt_uses_partner_bridges_language() -> None:
 
     prompt = render_system_prompt("Veas", "Maya", "Ben")
 
-    assert SYSTEM_PROMPT_VERSION == "v2"
-    assert {"v1", "v2"} <= set(PROMPT_REGISTRY)
+    assert SYSTEM_PROMPT_VERSION == "v3"
+    assert {"v1", "v2", "v3"} <= set(PROMPT_REGISTRY)
     assert "Partner Bridges" in prompt
     assert "# Bridge Candidates" not in prompt
     assert (
@@ -288,6 +286,8 @@ def test_scheduled_task_tools_are_registered_and_phase_gated() -> None:
         assert name in TOOL_DISPATCH
         assert name in TOOL_DESCRIPTIONS
     assert "current_task=true" in TOOL_DESCRIPTIONS["update_scheduled_task"]
+    assert "Prefer `delay` by default" in TOOL_DESCRIPTIONS["schedule_task"]
+    assert "Use `when` only" in TOOL_DESCRIPTIONS["schedule_checkin"]
 
 
 def test_scheduled_task_schema_validation_rejects_invalid_inputs() -> None:
@@ -295,6 +295,7 @@ def test_scheduled_task_schema_validation_rejects_invalid_inputs() -> None:
 
     from tool_schemas import (
         CancelScheduledTaskInput,
+        ScheduleDelay,
         ScheduleTaskInput,
         ScheduleTaskOutput,
         ScheduledTaskRecurrence,
@@ -307,6 +308,12 @@ def test_scheduled_task_schema_validation_rejects_invalid_inputs() -> None:
     recurrence = ScheduledTaskRecurrence(type="daily", interval=1)
 
     ScheduleTaskInput(brief="Send tomorrow's repair brief.", when=aware_when)
+    ScheduleTaskInput(brief="Send in two days.", delay=ScheduleDelay(days=2))
+    ScheduleTaskInput(
+        brief="Repeat every three hours.",
+        delay=ScheduleDelay(hours=3),
+        recurrence={"type": "hourly", "interval": 3},
+    )
     ScheduleTaskInput(brief="Send a daily repair brief.", when=aware_when, recurrence=recurrence)
     ScheduleTaskOutput(task_id=task_id, job_id=job_id, scheduled_for=aware_when, recurrence=recurrence)
     UpdateScheduledTaskInput(task_id=task_id, brief="Updated brief.")
@@ -315,13 +322,17 @@ def test_scheduled_task_schema_validation_rejects_invalid_inputs() -> None:
 
     with pytest.raises(ValidationError, match="when must be timezone-aware"):
         ScheduleTaskInput(brief="Naive one-shot.", when=datetime(2026, 5, 5, 9, 30))
-    with pytest.raises(ValidationError, match="Field required"):
+    with pytest.raises(ValidationError, match="provide exactly one of when or delay"):
         ScheduleTaskInput(brief="Missing schedule.")
+    with pytest.raises(ValidationError, match="provide exactly one of when or delay"):
+        ScheduleTaskInput(brief="Ambiguous schedule.", when=aware_when, delay=ScheduleDelay(days=2))
+    with pytest.raises(ValidationError, match="delay must be a positive duration"):
+        ScheduleDelay()
     with pytest.raises(ValidationError, match="weekly recurrence requires weekdays"):
         ScheduledTaskRecurrence(type="weekly")
     with pytest.raises(ValidationError, match="between 0 and 6"):
         ScheduledTaskRecurrence(type="weekly", weekdays=[7])
-    with pytest.raises(ValidationError, match="daily recurrence must not set weekdays"):
+    with pytest.raises(ValidationError, match="hourly and daily recurrence must not set weekdays"):
         ScheduledTaskRecurrence(type="daily", weekdays=[1])
     with pytest.raises(ValidationError, match="recurrence.until must be timezone-aware"):
         ScheduledTaskRecurrence(type="daily", until=datetime(2026, 5, 6, 9, 30))
@@ -329,5 +340,7 @@ def test_scheduled_task_schema_validation_rejects_invalid_inputs() -> None:
         UpdateScheduledTaskInput(task_id=task_id, job_id=job_id, brief="ambiguous")
     with pytest.raises(ValidationError, match="provide at least one update"):
         UpdateScheduledTaskInput(task_id=task_id)
+    with pytest.raises(ValidationError, match="provide at most one of when or delay"):
+        UpdateScheduledTaskInput(task_id=task_id, when=aware_when, delay=ScheduleDelay(hours=2))
     with pytest.raises(ValidationError, match="provide exactly one"):
         CancelScheduledTaskInput()

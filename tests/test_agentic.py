@@ -85,6 +85,9 @@ class TrackingPool(FakePool):
         if compact.startswith("SELECT id, title, status") and "FROM themes" in compact:
             self.mark("read:list_themes")
             return list(self.themes.values())[: args[-1]]
+        if "FROM watch_items" in compact:
+            self.mark("read:list_watch_items")
+            return []
         if "FROM bot_turns bt" in compact and "LEFT JOIN tool_calls" in compact:
             self.mark("read:get_bot_actions")
             return [
@@ -258,13 +261,16 @@ async def test_agentic_e2e_ordering_cache_spend_and_oob(app_env, monkeypatch):
         _tool("get_observations", {"about_user_id": str(user.id), "min_significance": 3}, 1),
         _tool("search_messages", {"text_contains": "repair", "limit": 5}, 2),
         _tool("list_themes", {"active_only": True, "sort_by": "last_reinforced", "limit": 10}, 3),
+        _tool("list_watch_items", {"owner_user_id": str(user.id)}, 4),
+        _response([]),
         _response([{"type": "text", "text": outbound}]),
-        _tool("update_observation", {"observation_id": str(observation_id), "content": "Direct repair still matters."}, 4),
-        _tool("add_watch_item", {"owner_user_id": str(user.id), "content": "Check whether the repair conversation happened."}, 5),
+        _tool("update_observation", {"observation_id": str(observation_id), "content": "Direct repair still matters."}, 5),
+        _tool("add_watch_item", {"owner_user_id": str(user.id), "content": "Check whether the repair conversation happened."}, 6),
+        _response([]),
         _tool(
             "schedule_checkin",
             {"user_id": str(user.id), "when": when, "about_what": "repair conversation", "reason": "follow up"},
-            6,
+            7,
         ),
         _response([]),
     ]
@@ -282,7 +288,12 @@ async def test_agentic_e2e_ordering_cache_spend_and_oob(app_env, monkeypatch):
 
     turn = next(iter(pool.bot_turns.values()))
     labels = pool.labels()
-    read_seqs = [pool.seq("read:get_observations"), pool.seq("read:search_messages"), pool.seq("read:list_themes")]
+    read_seqs = [
+        pool.seq("read:get_observations"),
+        pool.seq("read:search_messages"),
+        pool.seq("read:list_themes"),
+        pool.seq("read:list_watch_items"),
+    ]
     write_seqs = [
         pool.seq("write:update_observation"),
         pool.seq("write:add_watch_item"),
@@ -294,9 +305,9 @@ async def test_agentic_e2e_ordering_cache_spend_and_oob(app_env, monkeypatch):
     assert turn["completed_at"] is not None
     assert turn["failure_reason"] is None
     assert turn["final_output_message_id"] is not None
-    assert turn["system_prompt_version"] == "v1"
+    assert turn["system_prompt_version"] == "v3"
     assert "## Recent messages" in turn["prompt_snapshot"]
-    assert turn["tool_call_count"] == 6
+    assert turn["tool_call_count"] == 7
     assert [row["tool_name"] for row in pool.tool_calls] == [
         "update_observation",
         "add_watch_item",
@@ -307,12 +318,12 @@ async def test_agentic_e2e_ordering_cache_spend_and_oob(app_env, monkeypatch):
         (outbound, user.id, [user.id, partner.id]),
     ]
     assert pool.spend_records and all(value > 0 for value in pool.spend_records)
-    assert sum(pool.spend_records[:4], Decimal("0")) == Decimal("0.001752")
-    assert sum(pool.spend_records[4:], Decimal("0")) == Decimal("0.001752")
+    assert sum(pool.spend_records[:5], Decimal("0")) == Decimal("0.002190")
+    assert sum(pool.spend_records[5:], Decimal("0")) == Decimal("0.002628")
     assert requests[0]["system"][0]["cache_control"] == {"type": "ephemeral"}
     assert requests[0]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
-    assert requests[4]["system"][0]["cache_control"] == {"type": "ephemeral"}
-    assert requests[4]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
+    assert requests[5]["system"][0]["cache_control"] == {"type": "ephemeral"}
+    assert requests[5]["tools"][-1]["cache_control"] == {"type": "ephemeral"}
     assert labels.index("read:get_observations") < labels.index("outbound:insert") < labels.index("tool_call:update_observation")
 
 
@@ -323,6 +334,7 @@ async def test_agentic_why_query_uses_get_bot_actions(app_env, monkeypatch):
     whatsapp_sent: list[tuple[str, str, object]] = []
     responses = [
         _tool("get_bot_actions", {}, 1),
+        _response([]),
         _response([{"type": "text", "text": "I checked the action log before answering."}]),
         _response([]),
     ]

@@ -21,7 +21,8 @@ from app.services.messaging import send_outbound, sent_contents_for_turn
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.crypto import encrypt_value
 from app.services.text_safety import clean_user_facing_text
-from app.services.tools.registry import call_tool, to_anthropic_tools
+from app.services.tools.registry import STEP_ALLOWED_TOOLS, call_tool, to_anthropic_tools
+from app.services.turn_plan import TurnPlan, make_turn_plan, orient_summary, pick_default_skeleton
 from app.services.turn_context import BeforePacedSend, TurnContext, partner_of
 
 logger = logging.getLogger(__name__)
@@ -263,7 +264,7 @@ async def _create_message_with_retry(
     raise LLMPhaseError(str(last_error or "anthropic message create failed"))
 
 
-async def run_phase(
+async def run_step(
     client: Any,
     ctx: TurnContext,
     system_prompt: str,
@@ -310,7 +311,8 @@ async def run_phase(
             raise BoundedLoopExceeded(f"tool iteration cap exceeded: {max_tool_iterations}")
         tool_results: list[dict[str, Any]] = []
         for tool_use in tool_uses:
-            tool_call_count += 1
+            if tool_use["name"] != "update_turn_plan":
+                tool_call_count += 1
             result = await call_tool(tool_use["name"], tool_use.get("input") or {}, ctx)
             is_error = bool(result.get("is_error") or result.get("error"))
             tool_results.append(
@@ -608,6 +610,41 @@ async def _newer_inbound_exists(
     )
 
 
+STEP_ITERATION_CAPS = {
+    "read": 6,
+    "consult": 1,
+    "respond": 4,
+    "record": 8,
+    "schedule": 4,
+    "done": 0,
+}
+
+
+def _allowed_tools_for_step(ctx: TurnContext) -> set[str]:
+    allowed = set(STEP_ALLOWED_TOOLS.get(ctx.current_step, set())) | {"update_turn_plan"}
+    if ctx.current_step == "respond" and not ctx.incremental_sending_enabled:
+        allowed.discard("send_message_part")
+    return allowed
+
+
+def _sent_summary(delivered_parts: list[str], assistant_text: str, reaction_emoji: str | None) -> str:
+    if delivered_parts:
+        return (
+            f"You actually sent {len(delivered_parts)} message"
+            f"{'' if len(delivered_parts) == 1 else 's'}:\n"
+            + "\n\n".join(f"{idx + 1}. {content}" for idx, content in enumerate(delivered_parts))
+        )
+    return f"You sent: {f'[reaction {reaction_emoji}]' if reaction_emoji else (assistant_text or '[silence]')}"
+
+
+def _build_hot_context_signals(hot_context: Any) -> dict[str, Any]:
+    return {
+        "recent_message_count": len(getattr(hot_context, "recent_messages", []) or []),
+        "open_watch_item_count": len(getattr(hot_context, "open_watch_items", []) or []),
+        "active_oob_count": len(getattr(hot_context, "active_oob", []) or []),
+    }
+
+
 async def _run_agentic(
     triggering_message_ids: list[UUID],
     user: User,
@@ -629,7 +666,7 @@ async def _run_agentic(
     send_typing_indicator = not bool(trigger_metadata and trigger_metadata.get("pacing"))
     turn_id: UUID | None = None
     started_at = datetime.now(UTC)
-    phase_a_sent = False
+    responded_to_user = False
     try:
         partner = await partner_of(active_pool, user)
         hot_context = await build_hot_context(active_pool, user, partner, triggering_message_ids, trigger_metadata)
@@ -651,13 +688,21 @@ async def _run_agentic(
         )
         charge = _trigger_charge(hot_context)
         explicit_partner_alert_requested = _explicit_partner_alert_requested(hot_context)
+        hot_context_signals = _build_hot_context_signals(hot_context)
+        skeleton_name = pick_default_skeleton(
+            trigger_metadata=hot_context.trigger_metadata,
+            charge=charge,
+            hot_context_signals=hot_context_signals,
+        )
+        turn_plan = make_turn_plan(skeleton_name)
         ctx = TurnContext(
             turn_id,
             active_pool,
             user,
             partner,
             triggering_message_ids,
-            phase="read",
+            current_step=turn_plan.current,
+            turn_plan=turn_plan,
             trigger_charge=charge,
             explicit_partner_alert_requested=explicit_partner_alert_requested,
             turn_started_at=started_at,
@@ -672,128 +717,151 @@ async def _run_agentic(
             hot_context_rendered=rendered_hot_context,
             trigger_metadata=hot_context.trigger_metadata,
         )
-        phase_a_seed = bot_spec.build_phase_a_seed(
+        seed_messages = bot_spec.build_initial_seed(
             trigger_metadata=hot_context.trigger_metadata,
             triggering_message_ids=triggering_message_ids,
             charge=charge,
+            orient_header=orient_summary(
+                trigger_metadata=hot_context.trigger_metadata,
+                charge=charge,
+                hot_context_signals=hot_context_signals,
+            ),
+            plan=turn_plan,
         )
-        read_phase_tools = set(bot_spec.read_phase_tools)
-        if not ctx.incremental_sending_enabled:
-            read_phase_tools.discard("send_message_part")
-        assistant_text, phase_a_messages, phase_a_tool_count = await run_phase(
-            None, ctx, system_prompt, rendered_hot_context, read_phase_tools, phase_a_seed
-        )
-        if triggering_message_ids:
-            await active_pool.execute(
-                "UPDATE messages SET processing_state='processed' WHERE id = ANY($1) AND processing_state='raw'",
-                triggering_message_ids,
+        messages = seed_messages
+        tool_call_count = 0
+        assistant_text = ""
+        respond_text = ""
+        reaction_emoji: str | None = None
+        sent_summary_for_record: str | None = None
+        final_output_message_id: UUID | None = None
+        reasoning_parts: list[str] = []
+        delivered_parts: list[str] = []
+
+        while turn_plan.current != "done":
+            ctx.current_step = turn_plan.current
+            step_text, messages, step_tool_count = await run_step(
+                None,
+                ctx,
+                system_prompt,
+                rendered_hot_context,
+                _allowed_tools_for_step(ctx),
+                messages,
+                max_tool_iterations=STEP_ITERATION_CAPS.get(ctx.current_step, 4),
             )
+            tool_call_count += step_tool_count
 
-        sent_parts = ctx.sent_message_parts or []
-        final_output_message_id = sent_parts[-1]["message_id"] if sent_parts else None
-        phase_a_sent = phase_a_sent or bool(sent_parts)
-        reaction_emoji = None
-        if assistant_text:
-            assistant_text = clean_user_facing_text(assistant_text)
-            reaction_emoji, assistant_text = _extract_reaction_directive(assistant_text)
-            if reaction_emoji is not None:
-                if await _react_to_triggering_message(active_pool, user, triggering_message_ids, reaction_emoji):
-                    await _append_reasoning(active_pool, turn_id, f"Reacted to triggering message with {reaction_emoji}.")
-                    await claim_onboarding_welcome(active_pool, user.id)
-                    phase_a_sent = True
-            if assistant_text:
-                dyad_owner_ids = [user.id, partner.id]
-                sendable_text = await _resolve_outbound_text(active_pool, turn_id, user, assistant_text, dyad_owner_ids)
-                already_sent = [part["content"] for part in sent_parts]
-                if sendable_text and sendable_text not in already_sent:
-                    if await _newer_inbound_exists(
-                        active_pool,
-                        user,
+            if ctx.current_step == "respond":
+                assistant_text = step_text
+                if triggering_message_ids:
+                    await active_pool.execute(
+                        "UPDATE messages SET processing_state='processed' WHERE id = ANY($1) AND processing_state='raw'",
                         triggering_message_ids,
-                        fallback_started_at=started_at,
-                    ):
-                        await _append_reasoning(
-                            active_pool,
-                            turn_id,
-                            "Final outbound skipped because a newer inbound message arrived before send.",
-                        )
-                        assistant_text = ""
-                    else:
+                    )
 
-                        async def before_final_provider_send(text: str = sendable_text) -> None:
-                            if before_paced_send is not None and not send_typing_indicator:
-                                await before_paced_send(text, send_kind="final", part_index=None)
+                sent_parts = ctx.sent_message_parts or []
+                final_output_message_id = sent_parts[-1]["message_id"] if sent_parts else final_output_message_id
+                responded_to_user = responded_to_user or bool(sent_parts)
+                if assistant_text:
+                    assistant_text = clean_user_facing_text(assistant_text)
+                    reaction_emoji, assistant_text = _extract_reaction_directive(assistant_text)
+                    if reaction_emoji is not None:
+                        if await _react_to_triggering_message(active_pool, user, triggering_message_ids, reaction_emoji):
+                            await _append_reasoning(active_pool, turn_id, f"Reacted to triggering message with {reaction_emoji}.")
+                            await claim_onboarding_welcome(active_pool, user.id)
+                            responded_to_user = True
+                    if assistant_text:
+                        dyad_owner_ids = [user.id, partner.id]
+                        sendable_text = await _resolve_outbound_text(active_pool, turn_id, user, assistant_text, dyad_owner_ids)
+                        already_sent = [part["content"] for part in sent_parts]
+                        if sendable_text and sendable_text not in already_sent:
                             if await _newer_inbound_exists(
                                 active_pool,
                                 user,
                                 triggering_message_ids,
                                 fallback_started_at=started_at,
                             ):
-                                raise NewerInboundBeforeFinalSend()
+                                await _append_reasoning(
+                                    active_pool,
+                                    turn_id,
+                                    "Final outbound skipped because a newer inbound message arrived before send.",
+                                )
+                                assistant_text = ""
+                            else:
 
-                        try:
-                            final_output_message_id = await send_outbound(
-                                active_pool,
-                                user,
-                                sendable_text,
-                                bot_turn_id=turn_id,
-                                protected_owner_ids=dyad_owner_ids,
-                                send_typing_indicator=send_typing_indicator,
-                                before_provider_send=(
-                                    before_final_provider_send
-                                    if before_paced_send is not None and not send_typing_indicator
-                                    else None
-                                ),
-                            )
-                        except NewerInboundBeforeFinalSend:
-                            await _append_reasoning(
-                                active_pool,
-                                turn_id,
-                                "Final outbound skipped because a newer inbound message arrived during paced send.",
-                            )
-                            assistant_text = ""
-                        else:
-                            await _record_turn_final_output(active_pool, turn_id, final_output_message_id)
-                            await claim_onboarding_welcome(active_pool, user.id)
+                                async def before_final_provider_send(text: str = sendable_text) -> None:
+                                    if before_paced_send is not None and not send_typing_indicator:
+                                        await before_paced_send(text, send_kind="final", part_index=None)
+                                    if await _newer_inbound_exists(
+                                        active_pool,
+                                        user,
+                                        triggering_message_ids,
+                                        fallback_started_at=started_at,
+                                    ):
+                                        raise NewerInboundBeforeFinalSend()
+
+                                try:
+                                    final_output_message_id = await send_outbound(
+                                        active_pool,
+                                        user,
+                                        sendable_text,
+                                        bot_turn_id=turn_id,
+                                        protected_owner_ids=dyad_owner_ids,
+                                        send_typing_indicator=send_typing_indicator,
+                                        before_provider_send=(
+                                            before_final_provider_send
+                                            if before_paced_send is not None and not send_typing_indicator
+                                            else None
+                                        ),
+                                    )
+                                except NewerInboundBeforeFinalSend:
+                                    await _append_reasoning(
+                                        active_pool,
+                                        turn_id,
+                                        "Final outbound skipped because a newer inbound message arrived during paced send.",
+                                    )
+                                    assistant_text = ""
+                                else:
+                                    await _record_turn_final_output(active_pool, turn_id, final_output_message_id)
+                                    await claim_onboarding_welcome(active_pool, user.id)
+                                    assistant_text = sendable_text
+                                    responded_to_user = True
+                        elif sendable_text:
                             assistant_text = sendable_text
-                            phase_a_sent = True
-                elif sendable_text:
-                    assistant_text = sendable_text
-        elif charge in {"charged", "crisis"}:
-            await _append_reasoning(active_pool, turn_id, "silence; charged trigger but no justification produced")
-            logger.warning("charged/crisis trigger produced silence without model justification turn_id=%s", turn_id)
+                elif charge in {"charged", "crisis"}:
+                    await _append_reasoning(active_pool, turn_id, "silence; charged trigger but no justification produced")
+                    logger.warning("charged/crisis trigger produced silence without model justification turn_id=%s", turn_id)
 
-        ctx.phase = "write"
-        phase_b_seed = list(phase_a_messages)
-        delivered_parts = [part["content"] for part in sent_parts]
-        if not delivered_parts and turn_id is not None:
-            delivered_parts = await sent_contents_for_turn(active_pool, turn_id)
-        if delivered_parts:
-            sent_summary = (
-                f"You actually sent {len(delivered_parts)} message"
-                f"{'' if len(delivered_parts) == 1 else 's'}:\n"
-                + "\n\n".join(f"{idx + 1}. {content}" for idx, content in enumerate(delivered_parts))
-            )
-        else:
-            sent_summary = f"You sent: {f'[reaction {reaction_emoji}]' if reaction_emoji else (assistant_text or '[silence]')}"
-        phase_b_seed.append(bot_spec.build_phase_b_seed_message(sent_summary=sent_summary))
-        _, phase_b_messages, phase_b_tool_count = await run_phase(
-            None, ctx, system_prompt, rendered_hot_context, set(bot_spec.write_phase_tools), phase_b_seed
-        )
-        reasoning = "\n".join(
-            part
-            for part in (
-                _collect_reasoning(phase_a_messages, assistant_text),
-                _collect_reasoning(phase_b_messages),
-            )
-            if part
-        )
+                respond_text = assistant_text
+                delivered_parts = [part["content"] for part in (ctx.sent_message_parts or [])]
+                if not delivered_parts and turn_id is not None:
+                    delivered_parts = await sent_contents_for_turn(active_pool, turn_id)
+                sent_summary_for_record = _sent_summary(delivered_parts, respond_text, reaction_emoji)
+
+            if step_text:
+                reasoning_parts.append(_collect_reasoning(messages, step_text if ctx.current_step == "respond" else ""))
+
+            previous_step = ctx.current_step
+            next_step = turn_plan.advance()
+            if next_step != "done":
+                messages.append(
+                    bot_spec.build_step_transition_message(
+                        plan=turn_plan,
+                        sent_summary=sent_summary_for_record if next_step in {"record", "schedule"} else None,
+                    )
+                )
+            if previous_step == next_step:
+                raise BoundedLoopExceeded(f"turn plan did not advance from step {previous_step}")
+
+        reasoning = "\n".join(part for part in reasoning_parts if part)
+        executed_plan = f"Executed turn plan ({turn_plan.skeleton_name}): {turn_plan.trace()}"
+        reasoning = "\n".join(part for part in (reasoning, executed_plan) if part)
         await _complete_turn(
             active_pool,
             turn_id,
             started_at,
             final_output_message_id,
-            phase_a_tool_count + phase_b_tool_count,
+            tool_call_count,
             reasoning,
         )
     except SpendCapExceeded:
@@ -858,8 +926,8 @@ async def _run_agentic(
     except Exception as exc:
         failure_reason = getattr(exc, "failure_reason", "crashed")
         await _fail_turn(active_pool, turn_id, failure_reason)
-        if phase_a_sent:
-            logger.warning("agentic phase B failed after outbound was sent: %s", exc)
+        if responded_to_user:
+            logger.warning("agentic turn failed after outbound was sent: %s", exc)
             return
         raise
 

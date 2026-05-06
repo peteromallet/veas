@@ -536,6 +536,42 @@ def test_render_hot_context_labels_voice_transcripts(monkeypatch):
     get_settings.cache_clear()
 
 
+def test_render_hot_context_includes_current_time_for_relative_scheduling(monkeypatch):
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "2000")
+    get_settings.cache_clear()
+    user_id = uuid4()
+    partner_id = uuid4()
+    hc = HotContext(
+        current_user={"id": user_id, "name": "Maya", "phone": "1", "timezone": "Europe/Berlin", "style_notes": "", "onboarding_state": "welcomed"},
+        partner_user={"id": partner_id, "name": "Ben", "phone": "2", "timezone": "UTC", "style_notes": "", "onboarding_state": "pending"},
+        temporal_context={
+            "now_utc": "2026-05-06T10:00:00+00:00",
+            "now_local": "2026-05-06T12:00:00+02:00",
+            "timezone": "Europe/Berlin",
+            "local_date": "2026-05-06",
+            "local_time": "12:00:00",
+            "local_weekday": "Wednesday",
+        },
+        conversation_load={"period": "today", "timezone": "Europe/Berlin", "total_count": 1, "inbound_count": 1, "outbound_count": 0},
+        active_oob=[],
+        memories=[],
+        active_themes=[],
+        open_watch_items=[],
+        observations=[],
+        recent_messages=[],
+        time_since_last_message="5s",
+        trigger_metadata={"triggering_message_ids": [uuid4()], "messages": []},
+    )
+
+    text = render_hot_context(hc)
+
+    assert "## Current time" in text
+    assert "now_utc: 2026-05-06T10:00:00+00:00" in text
+    assert "now_local: 2026-05-06T12:00:00+02:00" in text
+    assert "Default to scheduling tool delay fields" in text
+    get_settings.cache_clear()
+
+
 def test_render_hot_context_does_not_clip_trigger_voice_transcript(monkeypatch):
     monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "2000")
     get_settings.cache_clear()

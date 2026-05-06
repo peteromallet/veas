@@ -14,16 +14,16 @@ from tests.conftest import FakePool
 pytestmark = pytest.mark.anyio
 
 
-def _ctx(pool: FakePool, *, phase: str) -> TurnContext:
+def _ctx(pool: FakePool, *, current_step: str) -> TurnContext:
     user = User(uuid4(), "Maya", "15555550100", "UTC")
     partner = User(uuid4(), "Ben", "15555550101", "UTC")
     pool.users[user.id] = {"id": user.id, "name": user.name, "phone": user.phone, "timezone": user.timezone}
     pool.users[partner.id] = {"id": partner.id, "name": partner.name, "phone": partner.phone, "timezone": partner.timezone}
-    return TurnContext(uuid4(), pool, user, partner, [uuid4()], phase=phase)
+    return TurnContext(uuid4(), pool, user, partner, [uuid4()], current_step=current_step)
 
 
 async def test_capture_records_read_and_write_once_without_duplicate_persisted_rows(fake_pool: FakePool) -> None:
-    read_ctx = _ctx(fake_pool, phase="read")
+    read_ctx = _ctx(fake_pool, current_step="read")
     observation_id = uuid4()
     fake_pool.observations[observation_id] = {
         "id": observation_id,
@@ -51,7 +51,8 @@ async def test_capture_records_read_and_write_once_without_duplicate_persisted_r
             read_ctx.user,
             read_ctx.partner,
             read_ctx.triggering_message_ids,
-            phase="write",
+            current_step="record",
+            tool_call_log=list(read_ctx.tool_call_log),
         )
         write_result = await call_tool(
             "update_observation",
@@ -62,13 +63,13 @@ async def test_capture_records_read_and_write_once_without_duplicate_persisted_r
     assert "observations" in read_result
     assert write_result["id"] == str(observation_id)
     assert [call.tool_name for call in transcript.calls] == ["get_observations", "update_observation"]
-    assert [call.phase for call in transcript.calls] == ["read", "write"]
+    assert [call.phase for call in transcript.calls] == ["read", "record"]
     assert len(fake_pool.tool_calls) == 1
     assert fake_pool.tool_calls[0]["tool_name"] == "update_observation"
 
 
 async def test_capture_records_validation_errors_without_persisting(fake_pool: FakePool) -> None:
-    ctx = _ctx(fake_pool, phase="read")
+    ctx = _ctx(fake_pool, current_step="read")
 
     with capture_tool_calls() as transcript:
         result = await call_tool("get_observations", {"min_significance": 999}, ctx)

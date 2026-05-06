@@ -96,7 +96,7 @@ def _ctx(pool: FakePool | None = None) -> TurnContext:
         user,
         partner,
         [uuid4()],
-        phase="read",
+        current_step="consult",
         protected_owner_ids=[user.id, partner.id],
         hot_context_rendered="## Hot context\nFiltered context only.",
     )
@@ -135,14 +135,15 @@ async def test_consult_registry_gating(monkeypatch):
     payload = {"template": "nvc", "focus": "how to answer"}
 
     read_result = await call_tool("consult_perspective", payload, ctx)
-    ctx.phase = "write"
+    ctx.current_step = "record"
     write_result = await call_tool("consult_perspective", payload, ctx)
-    ctx.phase = "consult"
+    ctx.current_step = "consult"
+    ctx.trigger_metadata["_inside_consult"] = True
     nested_result = await call_tool("consult_perspective", payload, ctx)
 
     assert read_result["summary"] == "ok"
-    assert write_result["is_error"] is True and write_result["error"].startswith("phase:")
-    assert nested_result["is_error"] is True and nested_result["error"].startswith("phase:")
+    assert write_result["is_error"] is True and write_result["error"].startswith("step:")
+    assert nested_result["is_error"] is True and nested_result["error"].startswith("step:")
 
 
 def test_consult_allowlist_is_read_only_without_send_or_recursion() -> None:
@@ -196,10 +197,10 @@ async def test_consult_uses_configured_model_and_safe_tools(app_env, monkeypatch
     ],
 )
 async def test_consult_graceful_loop_errors(app_env, monkeypatch, side_effect, needle):
-    async def fake_run_phase(*args, **kwargs):
+    async def fake_run_step(*args, **kwargs):
         raise side_effect
 
-    monkeypatch.setattr(consult_module, "run_phase", fake_run_phase)
+    monkeypatch.setattr(consult_module, "run_step", fake_run_step)
     result = await consult_module.consult_perspective(
         _ctx(),
         ConsultPerspectiveInput(perspective="custom", focus="reply"),
@@ -272,7 +273,7 @@ async def test_consult_inner_read_calls_are_captured_with_consult_phase(app_env,
     assert result["summary"] == "Use a softer first reflection."
     assert [(call.tool_name, call.phase) for call in transcript.calls] == [
         ("get_memories", "consult"),
-        ("consult_perspective", "read"),
+        ("consult_perspective", "consult"),
     ]
 
 
@@ -317,7 +318,7 @@ async def test_consult_search_messages_inherits_privacy_scope(app_env, monkeypat
     assert search_result["hits"] == []
 
 
-async def test_main_run_phase_round_trips_consult_tool_result(app_env, monkeypatch):
+async def test_main_run_step_round_trips_consult_tool_result(app_env, monkeypatch):
     consult_requests: list[dict] = []
     main_requests: list[dict] = []
     ctx = _ctx()
@@ -337,7 +338,7 @@ async def test_main_run_phase_round_trips_consult_tool_result(app_env, monkeypat
         main_requests,
     )
 
-    assistant_text, messages, tool_count = await agentic.run_phase(
+    assistant_text, messages, tool_count = await agentic.run_step(
         main_client,
         ctx,
         "system",

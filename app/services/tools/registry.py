@@ -9,10 +9,11 @@ from typing import Any
 from pydantic import BaseModel, ValidationError
 
 from evals.capture import record_tool_call
+from app.services.turn_plan import TurnStep
 from app.services.turn_context import TurnContext
 from app.services.tools import read_tools, write_tools
 from app.services.tools.write_tools import ToolCallRejected
-from tool_schemas import TOOL_REGISTRY
+from tool_schemas import TOOL_REGISTRY, UpdateTurnPlanInput, UpdateTurnPlanOutput
 
 ToolFn = Callable[[TurnContext, BaseModel], Awaitable[BaseModel]]
 
@@ -23,7 +24,28 @@ async def _consult_perspective(ctx: TurnContext, args: BaseModel) -> BaseModel:
     return await consult_perspective(ctx, args)
 
 
+async def _update_turn_plan(ctx: TurnContext, args: UpdateTurnPlanInput) -> UpdateTurnPlanOutput:
+    plan = ctx.turn_plan
+    if args.add_steps:
+        plan.add_steps(list(args.add_steps))
+    if args.remove_steps:
+        plan.remove_steps(list(args.remove_steps))
+    if args.mark_done:
+        for step in args.mark_done:
+            plan.mark_done(step)
+    if args.note:
+        plan.notes.append(args.note)
+    return UpdateTurnPlanOutput(
+        plan=plan.render_checklist(),
+        current=plan.current,
+        steps=list(plan.steps),
+        completed=list(plan.completed),
+        notes=list(plan.notes),
+    )
+
+
 TOOL_DESCRIPTIONS: dict[str, str] = {
+    "update_turn_plan": "Adjust the private turn checklist when the initial skeleton is too light or too heavy. Use this instead of hidden scratch notes. This does not send user-facing text or write durable state.",
     "search_messages": "Search prior message text, saved media explanations, or dates. Use for specific prior wording, repeated phrases, media explanations, and thread history; avoid for broad summaries. Example: find prior mentions of 'asked how my day went.' Each hit carries a `charge` label: `routine` (everyday content, low emotional weight), `notable` (emotionally meaningful but not heavy), `charged` (significant emotional weight, conflict, vulnerability, or intensity), `crisis` (meets crisis criteria).",
     "search_emojis": "Search the Unicode emoji dataset by meaning/name before reacting when a precise or unusual emoji would fit better than a generic one. Search by the emotional meaning, metaphor, or exact tone you want to convey. Example: search 'quiet support', 'fragile repair', or 'small but real progress.'",
     "recent_activity": "Summarize recent thread activity by sender for a compact cross-thread digest; avoid when exact wording matters. Example: see what each partner discussed this week.",
@@ -35,12 +57,12 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "get_distillations": "Read provisional synthesized explanations before adding or revising a distillation. Distillations are not evidence: they connect memories, observations, themes, or messages into a tentative explanation. Always search existing distillations before `add_distillation` or `revise_distillation`.",
     "get_oob": "Read active out-of-bounds constraints before discussing sensitive topics; do not reveal sensitive cores to the other partner. Example: inspect active boundaries before wording a sensitive reply.",
     "summarize_oob_topics": "Return safe counts and broad topic clusters for a partner's active OOB entries when a user asks what their partner has marked out of bounds. Never quote, paraphrase, or reveal entries; if there is only one entry on a niche topic, stay vague enough that the topic itself is not revealed.",
-    "check_oob": "Check proposed outbound text against active OOB on every outbound draft; do not bypass it because in-prompt context seemed enough. If it returns a rewrite suggestion, treat it as advisory and send any revised text only through the normal outbound flow. Example: submit the draft and recipient before sending.",
+    "check_oob": "Check proposed outbound text when drafting around sensitive cross-thread or OOB material, or when you need a rewrite decision before choosing what to say. Normal final replies and `send_message_part` go through the delivery path's final OOB check.",
     "get_self_model": "Read the assistant's compact model of one user when the user asks what you know about them or you need a compact model; do not treat it as the full audit trail. Example: answer 'what do you think I tend to do?'",
     "get_bot_actions": "Audit what the assistant did or why for questions about your own past actions; do not reconstruct from memory. Example: answer 'why did you tell her that?'",
     "list_scheduled_tasks": "List this user's pending agent-managed scheduled tasks, including the stable task_id, concrete job_id, next fire time, brief, and recurrence.",
     "send_message_part": "Send one coherent user-visible Discord message part now when that is conversationally useful — a short acknowledgement before a deeper thought, or when the user explicitly asks for separate messages. Use for natural conversational moves, not process updates or paragraph splitting. The result is the authority for what actually reached the user; if it reports `interrupted`, stop sending user-visible text in that turn.",
-    "consult_perspective": "Run a bounded read-only advisory consult from a named or custom perspective before a charged, ambiguous, or possibly one-sided response. It cannot write, send, escalate, or call itself. Treat its output as advice, not authority — you remain responsible for final wording, OOB-safe delivery, and whether to respond at all.",
+    "consult_perspective": "Use only in the consult step, and only when the user explicitly asks for a second opinion, critique, review, or another perspective. It cannot write, send, escalate, or call itself. Treat its output as advice, not authority.",
     "list_bridge_candidates": "List bridge candidates for this dyad to inspect pending/ready/sent bridge material. Target-facing views expose shareable summaries only, not raw private material. Partner paths are exactly `message_partner` (ready/actionable in the target prompt until addressed or declined), `coach_in_person`, `casual_share`, `hold_for_context`, `ask_permission`, and `do_not_bridge` (audit-only). Lifecycle statuses are exactly `pending` (drafted, not yet shareable), `ready` (cleared to send), `sent` (delivered to target), `declined` (source user refused sharing), `blocked` (OOB or sensitivity prevents sending), `addressed` (no longer needs bridging), and `expired` (stale).",
     "update_user_style_notes": "Replace a user's style notes when a durable communication or processing style is observed; avoid for transient mood. Example: update that someone processes by talking through a hard moment.",
     "update_cross_thread_sharing_default": "Set one user's opt-in/opt-out default for cross-thread bridge sharing after they explicitly choose. opt_in means you may use their perspective with the partner when it helps, unless OOB blocks it. opt_out means their thread is private by default; only bridge specific material they explicitly ask or allow you to share. Do not infer the setting from vague comfort or discomfort; get an explicit choice. OOB always overrides opt-in.",
@@ -63,10 +85,10 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "add_oob": "Add a new active out-of-bounds constraint when a user sets a new sharing boundary; do not infer OOB silently from discomfort alone.",
     "update_oob": "Revise an existing out-of-bounds constraint when the owner changes severity, wording, review time, or shareable context.",
     "lift_oob": "Lift an out-of-bounds constraint when the owner says it no longer applies.",
-    "schedule_checkin": "Schedule one useful follow-up check-in for this user; do not stack multiple competing pending check-ins for the same user.",
+    "schedule_checkin": "Schedule one useful follow-up check-in for this user; do not stack multiple competing pending check-ins for the same user. Prefer `delay` by default for simple relative durations like 'in two hours', 'in 10 hours', or 'in two days'. Use `when` only for concrete clock/calendar times or resolved calendar-relative times.",
     "cancel_scheduled_checkin": "Cancel a pending check-in when it is no longer wanted or relevant.",
-    "schedule_task": "Schedule an agent-managed future task brief for the current user. Use `when` for one-shot tasks and `recurrence` for durable daily or weekly repeats.",
-    "update_scheduled_task": "Update a pending agent-managed scheduled task by task_id, job_id, or current_task=true during a scheduled_task turn. Use for changing the brief, next fire time, or recurrence.",
+    "schedule_task": "Schedule an agent-managed future task brief for the current user. Prefer `delay` by default for simple relative durations like 'in two hours', 'in 10 hours', or 'in two days'. Use `when` only for concrete clock/calendar times or resolved calendar-relative times. Use `recurrence` for durable hourly, daily, or weekly repeats.",
+    "update_scheduled_task": "Update a pending agent-managed scheduled task by task_id, job_id, or current_task=true during a scheduled_task turn. Use for changing the brief, next fire time, or recurrence. Prefer `delay` by default for simple relative durations; use `when` only for concrete clock/calendar times or resolved calendar-relative times.",
     "cancel_scheduled_task": "Cancel a pending agent-managed scheduled task by task_id, job_id, or current_task=true during a scheduled_task turn.",
     "escalate_to_partner": "Send partner escalation only when one of two named gates is true: the triggering message meets the `crisis` charge definition, or the user explicitly asks you to alert their partner. The reason must name which gate fired. Do not use for ordinary friction, even intense friction. Use concise, balanced, non-accusatory wording; do not include protected OOB details, private analysis, pressure, or anything designed to manage the partner's reaction.",
     "edit_outbound_message": "Edit one already-sent bot outbound message when the original wording was materially wrong, unsafe, confusing, too sharp, or likely to land badly and an edit is cleaner than a follow-up. Do not edit to hide accountability; if the correction matters, acknowledge it in conversation when appropriate.",
@@ -78,6 +100,7 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
 
 
 TOOL_DISPATCH: dict[str, ToolFn] = {
+    "update_turn_plan": _update_turn_plan,
     "search_messages": read_tools.search_messages,
     "search_emojis": read_tools.search_emojis,
     "recent_activity": read_tools.recent_activity,
@@ -187,6 +210,46 @@ WRITE_PHASE_TOOLS = {
 }
 
 CONSULT_PHASE_TOOLS = READ_PHASE_TOOLS - {"send_message_part", "consult_perspective"}
+RECORD_READ_TOOLS = READ_PHASE_TOOLS - {"send_message_part", "consult_perspective"}
+SCHEDULE_TOOLS = {
+    "list_scheduled_tasks",
+    "schedule_checkin",
+    "cancel_scheduled_checkin",
+    "schedule_task",
+    "update_scheduled_task",
+    "cancel_scheduled_task",
+}
+RECORD_WRITE_TOOLS = WRITE_PHASE_TOOLS - SCHEDULE_TOOLS
+RESPOND_TOOLS = {"send_message_part", "search_emojis", "check_oob"}
+READ_TOOLS_FOR_STEP = READ_PHASE_TOOLS - {"send_message_part"}
+STEP_ALLOWED_TOOLS: dict[TurnStep, set[str]] = {
+    "read": READ_TOOLS_FOR_STEP,
+    "consult": CONSULT_PHASE_TOOLS | {"consult_perspective"},
+    "respond": RESPOND_TOOLS,
+    "record": RECORD_WRITE_TOOLS | RECORD_READ_TOOLS,
+    "schedule": SCHEDULE_TOOLS,
+    "done": set(),
+}
+ALWAYS_ALLOWED_TOOLS = {"update_turn_plan"}
+
+READ_BEFORE_WRITE: dict[str, set[str]] = {
+    "add_memory": {"get_memories"},
+    "update_memory": {"get_memories"},
+    "supersede_memory": {"get_memories"},
+    "log_observation": {"get_observations"},
+    "update_observation": {"get_observations"},
+    "add_distillation": {"get_distillations"},
+    "update_distillation": {"get_distillations"},
+    "revise_distillation": {"get_distillations"},
+    "create_theme": {"list_themes", "get_theme"},
+    "update_theme": {"list_themes", "get_theme"},
+    "add_oob": {"get_oob", "summarize_oob_topics"},
+    "update_oob": {"get_oob", "summarize_oob_topics"},
+    "lift_oob": {"get_oob", "summarize_oob_topics"},
+    "add_watch_item": {"list_watch_items"},
+    "update_watch_item": {"list_watch_items"},
+    "address_watch_item": {"list_watch_items"},
+}
 
 _CONSULT_OWNER_INJECTING_TOOLS = {"check_oob"}
 
@@ -203,18 +266,12 @@ def to_anthropic_tools(allowed: set[str]) -> list[dict[str, Any]]:
     ]
 
 
-def _phase_allowed(ctx: TurnContext) -> set[str]:
-    if ctx.phase == "read":
-        return READ_PHASE_TOOLS
-    if ctx.phase == "write":
-        return WRITE_PHASE_TOOLS
-    if ctx.phase == "consult":
-        return CONSULT_PHASE_TOOLS
-    return set()
+def _step_allowed(ctx: TurnContext) -> set[str]:
+    return set(STEP_ALLOWED_TOOLS.get(ctx.current_step, set())) | ALWAYS_ALLOWED_TOOLS
 
 
 def _inject_consult_defaults(name: str, raw_args: dict[str, Any], ctx: TurnContext) -> dict[str, Any]:
-    if ctx.phase != "consult" or name not in _CONSULT_OWNER_INJECTING_TOOLS or not ctx.protected_owner_ids:
+    if ctx.current_step != "consult" or name not in _CONSULT_OWNER_INJECTING_TOOLS or not ctx.protected_owner_ids:
         return raw_args
     merged = dict(raw_args or {})
     existing = merged.get("protected_owner_ids")
@@ -235,46 +292,64 @@ def _tool_error(message: str) -> dict[str, Any]:
     return {"error": message, "is_error": True}
 
 
+def _record_visible_tool_call(*, tool_name: str, args: Any, result: dict[str, Any], phase: str, started_at: datetime) -> None:
+    if tool_name == "update_turn_plan":
+        return
+    record_tool_call(tool_name=tool_name, args=args, result=result, phase=phase, started_at=started_at)
+
+
 async def call_tool(name: str, raw_args: dict[str, Any], ctx: TurnContext) -> dict[str, Any]:
     started = datetime.now(UTC)
-    phase = ctx.phase
+    phase = ctx.current_step
     registry_entry = TOOL_REGISTRY.get(name)
     if registry_entry is None:
         result = _tool_error(f"unknown tool: {name}")
-        record_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
         return result
-    if name not in _phase_allowed(ctx):
-        result = _tool_error(f"phase: tool {name} is not allowed in {ctx.phase} phase")
-        record_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
+    if name not in _step_allowed(ctx):
+        result = _tool_error(f"step: tool {name} is not allowed in {ctx.current_step} step")
+        _record_visible_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
+        return result
+    if name == "consult_perspective" and ctx.trigger_metadata.get("_inside_consult"):
+        result = _tool_error("step: consult_perspective cannot call itself")
+        _record_visible_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
         return result
     input_model, output_model = registry_entry
     try:
         args = input_model.model_validate(_inject_consult_defaults(name, raw_args, ctx))
     except ValidationError as exc:
         result = _tool_error(f"validation: {exc}")
-        record_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=raw_args, result=result, phase=phase, started_at=started)
+        return result
+    required_reads = READ_BEFORE_WRITE.get(name)
+    if required_reads and not (required_reads & set(ctx.tool_call_log)):
+        required = " or ".join(sorted(required_reads))
+        result = _tool_error(f"read_before_write: call {required} before {name}")
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
         return result
     fn = TOOL_DISPATCH.get(name)
     if fn is None:
         result = _tool_error(f"dispatch: tool {name} is not implemented")
-        record_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
         return result
     try:
         result = await fn(ctx, args)
     except ToolCallRejected as exc:
         result = {**exc.result, "is_error": True}
-        record_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
         return result
     except Exception as exc:
         result = _tool_error(f"exception: {exc}")
-        record_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
         raise
     try:
         validated = output_model.model_validate(result)
     except ValidationError as exc:
         result = _tool_error(f"result_validation: {exc}")
-        record_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result, phase=phase, started_at=started)
         return result
     result_dict = validated.model_dump(mode="json")
-    record_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result_dict, phase=phase, started_at=started)
+    if name != "update_turn_plan":
+        ctx.tool_call_log.append(name)
+        _record_visible_tool_call(tool_name=name, args=args.model_dump(mode="json"), result=result_dict, phase=phase, started_at=started)
     return result_dict

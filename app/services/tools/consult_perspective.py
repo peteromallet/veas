@@ -11,7 +11,7 @@ import anthropic
 from pydantic import ValidationError
 
 from app.config import get_settings
-from app.services.agentic import BoundedLoopExceeded, SpendCapExceeded, run_phase
+from app.services.agentic import BoundedLoopExceeded, SpendCapExceeded, run_step
 from app.services.tools.registry import CONSULT_PHASE_TOOLS
 from app.services.turn_context import TurnContext
 from tool_schemas import ConsultPerspectiveInput, ConsultPerspectiveOutput, PerspectiveTemplate
@@ -108,7 +108,9 @@ async def consult_perspective(
         user=ctx.user,
         partner=ctx.partner,
         triggering_message_ids=list(ctx.triggering_message_ids),
-        phase="consult",
+        current_step="consult",
+        turn_plan=ctx.turn_plan,
+        tool_call_log=ctx.tool_call_log,
         trigger_charge=ctx.trigger_charge,
         explicit_partner_alert_requested=ctx.explicit_partner_alert_requested,
         turn_started_at=ctx.turn_started_at,
@@ -118,7 +120,7 @@ async def consult_perspective(
         before_paced_send=None,
         sent_message_parts=[],
         hot_context_rendered=ctx.hot_context_rendered,
-        trigger_metadata=dict(ctx.trigger_metadata),
+        trigger_metadata={**dict(ctx.trigger_metadata), "_inside_consult": True},
     )
     seed_payload: dict[str, Any] = {
         "focus": args.focus,
@@ -130,7 +132,7 @@ async def consult_perspective(
     client = anthropic.AsyncAnthropic(api_key=settings.anthropic_api_key.get_secret_value())
     try:
         final_text, _, _ = await asyncio.wait_for(
-            run_phase(
+            run_step(
                 client,
                 consult_ctx,
                 _consult_system_prompt(perspective_body),
