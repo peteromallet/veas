@@ -4,7 +4,7 @@ from __future__ import annotations
 
 import json
 from collections.abc import Callable
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 from uuid import UUID
 
@@ -15,6 +15,24 @@ PromptRenderer = Callable[..., str]
 
 
 @dataclass(frozen=True)
+class ReadScopes:
+    """Reading permissions for a bot across topics.
+
+    allow_cross_topic_status_injection: if True, the bot may include
+    topic_status rows from other topics when rendering context. Matches §6.3.
+    """
+
+    allow_cross_topic_status_injection: bool = False
+
+
+@dataclass(frozen=True)
+class WriteScopes:
+    """Writing permissions for a bot. Shape TBD — placeholder for S2+."""
+
+    pass
+
+
+@dataclass(frozen=True)
 class BotSpec:
     """All bot-specific choices consumed by the common adaptive turn runner."""
 
@@ -22,6 +40,15 @@ class BotSpec:
     prompt_renderer: PromptRenderer
     step_instructions: dict[TurnStep, str]
     skeleton_overrides: dict[str, list[TurnStep]] | None = None
+    # Sprint 1 new optional fields with mediator-shaped defaults
+    display_name: str = "Mediator"
+    primary_topic_slug: str = "relationship"
+    participants_shape: str = "dyad"
+    read_scopes: ReadScopes = field(default_factory=ReadScopes)
+    write_scopes: WriteScopes = field(default_factory=WriteScopes)
+    bot_spec_version: str = "1.0.0"
+    hot_context_builder_version: str = "1.0.0"
+    tool_schema_version: str = "1.0.0"
 
     def render_system_prompt(
         self,

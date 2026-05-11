@@ -18,8 +18,20 @@ class TurnContext:
     turn_id: UUID
     pool: Any
     user: User
-    partner: User
+    partner: User | None  # type-only change from User; NO default, position 4 preserved
     triggering_message_ids: list[UUID]
+    # Sprint 1 new optional fields (all default to None, no call-site changes required)
+    bot_id: str | None = None
+    bot_spec: Any | None = None
+    binding_id: UUID | None = None
+    participants_shape: str | None = None
+    primary_topic_id: UUID | None = None
+    primary_topic_slug: str | None = None
+    channel_id: str | None = None
+    read_scopes: Any | None = None
+    write_scopes: Any | None = None
+    cross_topic_policy: str | None = None
+    # Existing fields preserved in original order
     current_step: TurnStep = "respond"
     turn_plan: TurnPlan = field(default_factory=lambda: make_turn_plan("quick_reply"))
     tool_call_log: list[str] = field(default_factory=list)
