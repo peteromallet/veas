@@ -709,6 +709,29 @@ def _append_note(existing: str | None, note: str) -> str:
     return f"{existing}\n{note}" if existing else note
 
 
+def _assert_solo_about_user(ctx: TurnContext, about_user_id: Any) -> dict[str, Any] | None:
+    """Validate that about_user_id is ctx.user.id for solo bots.
+
+    When bot_spec.participants_shape == 'solo', reject:
+      - about_user_id is None (must always target the bound user)
+      - about_user_id != ctx.user.id (cannot target anyone else)
+
+    Returns a tool-error dict (matching _tool_error in registry.py:306) on
+    failure, or None if the check passes.  This runs BEFORE the scope guard
+    per lesson #8 — it is an additive pre-check, not a replacement.
+    """
+    if getattr(ctx, "bot_spec", None) is None or ctx.bot_spec.participants_shape != "solo":
+        return None
+    if about_user_id is None:
+        return {"error": "about_user_id is required for solo bots", "is_error": True}
+    if about_user_id != ctx.user.id:
+        return {
+            "error": f"about_user_id {about_user_id} does not match the solo bot's bound user {ctx.user.id}",
+            "is_error": True,
+        }
+    return None
+
+
 def _bridge_candidate(row: Any) -> BridgeCandidate:
     data = dict(row)
     data.setdefault("partner_path", "message_partner")
@@ -726,6 +749,9 @@ def _bridge_candidate_for_context(ctx: TurnContext, row: Any) -> BridgeCandidate
 
 
 async def add_memory(ctx: TurnContext, args: AddMemoryInput) -> AddMemoryOutput:
+    _solo_err = _assert_solo_about_user(ctx, args.about_user_id)
+    if _solo_err is not None:
+        raise ToolCallRejected(_solo_err)
     _err = check_write_scope(ctx)
     if _err is not None:
         raise ToolCallRejected({"error": _err})
@@ -970,6 +996,9 @@ async def address_watch_item(ctx: TurnContext, args: AddressWatchItemInput) -> A
 
 
 async def log_observation(ctx: TurnContext, args: LogObservationInput) -> LogObservationOutput:
+    _solo_err = _assert_solo_about_user(ctx, args.about_user_id)
+    if _solo_err is not None:
+        raise ToolCallRejected(_solo_err)
     _err = check_write_scope(ctx)
     if _err is not None:
         raise ToolCallRejected({"error": _err})

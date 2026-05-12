@@ -441,6 +441,7 @@ def render_system_prompt(
     onboarding_state: str | None = None,
     current_user_sharing_default: str | None = None,
     partner_sharing_default: str | None = None,
+    **kwargs: object,
 ) -> str:
     template = get_system_prompt_template(prompt_version)
     if onboarding_state == "pending":

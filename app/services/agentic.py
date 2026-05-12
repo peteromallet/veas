@@ -13,11 +13,12 @@ from uuid import UUID
 
 import anthropic
 
-from app.bots.registry import get_bot_spec, get_relationship_topic_id
+from app.bots.registry import get_bot_spec, primary_topic_id_for
 from app.config import get_settings
 from app.models.user import User, claim_onboarding_welcome
 from app.services import discord, hooks, system_state
 from app.services.hot_context import build_hot_context, render_hot_context
+from app.services.hot_context_solo import build_hot_context_solo, render_hot_context_solo
 from app.services.messaging import send_outbound, sent_contents_for_turn
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.crypto import encrypt_value
@@ -709,15 +710,27 @@ async def _run_agentic(
 
     settings = get_settings()
     bot_spec = get_bot_spec(settings.bot_id)
+    primary_topic_id = await primary_topic_id_for(active_pool, bot_spec)
     selected_prompt_version = prompt_version or settings.system_prompt_version
     send_typing_indicator = not bool(trigger_metadata and trigger_metadata.get("pacing"))
     turn_id: UUID | None = None
     started_at = datetime.now(UTC)
     responded_to_user = False
     try:
-        partner = await partner_of(active_pool, user)
-        hot_context = await build_hot_context(active_pool, user, partner, triggering_message_ids, trigger_metadata, primary_topic_id=get_relationship_topic_id())
-        rendered_hot_context = render_hot_context(hot_context)
+        if bot_spec.participants_shape == "solo":
+            partner = None
+            hot_context = await build_hot_context_solo(
+                active_pool, user, triggering_message_ids, trigger_metadata,
+                primary_topic_id=primary_topic_id, bot_id=bot_spec.bot_id,
+            )
+            rendered_hot_context = render_hot_context_solo(hot_context)
+        else:
+            partner = await partner_of(active_pool, user)
+            hot_context = await build_hot_context(
+                active_pool, user, partner, triggering_message_ids, trigger_metadata,
+                primary_topic_id=primary_topic_id,
+            )
+            rendered_hot_context = render_hot_context(hot_context)
         system_prompt = bot_spec.render_system_prompt(
             assistant_name=settings.assistant_name,
             user=user,
@@ -734,7 +747,7 @@ async def _run_agentic(
             settings.conversational_model,
             selected_prompt_version,
             bot_id=bot_spec.bot_id,
-            topic_id=get_relationship_topic_id(),
+            topic_id=primary_topic_id,
             bot_spec_version=bot_spec_version,
             hot_context_builder_version=bot_spec.hot_context_builder_version,
             tool_schema_version=_TOOL_SCHEMA_VERSION,
@@ -750,7 +763,7 @@ async def _run_agentic(
                 "model_version": settings.conversational_model,
                 "system_prompt_version": selected_prompt_version,
                 "bot_id": bot_spec.bot_id,
-                "topic_id": str(get_relationship_topic_id()) if get_relationship_topic_id() else None,
+                "topic_id": str(primary_topic_id) if primary_topic_id else None,
                 "channel_id": None,
                 "binding_id": None,
             },
@@ -775,7 +788,7 @@ async def _run_agentic(
             binding_id=None,
             dyad_id=None,
             participants_shape=bot_spec.participants_shape,
-            primary_topic_id=get_relationship_topic_id(),
+            primary_topic_id=primary_topic_id,
             primary_topic_slug=bot_spec.primary_topic_slug,
             channel_id=None,
             read_scopes=bot_spec.read_scopes,
@@ -790,7 +803,7 @@ async def _run_agentic(
                 settings.messaging_provider.strip().lower() == "discord"
                 and settings.discord_multi_message_enabled
             ),
-            protected_owner_ids=[user.id, partner.id],
+            protected_owner_ids=[user.id] if partner is None else [user.id, partner.id],
             send_typing_indicator=send_typing_indicator,
             before_paced_send=before_paced_send,
             sent_message_parts=[],
@@ -886,7 +899,7 @@ async def _run_agentic(
                             await claim_onboarding_welcome(active_pool, user.id)
                             responded_to_user = True
                     if assistant_text:
-                        dyad_owner_ids = [user.id, partner.id]
+                        dyad_owner_ids = ctx.protected_owner_ids
                         sendable_text = await _resolve_outbound_text(active_pool, turn_id, user, assistant_text, dyad_owner_ids)
                         already_sent = [part["content"] for part in sent_parts]
                         if sendable_text is None:
@@ -1025,7 +1038,7 @@ async def _run_agentic(
         )
     except SpendCapExceeded:
         if turn_id is not None:
-            scheduled = await _defer_for_text_cap(active_pool, user, triggering_message_ids, bot_id=bot_spec.bot_id, topic_id=get_relationship_topic_id())
+            scheduled = await _defer_for_text_cap(active_pool, user, triggering_message_ids, bot_id=bot_spec.bot_id, topic_id=primary_topic_id)
             final_output_message_id = None
             if scheduled:
                 fallback_text = "I'm running into limits today, will catch up tomorrow."

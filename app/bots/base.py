@@ -65,17 +65,20 @@ class BotSpec:
         *,
         assistant_name: str,
         user: User,
-        partner: User,
+        partner: User | None,
         prompt_version: str,
     ) -> str:
+        partner_name = partner.name if partner is not None else None
+        partner_sharing_default = partner.cross_thread_sharing_default if partner is not None else None
         return self.prompt_renderer(
             assistant_name,
             user.name,
-            partner.name,
+            partner_name,
             prompt_version=prompt_version,
             onboarding_state=user.onboarding_state,
             current_user_sharing_default=user.cross_thread_sharing_default,
-            partner_sharing_default=partner.cross_thread_sharing_default,
+            partner_sharing_default=partner_sharing_default,
+            partner=partner,
         )
 
     def build_initial_seed(

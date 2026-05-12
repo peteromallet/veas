@@ -142,3 +142,39 @@ async def populate_topic_ids_from_db(pool: Any) -> None:
 def get_relationship_topic_id() -> UUID | None:
     """Return the cached relationship topic id, or None if not yet populated."""
     return _RELATIONSHIP_TOPIC_ID
+
+
+_TOPIC_SLUG_CACHE: dict[str, UUID] = {}
+
+
+async def primary_topic_id_for(pool: Any, bot_spec: BotSpec) -> UUID:
+    """Resolve a bot's primary_topic_slug to a topic UUID.
+
+    Uses a module-level cache (slug -> UUID) to avoid repeated DB lookups.
+    For mediator (slug='relationship'), delegates to get_relationship_topic_id()
+    for stability. Otherwise queries mediator.topics by slug.
+
+    No hash() per lesson #4; schema 'mediator' per lesson #5.
+    """
+    slug = bot_spec.primary_topic_slug
+    if slug == "relationship":
+        cached = get_relationship_topic_id()
+        if cached is not None:
+            return cached
+        # Fall through to DB query if relationship topic not yet cached
+
+    if slug in _TOPIC_SLUG_CACHE:
+        return _TOPIC_SLUG_CACHE[slug]
+
+    row = await pool.fetchrow(
+        "SELECT id FROM mediator.topics WHERE slug = $1",
+        slug,
+    )
+    if row is None:
+        raise ValueError(
+            f"primary_topic_id_for: no topic found for slug={slug!r} "
+            f"(bot_id={bot_spec.bot_id})"
+        )
+    topic_id: UUID = row["id"]
+    _TOPIC_SLUG_CACHE[slug] = topic_id
+    return topic_id
