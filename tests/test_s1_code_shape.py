@@ -117,8 +117,9 @@ def test_turn_context_field_count():
     # S1 adds: bot_id, bot_spec, binding_id, participants_shape,
     #           primary_topic_id, primary_topic_slug, channel_id,
     #           read_scopes, write_scopes, cross_topic_policy = 10
-    # Total: 28
-    assert len(field_names) == 28
+    # S2a adds: dyad_id = 1
+    # Total: 29
+    assert len(field_names) == 29
     assert "bot_id" in field_names
     assert "cross_topic_policy" in field_names
 

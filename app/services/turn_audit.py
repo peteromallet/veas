@@ -108,4 +108,5 @@ async def record_turn_event(
             encrypted_sensitive,
         )
     except Exception:
+        # obs N/A: audit fallback
         logger.exception("failed to record turn audit event turn_id=%s event_type=%s", turn_id, event_type)

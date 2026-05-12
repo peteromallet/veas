@@ -16,6 +16,7 @@ from app.services.crypto import encrypt_value
 from app.services.messaging import send_outbound
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.templates import TemplateCall
+from app.bots.registry import get_relationship_topic_id
 
 
 async def _groq_transcribe(audio_bytes: bytes, content_type: str) -> str:
@@ -73,6 +74,8 @@ async def handle_voice(
                 user,
                 "I can't transcribe right now -- can you send it as text?",
                 template_fallback=TemplateCall("media_failure", [user.name, "voice"]),
+                bot_id='mediator',
+                topic_id=get_relationship_topic_id(),
             )
         return
 
@@ -112,4 +115,6 @@ async def handle_voice(
             user,
             "I couldn't process your last voice note -- could you try resending or describe it in text?",
             template_fallback=TemplateCall("media_failure", [user.name, "voice"]),
+            bot_id='mediator',
+            topic_id=get_relationship_topic_id(),
         )

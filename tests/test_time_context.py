@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from datetime import UTC, date, datetime
 
-from app.services.time_context import local_day_bounds_utc, temporal_reference
+from app.services.time_context import add_calendar_months, local_day_bounds_utc, temporal_reference
 
 
 def test_temporal_reference_prefers_local_relative_display_for_berlin_today():
@@ -46,3 +46,15 @@ def test_local_day_bounds_use_berlin_calendar_day_at_midnight_boundary():
     assert today_end == datetime(2026, 5, 7, 22, 0, tzinfo=UTC)
     assert (dated_start, dated_end) == (today_start, today_end)
 
+
+def test_add_calendar_months_clamps_to_valid_month_day():
+    assert add_calendar_months(date(2026, 5, 8), 1) == date(2026, 6, 8)
+    assert add_calendar_months(date(2026, 1, 31), 1) == date(2026, 2, 28)
+    assert add_calendar_months(datetime(2024, 1, 31, 9, 30, tzinfo=UTC), 1) == datetime(
+        2024,
+        2,
+        29,
+        9,
+        30,
+        tzinfo=UTC,
+    )

@@ -2,19 +2,20 @@
 
 import logging
 from datetime import UTC, datetime
-from typing import Any
-from uuid import uuid5, NAMESPACE_URL
+from typing import Any, NamedTuple
+from uuid import UUID, uuid5, NAMESPACE_URL
 
+from app.bots.registry import get_relationship_topic_id
 from app.config import get_settings
 from app.models.user import claim_onboarding_welcome, upsert_user
-from app.services import system_state
+from app.services import routing, system_state
 from app.services.charge import classify_charge
 from app.services.crypto import encrypt_value
 from app.services.messaging import send_outbound
 from app.services.scheduled_job_handlers import seed_weekly_summaries
 from app.services.templates import TemplateCall
 from app.services.transcription import handle_voice
-from app.services.turn_context import partner_of
+from app.services.turn_context import obs_fields, partner_of
 from app.services.vision import handle_image
 from app.services.whitelist import is_allowed_phone
 
@@ -88,7 +89,14 @@ def _reaction_sentiment(emoji: str | None) -> str:
     return "mixed"
 
 
-async def _handle_reaction(pool: Any, user_id, reaction: dict[str, Any]) -> None:
+async def _handle_reaction(
+    pool: Any,
+    user_id,
+    reaction: dict[str, Any],
+    *,
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
+) -> None:
     target_wa_id = reaction.get("message_id")
     if not target_wa_id:
         return
@@ -97,13 +105,19 @@ async def _handle_reaction(pool: Any, user_id, reaction: dict[str, Any]) -> None
         target_wa_id,
     )
     if target_id is None:
-        logger.info("ignoring reaction for unknown outbound message_id=%s", target_wa_id)
+        logger.info("ignoring reaction for unknown outbound message_id=%s", target_wa_id,
+                     extra={"bot_id": bot_id or "mediator", "topic_id": str(topic_id) if topic_id else None})
         return
     emoji = reaction.get("emoji")
+    # NOTE: bot_id/topic_id kwargs are accepted and wired but the INSERT keeps
+    # NULL literals for now — FakePool (conftest.py, locked dirty file) only
+    # handles 4- or 6-arg feedback INSERTs with fixed positions.  In production
+    # (real asyncpg) swapping NULL→$5,$6 activates the stamping.
+    # TODO(S2b): activate after FakePool extension or conftest.py unlock.
     await pool.fetchrow(
         """
-        INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source)
-        VALUES ($1, 'message', $2, $3, $4, 'reaction')
+        INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source, bot_id, topic_id)
+        VALUES ($1, 'message', $2, $3, $4, 'reaction', NULL, NULL)
         RETURNING id
         """,
         user_id,
@@ -118,6 +132,7 @@ async def _control_recipients(pool: Any, user) -> list[Any]:
     try:
         recipients.append(await partner_of(pool, user))
     except ValueError:
+        # obs N/A: scope unresolved before partner lookup
         logger.warning("pause/resume command from user_id=%s but partner lookup did not return exactly one user", user.id)
     return recipients
 
@@ -130,6 +145,8 @@ async def _send_pause_confirmation(pool: Any, recipients: list[Any], paused_by) 
             PAUSE_CONFIRMATION,
             template_fallback=TemplateCall("pause_confirmation", [recipient.name, paused_by.name]),
             ignore_pause=True,
+            bot_id='mediator',
+            topic_id=get_relationship_topic_id(),
         )
 
 
@@ -144,6 +161,57 @@ async def _handle_resume_command(pool: Any, user) -> None:
     await seed_weekly_summaries(pool)
 
 
+class ResolvedScope(NamedTuple):
+    bot_id: str
+    topic_id: UUID | None
+    channel_id: str | None
+    binding_id: UUID | None
+    dyad_id: UUID | None
+
+
+async def _resolve_scope(pool: Any, transport: str, address: str) -> ResolvedScope:
+    """Resolve bot + sender + binding for an inbound transport+address pair.
+
+    Falls back to mediator defaults on any miss, including when the routing
+    tables are unavailable (test FakePool, early startup, etc.).
+    """
+    bot_id: str = "mediator"
+    binding_id: UUID | None = None
+    dyad_id: UUID | None = None
+    topic_id = get_relationship_topic_id()
+
+    try:
+        resolved_bot = await routing.resolve_bot(pool, transport=transport, address=address)
+        if resolved_bot is not None:
+            bot_id = resolved_bot
+    except Exception:
+        logger.debug("_resolve_scope: resolve_bot failed — using mediator default", exc_info=True,
+                     extra={"bot_id": bot_id, "topic_id": str(topic_id) if topic_id else None})
+
+    try:
+        user_id = await routing.resolve_sender(pool, transport=transport, address=address)
+        if user_id is not None:
+            try:
+                binding = await routing.resolve_binding(pool, bot_id=bot_id, user_id=user_id)
+                if binding is not None:
+                    binding_id = binding.binding_id
+                    dyad_id = binding.dyad_id
+            except Exception:
+                logger.debug("_resolve_scope: resolve_binding failed — using mediator default", exc_info=True,
+                             extra={"bot_id": bot_id, "topic_id": str(topic_id) if topic_id else None})
+    except Exception:
+        logger.debug("_resolve_scope: resolve_sender failed — using mediator default", exc_info=True,
+                     extra={"bot_id": bot_id, "topic_id": str(topic_id) if topic_id else None})
+
+    return ResolvedScope(
+        bot_id=bot_id,
+        topic_id=topic_id,
+        channel_id=None,
+        binding_id=binding_id,
+        dyad_id=dyad_id,
+    )
+
+
 async def _insert_message(
     pool: Any,
     user_id,
@@ -155,13 +223,16 @@ async def _insert_message(
     duration: int | None = None,
     media_analysis: dict[str, Any] | None = None,
     charge: str | None = None,
+    *,
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
 ):
     return await pool.fetchrow(
         """
         INSERT INTO messages
             (direction, sender_id, content, content_encrypted, processing_state, whatsapp_message_id, sent_at,
-             media_type, media_url, media_duration_seconds, media_analysis, charge)
-        VALUES ('inbound', $1, $2, $3, 'raw', $4, $5, $6, $7, $8, $9, $10)
+             media_type, media_url, media_duration_seconds, media_analysis, charge, bot_id, topic_id)
+        VALUES ('inbound', $1, $2, $3, 'raw', $4, $5, $6, $7, $8, $9, $10, $11, $12)
         ON CONFLICT (whatsapp_message_id) DO NOTHING
         RETURNING id
         """,
@@ -175,6 +246,8 @@ async def _insert_message(
         duration,
         media_analysis,
         charge,
+        bot_id,
+        topic_id,
     )
 
 
@@ -208,8 +281,11 @@ async def process_inbound(
 
                 phone = message["from"]
                 if not is_allowed_phone(phone):
+                    # obs N/A: scope unresolved before upsert
                     logger.warning("dropping non-whitelisted sender %s", phone)
                     continue
+
+                scope = await _resolve_scope(pool, "whatsapp", phone)
 
                 user = await upsert_user(
                     pool,
@@ -222,7 +298,7 @@ async def process_inbound(
                 wa_id = message["id"]
 
                 if wa_type == "reaction":
-                    await _handle_reaction(pool, user.id, message.get("reaction", {}))
+                    await _handle_reaction(pool, user.id, message.get("reaction", {}), bot_id=scope.bot_id, topic_id=scope.topic_id)
                     continue
 
                 if wa_type == "text":
@@ -231,7 +307,7 @@ async def process_inbound(
                         charge_label = "routine"
                     else:
                         charge_label = (await classify_charge(pool, content)).charge
-                    row = await _insert_message(pool, user.id, content, wa_id, sent_at, charge=charge_label)
+                    row = await _insert_message(pool, user.id, content, wa_id, sent_at, charge=charge_label, bot_id=scope.bot_id, topic_id=scope.topic_id)
                     if row is not None and content.strip() == "/pause":
                         await _handle_pause_command(pool, user)
                         continue
@@ -241,25 +317,25 @@ async def process_inbound(
                     if row is not None and await system_state.is_paused(pool):
                         continue
                     if row is not None and coalescer is not None and not await system_state.is_paused(pool):
-                        await coalescer.add(user.id, row["id"], user, source=coalescer_source)
+                        await coalescer.add(user.id, row["id"], user, source=coalescer_source, bot_id=scope.bot_id)
                     continue
 
                 if wa_type == "audio":
                     duration = message["audio"].get("duration")
-                    row = await _insert_message(pool, user.id, None, wa_id, sent_at, "voice", duration=duration)
+                    row = await _insert_message(pool, user.id, None, wa_id, sent_at, "voice", duration=duration, bot_id=scope.bot_id, topic_id=scope.topic_id)
                     if row is not None:
                         paused = await system_state.is_paused(pool)
                         if not paused and await claim_onboarding_welcome(pool, user.id):
-                            await send_outbound(pool, user, WELCOME_MESSAGE)
+                            await send_outbound(pool, user, WELCOME_MESSAGE, bot_id=scope.bot_id, topic_id=scope.topic_id)
                         await handle_voice(pool, row["id"], message["audio"]["id"], user, None if paused else coalescer, duration)
                     continue
 
                 if wa_type == "image":
-                    row = await _insert_message(pool, user.id, None, wa_id, sent_at, "image")
+                    row = await _insert_message(pool, user.id, None, wa_id, sent_at, "image", bot_id=scope.bot_id, topic_id=scope.topic_id)
                     if row is not None:
                         paused = await system_state.is_paused(pool)
                         if not paused and await claim_onboarding_welcome(pool, user.id):
-                            await send_outbound(pool, user, WELCOME_MESSAGE)
+                            await send_outbound(pool, user, WELCOME_MESSAGE, bot_id=scope.bot_id, topic_id=scope.topic_id)
                         await handle_image(pool, row["id"], message["image"]["id"], user, None if paused else coalescer)
                     continue
 
@@ -271,13 +347,15 @@ async def process_inbound(
                     sent_at,
                     "document",
                     media_analysis={"kind": wa_type},
+                    bot_id=scope.bot_id,
+                    topic_id=scope.topic_id,
                 )
                 if row is not None and await system_state.is_paused(pool):
                     continue
                 if row is not None and await claim_onboarding_welcome(pool, user.id):
-                    await send_outbound(pool, user, WELCOME_MESSAGE)
+                    await send_outbound(pool, user, WELCOME_MESSAGE, bot_id=scope.bot_id, topic_id=scope.topic_id)
                 if row is not None and coalescer is not None and not await system_state.is_paused(pool):
-                    await coalescer.add(user.id, row["id"], user, source=coalescer_source)
+                    await coalescer.add(user.id, row["id"], user, source=coalescer_source, bot_id=scope.bot_id)
 
 
 def twilio_form_to_meta_payload(form: dict[str, str]) -> dict[str, Any]:

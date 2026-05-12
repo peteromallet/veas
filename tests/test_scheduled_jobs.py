@@ -336,7 +336,7 @@ async def test_weekly_summary_sends_template_runs_decay_and_reseeds(fake_pool, m
     sent = []
     decayed = []
 
-    async def fake_send(pool, user, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False):
+    async def fake_send(pool, user, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False, bot_id=None, topic_id=None):
         sent.append((user, content, template_fallback))
         return uuid4()
 

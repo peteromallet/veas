@@ -31,6 +31,7 @@ class TurnContext:
     read_scopes: Any | None = None
     write_scopes: Any | None = None
     cross_topic_policy: str | None = None
+    dyad_id: UUID | None = None
     # Existing fields preserved in original order
     current_step: TurnStep = "respond"
     turn_plan: TurnPlan = field(default_factory=lambda: make_turn_plan("quick_reply"))
@@ -45,6 +46,20 @@ class TurnContext:
     sent_message_parts: list[dict[str, Any]] | None = None
     hot_context_rendered: str | None = None
     trigger_metadata: dict[str, Any] = field(default_factory=dict)
+
+
+def obs_fields(ctx_or_scope) -> dict[str, Any]:
+    """Return structured logging extra dict with scope fields (None values filtered).
+
+    Accepts TurnContext, ResolvedScope, or any object with bot_id/topic_id/
+    channel_id/binding_id attributes.
+    """
+    result: dict[str, Any] = {}
+    for field in ("bot_id", "topic_id", "channel_id", "binding_id"):
+        val = getattr(ctx_or_scope, field, None)
+        if val is not None:
+            result[field] = str(val) if not isinstance(val, (str, type(None))) else val
+    return result
 
 
 async def partner_of(pool: Any, user: User) -> User:

@@ -83,7 +83,7 @@ async def recover_on_startup(pool: Any, coalescer: Any, *, now: datetime | None 
         if not message_ids:
             continue
         user = await _fetch_message_user(pool, message_ids[0])
-        await coalescer.add_burst(user.id, message_ids, user)
+        await coalescer.add_burst(user.id, message_ids, user)  # pause-check via send_outbound
 
     await pool.execute(
         """
@@ -111,7 +111,7 @@ async def recover_on_startup(pool: Any, coalescer: Any, *, now: datetime | None 
     )
     for row in raw_messages:
         user = await fetch_user_by_id(pool, row["sender_id"])
-        await coalescer.add(user.id, row["id"], user, source="recovery")
+        await coalescer.add(user.id, row["id"], user, source="recovery")  # pause-check via send_outbound
 
 
 async def run_recovery_forever(pool: Any, coalescer: Any, *, interval_seconds: float = 30.0) -> None:

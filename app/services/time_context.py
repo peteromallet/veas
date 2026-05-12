@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import calendar
 from datetime import UTC, date, datetime, time, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -99,6 +100,18 @@ def temporal_reference(value: datetime | None, timezone_name: str | None, *, now
     }
 
 
+def add_calendar_months(value: date | datetime, months: int) -> date | datetime:
+    """Add calendar months, clamping to the last valid day when needed."""
+
+    if months < 0:
+        raise ValueError("months must be non-negative")
+    month_index = value.month - 1 + months
+    year = value.year + month_index // 12
+    month = month_index % 12 + 1
+    day = min(value.day, calendar.monthrange(year, month)[1])
+    return value.replace(year=year, month=month, day=day)
+
+
 def local_day_bounds_utc(
     local_day: LocalDayValue,
     timezone_name: str | None,
@@ -118,4 +131,3 @@ def local_day_bounds_utc(
     start_local = datetime.combine(target, time.min, tzinfo=tz)
     end_local = start_local + timedelta(days=1)
     return start_local.astimezone(UTC), end_local.astimezone(UTC)
-

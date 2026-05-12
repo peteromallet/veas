@@ -1,11 +1,14 @@
 """Plan 4/5 hook contracts: OOB verdicts are ok, rewrite, or block."""
 
+import logging
 from collections.abc import Awaitable, Callable
 from typing import Any
 from uuid import UUID
 
 from app.services.oob_check import check_oob_with_policy
 from app.services import system_state
+
+logger = logging.getLogger(__name__)
 
 CheckOOB = Callable[..., Awaitable[dict[str, Any]]]
 
@@ -34,7 +37,9 @@ def set_pool(pool: Any | None) -> None:
     _pool = pool
 
 
-async def paused_for_user(user_id: UUID) -> bool:
+async def paused_for_user(user_id: UUID, *, bot_id: str | None = None) -> bool:
     if _pool is None:
         return False
+    logger.debug("paused_for_user check", extra={"user_id": str(user_id), "bot_id": bot_id})
+    # TODO(S2b): when bot_id is not None, also call user_bot_paused(pool, user_id, bot_id)
     return await system_state.is_paused(_pool)

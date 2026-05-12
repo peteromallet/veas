@@ -17,7 +17,7 @@ class CoalescerRecorder:
         self.add_calls = []
         self.add_burst_calls = []
 
-    async def add(self, user_id, message_id, user, *, source: str = "live"):
+    async def add(self, user_id, message_id, user, *, source: str = "live", bot_id: str | None = None):
         self.add_calls.append((user_id, message_id, user, source))
 
     async def add_burst(self, user_id, message_ids, user):

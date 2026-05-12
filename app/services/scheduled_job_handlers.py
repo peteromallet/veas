@@ -17,6 +17,7 @@ from app.services.deletion import purge_expired_deletions
 from app.services.messaging import send_outbound
 from app.services.scheduled_task_recurrence import next_occurrence_utc, recurrence_after_fire
 from app.services.templates import TemplateCall
+from app.bots.registry import get_relationship_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -29,6 +30,7 @@ def _zoneinfo(name: str) -> ZoneInfo:
     try:
         return ZoneInfo(name)
     except ZoneInfoNotFoundError:
+        # obs N/A: startup/config tz lookup
         logger.warning("unknown user timezone %s; falling back to UTC", name)
         return ZoneInfo("UTC")
 
@@ -91,9 +93,15 @@ class ScheduledJobHandlers:
                 "weekly_summary",
                 [user.name, str(summary["conversation_count"]), str(summary["ongoing_count"])],
             ),
+            bot_id=job.get('bot_id', 'mediator'),
+            topic_id=job.get('topic_id') or get_relationship_topic_id(),
         )
         await run_decay_housekeeping(self.pool)
-        await schedule_next_weekly_summary(self.pool, user_row, now=_utc_now(), source_job_id=job["id"])
+        await schedule_next_weekly_summary(
+            self.pool, user_row, now=_utc_now(), source_job_id=job["id"],
+            bot_id=job.get('bot_id', 'mediator'),
+            topic_id=job.get('topic_id') or get_relationship_topic_id(),
+        )
 
     async def handle_checkin(self, job: dict[str, Any]) -> None:
         user = await fetch_user_by_id(self.pool, job["user_id"])
@@ -107,6 +115,8 @@ class ScheduledJobHandlers:
             user,
             f"Hi {user.name}, been a bit -- anything on your mind? Just message me back when you're ready.",
             template_fallback=TemplateCall("checkin_nudge", [user.name]),
+            bot_id=job.get('bot_id', 'mediator'),
+            topic_id=job.get('topic_id') or get_relationship_topic_id(),
         )
 
     async def handle_watch_item_due(self, job: dict[str, Any]) -> None:
@@ -129,6 +139,8 @@ class ScheduledJobHandlers:
             user.id,
             scheduled_for=_utc_now() + timedelta(minutes=15),
             context={"kind": "watch_item_due", **metadata["context"]},
+            bot_id=job.get('bot_id', 'mediator'),
+            topic_id=job.get('topic_id') or get_relationship_topic_id(),
         )
 
     async def handle_oob_review(self, job: dict[str, Any]) -> None:
@@ -143,7 +155,8 @@ class ScheduledJobHandlers:
         )
 
     async def handle_heartbeat(self, job: dict[str, Any]) -> None:
-        logger.info("scheduled heartbeat fired job_id=%s scheduled_for=%s", job["id"], job["scheduled_for"])
+        logger.info("scheduled heartbeat fired job_id=%s scheduled_for=%s", job["id"], job["scheduled_for"],
+                     extra={"bot_id": job.get("bot_id", "mediator"), "topic_id": job.get("topic_id")})
         await purge_expired_deletions(self.pool)
 
     async def handle_deferred_turn(self, job: dict[str, Any]) -> None:
@@ -195,22 +208,26 @@ class ScheduledJobHandlers:
             "source_job_id": str(job["id"]),
         }
         next_context.pop("scheduled_task_control", None)
+        reschedule_bot_id = job.get('bot_id', 'mediator')
+        reschedule_topic_id = job.get('topic_id') or get_relationship_topic_id()
         await self.pool.fetchrow(
             """
-            INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-            SELECT $1, 'scheduled_task', $2, $3::jsonb, 'pending'
+            INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+            SELECT $1, 'scheduled_task', $2, $3::jsonb, 'pending', $4, $5
             WHERE NOT EXISTS (
                 SELECT 1
                 FROM scheduled_jobs
                 WHERE job_type = 'scheduled_task'
                   AND status = 'pending'
-                  AND context->>'source_job_id' = $4
+                  AND context->>'source_job_id' = $6
             )
             RETURNING id, scheduled_for
             """,
             current["user_id"],
             next_scheduled_for,
             next_context,
+            reschedule_bot_id,
+            reschedule_topic_id,
             str(job["id"]),
         )
 
@@ -309,27 +326,33 @@ async def schedule_next_weekly_summary(
     *,
     now: datetime | None = None,
     source_job_id: Any | None = None,
+    bot_id: str = 'mediator',
+    topic_id: UUID | None = None,
 ) -> Any | None:
     if not user_row.get("weekly_summary_enabled", True):
         return None
+    if topic_id is None:
+        topic_id = get_relationship_topic_id()
     scheduled_for = next_weekly_summary_at(user_row, now=now)
     return await pool.fetchrow(
         """
-        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-        SELECT $1, 'weekly_summary', $2, $3::jsonb, 'pending'
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+        SELECT $1, 'weekly_summary', $2, $3::jsonb, 'pending', $4, $5
         WHERE NOT EXISTS (
             SELECT 1
             FROM scheduled_jobs
             WHERE user_id = $1
               AND job_type = 'weekly_summary'
               AND status = 'pending'
-              AND ($4::uuid IS NULL OR id <> $4::uuid)
+              AND ($6::uuid IS NULL OR id <> $6::uuid)
         )
         RETURNING id, scheduled_for
         """,
         user_row["id"],
         scheduled_for,
         {"source_job_id": str(source_job_id) if source_job_id is not None else None},
+        bot_id,
+        topic_id,
         source_job_id,
     )
 
@@ -355,11 +378,15 @@ async def schedule_checkin_job(
     *,
     scheduled_for: datetime,
     context: dict[str, Any],
+    bot_id: str = 'mediator',
+    topic_id: UUID | None = None,
 ) -> Any:
     _old, row = await schedule_checkin_record(
         pool,
         user_id,
         scheduled_for=scheduled_for,
         context=context,
+        bot_id=bot_id,
+        topic_id=topic_id,
     )
     return row

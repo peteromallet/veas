@@ -13,6 +13,7 @@ from app.services import storage, system_state, whatsapp
 from app.services.messaging import send_outbound
 from app.services.spend import is_under_cap, record_llm_cost
 from app.services.templates import TemplateCall
+from app.bots.registry import get_relationship_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +195,8 @@ async def handle_image(
                 user,
                 "I can't analyze images right now -- could you describe it in text?",
                 template_fallback=TemplateCall("media_failure", [user.name, "image"]),
+                bot_id='mediator',
+                topic_id=get_relationship_topic_id(),
             )
         return
 
@@ -212,6 +215,8 @@ async def handle_image(
                 user,
                 "I couldn't process your last image -- could you try resending or describe it in text?",
                 template_fallback=TemplateCall("media_failure", [user.name, "image"]),
+                bot_id='mediator',
+                topic_id=get_relationship_topic_id(),
             )
     else:
         await pool.execute("UPDATE messages SET media_analysis=$1 WHERE id=$2", analysis, message_id)

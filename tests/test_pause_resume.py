@@ -15,7 +15,7 @@ class RecordingCoalescer:
     def __init__(self) -> None:
         self.calls = []
 
-    async def add(self, *args, source: str = "live") -> None:
+    async def add(self, *args, source: str = "live", bot_id: str | None = None) -> None:
         self.calls.append((*args, source))
 
 
@@ -80,7 +80,7 @@ async def test_pause_from_either_partner_sets_global_state_supersedes_and_notifi
         }
     sent = []
 
-    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False):
+    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False, bot_id=None, topic_id=None):
         sent.append((recipient.id, template_fallback.name, template_fallback.params, ignore_pause))
         return uuid4()
 

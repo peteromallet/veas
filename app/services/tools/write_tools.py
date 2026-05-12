@@ -165,6 +165,8 @@ async def _schedule_context_job(
     scheduled_for: datetime,
     context_key: str,
     context_id: Any,
+    bot_id: str = 'mediator',
+    topic_id: Any = None,
 ) -> None:
     await pool.execute(
         """
@@ -180,14 +182,16 @@ async def _schedule_context_job(
     )
     await pool.fetchrow(
         """
-        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-        VALUES ($1, $2, $3, $4::jsonb, 'pending')
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+        VALUES ($1, $2, $3, $4::jsonb, 'pending', $5, $6)
         RETURNING id, scheduled_for
         """,
         user_id,
         job_type,
         scheduled_for,
         {context_key: str(context_id)},
+        bot_id,
+        topic_id,
     )
 
 
@@ -305,9 +309,10 @@ async def create_bridge_candidate(
         INSERT INTO bridge_candidates (
             source_user_id, target_user_id, kind, status, sensitivity, partner_path,
             source_message_ids, related_memory_ids, related_observation_ids,
-            internal_note, shareable_summary, resolved_at
+            internal_note, shareable_summary, resolved_at,
+            bot_id, topic_id, dyad_id
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8::uuid[], $9::uuid[], $10, $11, {resolved_at_sql})
+        VALUES ($1, $2, $3, $4, $5, $6, $7::uuid[], $8::uuid[], $9::uuid[], $10, $11, {resolved_at_sql}, $12, $13, $14)
         RETURNING id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
                   COALESCE(source_message_ids, '{{}}'::uuid[]) AS source_message_ids,
                   COALESCE(related_memory_ids, '{{}}'::uuid[]) AS related_memory_ids,
@@ -326,6 +331,9 @@ async def create_bridge_candidate(
         args.related_observation_ids,
         args.internal_note or "",
         args.shareable_summary,
+        ctx.bot_id,
+        ctx.primary_topic_id,
+        ctx.dyad_id,
     )
     result = CreateBridgeCandidateOutput(candidate=_bridge_candidate(row))
     await _log_tool_call(ctx, "create_bridge_candidate", args, started, result)
@@ -484,6 +492,8 @@ async def send_bridge_candidate(
         content,
         bot_turn_id=ctx.turn_id,
         protected_owner_ids=protected_owner_ids,
+        bot_id=ctx.bot_id,
+        topic_id=ctx.primary_topic_id,
     )
     row = await _set_bridge_candidate_status(
         ctx,
@@ -696,14 +706,24 @@ async def add_memory(ctx: TurnContext, args: AddMemoryInput) -> AddMemoryOutput:
     started = _start()
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO memories (about_user_id, content, content_encrypted, related_theme_ids)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id
+        WITH new_artifact AS (
+            INSERT INTO memories (about_user_id, content, content_encrypted, related_theme_ids, recorded_by_bot_id)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'memories', new_artifact.id, $6, $5, 'active'
+            FROM new_artifact
+        )
+        SELECT id FROM new_artifact
         """,
         args.about_user_id,
         args.content,
         encrypt_value(args.content),
         args.related_theme_ids,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = AddMemoryOutput(id=row["id"])
     await _log_tool_call(ctx, "add_memory", args, started, result)
@@ -742,15 +762,25 @@ async def supersede_memory(ctx: TurnContext, args: SupersedeMemoryInput) -> Supe
             UPDATE memories SET status='superseded'
             WHERE id=$1
             RETURNING id, about_user_id
+        ),
+        new AS (
+            INSERT INTO memories (about_user_id, content, content_encrypted, related_theme_ids, supersedes_memory_id, recorded_by_bot_id)
+            SELECT about_user_id, $2, $3, $4, id, $5 FROM old
+            RETURNING id AS new_id, $1::uuid AS old_id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'memories', new.new_id, $6, $5, 'active'
+            FROM new
         )
-        INSERT INTO memories (about_user_id, content, content_encrypted, related_theme_ids, supersedes_memory_id)
-        SELECT about_user_id, $2, $3, $4, id FROM old
-        RETURNING id AS new_id, $1::uuid AS old_id
+        SELECT new_id, old_id FROM new
         """,
         args.old_memory_id,
         args.new_content,
         encrypt_value(args.new_content),
         args.related_theme_ids,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = SupersedeMemoryOutput(new_id=row["new_id"], old_id=row["old_id"])
     await _log_tool_call(ctx, "supersede_memory", args, started, result)
@@ -761,14 +791,24 @@ async def create_theme(ctx: TurnContext, args: CreateThemeInput) -> CreateThemeO
     started = _start()
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO themes (title, description, sentiment, health, last_reinforced_at)
-        VALUES ($1, $2, $3, $4, now())
-        RETURNING id
+        WITH new_artifact AS (
+            INSERT INTO themes (title, description, sentiment, health, last_reinforced_at, recorded_by_bot_id)
+            VALUES ($1, $2, $3, $4, now(), $5)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'themes', new_artifact.id, $6, $5, 'active'
+            FROM new_artifact
+        )
+        SELECT id FROM new_artifact
         """,
         args.title,
         args.description,
         args.sentiment.value,
         args.health.value,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = CreateThemeOutput(id=row["id"])
     await _log_tool_call(ctx, "create_theme", args, started, result)
@@ -797,14 +837,24 @@ async def add_watch_item(ctx: TurnContext, args: AddWatchItemInput) -> AddWatchI
     started = _start()
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO watch_items (owner_user_id, content, due_at, related_theme_ids)
-        VALUES ($1, $2, $3, $4)
-        RETURNING id
+        WITH new_artifact AS (
+            INSERT INTO watch_items (owner_user_id, content, due_at, related_theme_ids, recorded_by_bot_id)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'watch_items', new_artifact.id, $6, $5, 'active'
+            FROM new_artifact
+        )
+        SELECT id FROM new_artifact
         """,
         args.owner_user_id,
         args.content,
         args.due_at,
         args.related_theme_ids,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     if args.due_at is not None:
         await _schedule_context_job(
@@ -814,6 +864,8 @@ async def add_watch_item(ctx: TurnContext, args: AddWatchItemInput) -> AddWatchI
             scheduled_for=args.due_at,
             context_key="watch_item_id",
             context_id=row["id"],
+            bot_id=ctx.bot_id,
+            topic_id=ctx.primary_topic_id,
         )
     result = AddWatchItemOutput(id=row["id"])
     await _log_tool_call(ctx, "add_watch_item", args, started, result)
@@ -842,6 +894,8 @@ async def update_watch_item(ctx: TurnContext, args: UpdateWatchItemInput) -> Upd
             scheduled_for=args.due_at,
             context_key="watch_item_id",
             context_id=args.watch_item_id,
+            bot_id=ctx.bot_id,
+            topic_id=ctx.primary_topic_id,
         )
     result = UpdateWatchItemOutput(id=row["id"])
     await _log_tool_call(ctx, "update_watch_item", args, started, result)
@@ -875,12 +929,20 @@ async def log_observation(ctx: TurnContext, args: LogObservationInput) -> LogObs
         significance, _reason, scoring_prompt_version = await scoring.score_observation(ctx.pool, content=args.content)
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO observations (
-            content, content_encrypted, about_user_id, confidence, significance, scoring_prompt_version,
-            related_theme_ids, supporting_message_ids, last_reinforced_at
+        WITH new_artifact AS (
+            INSERT INTO observations (
+                content, content_encrypted, about_user_id, confidence, significance, scoring_prompt_version,
+                related_theme_ids, supporting_message_ids, last_reinforced_at, recorded_by_bot_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now(), $9)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'observations', new_artifact.id, $10, $9, 'active'
+            FROM new_artifact
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8, now())
-        RETURNING id
+        SELECT id FROM new_artifact
         """,
         args.content,
         encrypt_value(args.content),
@@ -890,6 +952,8 @@ async def log_observation(ctx: TurnContext, args: LogObservationInput) -> LogObs
         scoring_prompt_version,
         args.related_theme_ids,
         supporting_message_ids,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = LogObservationOutput(id=row["id"])
     await _log_tool_call(ctx, "log_observation", logged_args, started, result)
@@ -936,14 +1000,22 @@ async def add_distillation(ctx: TurnContext, args: AddDistillationInput) -> AddD
         triggering_message_id = supporting_message_ids[0]
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO distillations (
-            content, content_encrypted, confidence, sensitivity, visibility,
-            shareable_summary, shareable_summary_encrypted, source_user_ids,
-            related_memory_ids, related_observation_ids, related_theme_ids,
-            supporting_message_ids, triggering_message_id
+        WITH new_artifact AS (
+            INSERT INTO distillations (
+                content, content_encrypted, confidence, sensitivity, visibility,
+                shareable_summary, shareable_summary_encrypted, source_user_ids,
+                related_memory_ids, related_observation_ids, related_theme_ids,
+                supporting_message_ids, triggering_message_id, recorded_by_bot_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid[], $9::uuid[], $10::uuid[], $11::uuid[], $12::uuid[], $13, $14)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'distillations', new_artifact.id, $15, $14, 'active'
+            FROM new_artifact
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, $8::uuid[], $9::uuid[], $10::uuid[], $11::uuid[], $12::uuid[], $13)
-        RETURNING id
+        SELECT id FROM new_artifact
         """,
         args.content,
         encrypt_value(args.content),
@@ -958,6 +1030,8 @@ async def add_distillation(ctx: TurnContext, args: AddDistillationInput) -> AddD
         args.related_theme_ids,
         supporting_message_ids,
         triggering_message_id,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = AddDistillationOutput(id=row["id"])
     await _log_tool_call(ctx, "add_distillation", logged_args, started, result)
@@ -1051,10 +1125,10 @@ async def revise_distillation(ctx: TurnContext, args: ReviseDistillationInput) -
                 shareable_summary, shareable_summary_encrypted, source_user_ids,
                 related_memory_ids, related_observation_ids, related_theme_ids,
                 supporting_message_ids, triggering_message_id, supersedes_distillation_id,
-                revision_note, revision_count
+                revision_note, revision_count, recorded_by_bot_id
             )
             SELECT $2, $3, $4, $5, $6, $7, $8, $9::uuid[], $10::uuid[], $11::uuid[], $12::uuid[],
-                   $13::uuid[], $14, old.id, $15, old.revision_count + 1
+                   $13::uuid[], $14, old.id, $15, old.revision_count + 1, $16
             FROM old
             RETURNING id, supersedes_distillation_id
         ),
@@ -1069,6 +1143,11 @@ async def revise_distillation(ctx: TurnContext, args: ReviseDistillationInput) -
             FROM new
             WHERE d.id=new.supersedes_distillation_id
             RETURNING d.id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'distillations', new.id, $17, $16, 'active'
+            FROM new
         )
         SELECT new.id AS new_id, revised_old.id AS old_id
         FROM new
@@ -1089,6 +1168,8 @@ async def revise_distillation(ctx: TurnContext, args: ReviseDistillationInput) -
         supporting_message_ids,
         triggering_message_id,
         args.revision_note,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     if row is None:
         result = {
@@ -1106,11 +1187,19 @@ async def add_oob(ctx: TurnContext, args: AddOOBInput) -> AddOOBOutput:
     started = _start()
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO out_of_bounds (
-            owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at
+        WITH new_artifact AS (
+            INSERT INTO out_of_bounds (
+                owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at, recorded_by_bot_id
+            )
+            VALUES ($1, $2, $3, $4, $5, $6, $7)
+            RETURNING id
+        ),
+        topic_link AS (
+            INSERT INTO artifact_topics (artifact_table, artifact_id, topic_id, tagged_by_bot_id, status)
+            SELECT 'out_of_bounds', new_artifact.id, $8, $7, 'active'
+            FROM new_artifact
         )
-        VALUES ($1, $2, $3, $4, $5, $6)
-        RETURNING id
+        SELECT id FROM new_artifact
         """,
         args.owner_id,
         args.sensitive_core,
@@ -1118,6 +1207,8 @@ async def add_oob(ctx: TurnContext, args: AddOOBInput) -> AddOOBOutput:
         args.shareable_context,
         args.severity.value,
         args.review_at,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     if args.review_at is not None:
         await _schedule_context_job(
@@ -1127,6 +1218,8 @@ async def add_oob(ctx: TurnContext, args: AddOOBInput) -> AddOOBOutput:
             scheduled_for=args.review_at,
             context_key="oob_id",
             context_id=row["id"],
+            bot_id=ctx.bot_id,
+            topic_id=ctx.primary_topic_id,
         )
     result = AddOOBOutput(id=row["id"])
     await _log_tool_call(ctx, "add_oob", args, started, result)
@@ -1158,6 +1251,8 @@ async def update_oob(ctx: TurnContext, args: UpdateOOBInput) -> UpdateOOBOutput:
             scheduled_for=args.review_at,
             context_key="oob_id",
             context_id=args.oob_id,
+            bot_id=ctx.bot_id,
+            topic_id=ctx.primary_topic_id,
         )
     result = UpdateOOBOutput(id=row["id"])
     await _log_tool_call(ctx, "update_oob", args, started, result)
@@ -1305,13 +1400,20 @@ def _scheduled_task_row(row: Any, ctx: TurnContext) -> ScheduledTaskRow:
     context = _row_value(row, "context", {})
     now = ctx.turn_started_at or datetime.now(UTC)
     timezone = ctx.user.timezone or "UTC"
+    recurrence = context.get("recurrence")
+    recurrence_until = recurrence.get("until") if isinstance(recurrence, dict) else None
     return ScheduledTaskRow(
         task_id=context["task_id"],
         job_id=_row_value(row, "job_id", _row_value(row, "id")),
         brief=context["brief"],
         scheduled_for=row["scheduled_for"],
         scheduled_for_time=temporal_reference(row["scheduled_for"], timezone, now=now),
-        recurrence=context.get("recurrence"),
+        recurrence=recurrence,
+        recurrence_until_time=temporal_reference(
+            datetime.fromisoformat(recurrence_until) if isinstance(recurrence_until, str) else recurrence_until,
+            timezone,
+            now=now,
+        ),
         delayed=bool(_row_value(row, "delayed", False)),
         created_at=_row_value(row, "created_at"),
         created_at_time=temporal_reference(_row_value(row, "created_at"), timezone, now=now),
@@ -1357,13 +1459,15 @@ async def schedule_task(ctx: TurnContext, args: ScheduleTaskInput) -> ScheduleTa
     context = _scheduled_task_context(task_id=task_id, brief=args.brief, recurrence=recurrence)
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-        VALUES ($1, 'scheduled_task', $2, $3::jsonb, 'pending')
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+        VALUES ($1, 'scheduled_task', $2, $3::jsonb, 'pending', $4, $5)
         RETURNING id AS job_id, scheduled_for, context
         """,
         ctx.user.id,
         scheduled_for,
         context,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = ScheduleTaskOutput(
         task_id=task_id,
@@ -1503,6 +1607,8 @@ async def escalate_to_partner(ctx: TurnContext, args: EscalateToPartnerInput) ->
         template_fallback=template,
         bot_turn_id=ctx.turn_id,
         protected_owner_ids=[ctx.user.id, ctx.partner.id],
+        bot_id=ctx.bot_id,
+        topic_id=ctx.primary_topic_id,
     )
     await _append_turn_reasoning(
         ctx.pool,
@@ -1753,8 +1859,8 @@ async def log_feedback(ctx: TurnContext, args: LogFeedbackInput) -> LogFeedbackO
     started = _start()
     row = await ctx.pool.fetchrow(
         """
-        INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source)
-        VALUES ($1, $2, $3, $4, $5, $6)
+        INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source, bot_id, topic_id)
+        VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
         RETURNING id
         """,
         args.from_user_id,
@@ -1763,6 +1869,8 @@ async def log_feedback(ctx: TurnContext, args: LogFeedbackInput) -> LogFeedbackO
         args.sentiment.value,
         args.content,
         args.source,
+        ctx.bot_id,
+        ctx.primary_topic_id,
     )
     result = LogFeedbackOutput(id=row["id"])
     await _log_tool_call(ctx, "log_feedback", args, started, result)

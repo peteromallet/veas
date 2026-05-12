@@ -412,7 +412,7 @@ async def test_catch_up_recent_messages_ingests_partner_history(fake_pool, monke
         def __init__(self) -> None:
             self.calls = []
 
-        async def add(self, user_id, message_id, user, *, source: str = "live") -> None:
+        async def add(self, user_id, message_id, user, *, source: str = "live", bot_id: str | None = None) -> None:
             self.calls.append((user_id, message_id, user, source))
 
     coalescer = Coalescer()

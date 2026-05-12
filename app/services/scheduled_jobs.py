@@ -13,6 +13,7 @@ from uuid import uuid4
 from app.config import Settings, get_settings
 from app.services.deletion import purge_expired_deletions
 from app.services import system_state
+from app.bots.registry import get_relationship_topic_id
 
 logger = logging.getLogger(__name__)
 
@@ -122,7 +123,8 @@ class ScheduledJobWorker:
             FROM due
             WHERE sj.id = due.id
             RETURNING sj.id, sj.user_id, sj.job_type, sj.scheduled_for, sj.context,
-                      sj.status, sj.attempt_count, sj.max_attempts, sj.delayed
+                      sj.status, sj.attempt_count, sj.max_attempts, sj.delayed,
+                      sj.bot_id, sj.topic_id
             """,
             now,
             self.settings.scheduler_batch_size,
@@ -132,6 +134,20 @@ class ScheduledJobWorker:
         return [dict(row) for row in rows]
 
     async def _dispatch(self, job: dict[str, Any]) -> None:
+        # pause-check: withhold if globally paused or per-(user, bot) paused
+        if (
+            job.get("user_id") is not None
+            and job.get("bot_id") is not None
+            and await system_state.user_bot_paused(self.pool, job["user_id"], job["bot_id"])
+        ):
+            logger.debug(
+                "scheduled job %s withheld: per-(user, bot) pause active for user=%s bot=%s",
+                job["id"],
+                job["user_id"],
+                job["bot_id"],
+            )
+            await self._mark_withheld(job["id"])
+            return
         handler = self.handlers.get(job["job_type"])
         if handler is None:
             raise RuntimeError(f"no scheduled job handler registered for {job['job_type']}")
@@ -147,6 +163,21 @@ class ScheduledJobWorker:
             UPDATE scheduled_jobs
             SET status = 'fired',
                 fired_at = $1,
+                claimed_at = NULL,
+                claimed_by = NULL,
+                updated_at = $1
+            WHERE id = $2
+            """,
+            now,
+            job_id,
+        )
+
+    async def _mark_withheld(self, job_id: Any, *, now: datetime | None = None) -> None:
+        now = _aware_utc(now or _utc_now())
+        await self.pool.execute(
+            """
+            UPDATE scheduled_jobs
+            SET status = 'withheld',
                 claimed_at = NULL,
                 claimed_by = NULL,
                 updated_at = $1
@@ -213,8 +244,8 @@ async def seed_heartbeat(
     scheduled_for = now + timedelta(hours=settings.heartbeat_interval_hours)
     return await pool.fetchrow(
         """
-        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-        SELECT NULL, 'heartbeat', $1, '{}'::jsonb, 'pending'
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+        SELECT NULL, 'heartbeat', $1, '{}'::jsonb, 'pending', 'mediator', $2
         WHERE NOT EXISTS (
             SELECT 1
             FROM scheduled_jobs
@@ -223,4 +254,5 @@ async def seed_heartbeat(
         RETURNING id, scheduled_for
         """,
         scheduled_for,
+        get_relationship_topic_id(),
     )

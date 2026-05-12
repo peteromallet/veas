@@ -27,6 +27,7 @@ from app.config import get_settings
 from app.models.user import upsert_user
 from app.services.crypto import encrypt_value
 from app.services.whitelist import is_allowed_phone
+from app.services.discord_id import discord_bot_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -102,7 +103,10 @@ async def _get_client() -> httpx.AsyncClient:
 
 
 async def send_text(to: str, body: str, *, send_typing_indicator: bool = True) -> dict[str, Any]:
-    """Send a Discord DM and return the existing message-id shaped response."""
+    """Send a Discord DM and return the existing message-id shaped response.
+
+    pause-check N/A: routes through send_outbound.
+    """
     rest = await _rest_client()
     channel_id = await get_dm_channel_id(_discord_user_id(to))
     if send_typing_indicator:
@@ -354,6 +358,7 @@ class DiscordGatewayBot:
             except asyncio.CancelledError:
                 raise
             except Exception:
+                # obs N/A: transport-only
                 logger.exception("discord gateway loop failed")
                 await asyncio.sleep(5)
 
@@ -414,6 +419,7 @@ class DiscordGatewayBot:
             return
         author_id = str(message.get("author", {}).get("id", ""))
         if not is_allowed_discord_user(author_id):
+            # obs N/A: pre-scope gateway
             logger.warning("dropping non-whitelisted discord user %s", author_id)
             return
         if not message.get("content") and not _has_supported_attachment(message):
@@ -456,7 +462,8 @@ class DiscordGatewayBot:
             str(event.get("message_id", "")),
         )
         if target_id is None:
-            logger.info("ignoring discord reaction for unknown outbound message_id=%s", event.get("message_id"))
+            logger.info("ignoring discord reaction for unknown outbound message_id=%s", event.get("message_id"),
+                         extra={"bot_id": bot_id, "topic_id": str(topic_id) if topic_id else None})
             return
         emoji = event.get("emoji", {}).get("name")
         reacting_user = await upsert_user(
@@ -465,16 +472,25 @@ class DiscordGatewayBot:
             _discord_user_id(user_id),
             get_settings().default_user_timezone,
         )
+        # Resolve scope via the BOT's address, NEVER the reacting user's id.
+        from app.services.inbound import _resolve_scope
+        from app.bots.registry import get_relationship_topic_id
+        bot_user_id = discord_bot_user_id()
+        scope = await _resolve_scope(self.pool, 'discord', bot_user_id) if bot_user_id else None
+        bot_id = scope.bot_id if scope else 'mediator'
+        topic_id = scope.topic_id if scope else get_relationship_topic_id()
         await self.pool.fetchrow(
             """
-            INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source)
-            VALUES ($1, 'message', $2, $3, $4, 'reaction')
+            INSERT INTO feedback (from_user_id, target_type, target_id, sentiment, content, source, bot_id, topic_id)
+            VALUES ($1, 'message', $2, $3, $4, 'reaction', $5, $6)
             RETURNING id
             """,
             reacting_user.id,
             target_id,
             _reaction_sentiment(emoji),
             emoji,
+            bot_id,
+            topic_id,
         )
 
 
@@ -527,5 +543,6 @@ async def catch_up_recent_messages(pool: Any, coalescer: Any | None, *, limit: i
             )
             processed += 1
     if processed:
+        # obs N/A: no scope in catch-up
         logger.info("discord catch-up ingested %s recent message(s)", processed)
     return processed

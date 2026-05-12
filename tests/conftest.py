@@ -451,6 +451,7 @@ class FakePool:
                     related_observation_ids,
                     internal_note,
                     shareable_summary,
+                    *_rest,
                 ) = args
             else:
                 (
@@ -464,6 +465,7 @@ class FakePool:
                     related_observation_ids,
                     internal_note,
                     shareable_summary,
+                    *_rest,
                 ) = args
                 partner_path = "message_partner"
             now = datetime.now(UTC)
@@ -557,6 +559,21 @@ class FakePool:
                 row["resolved_at"] = datetime.now(UTC)
             row["updated_at"] = datetime.now(UTC)
             return {**dict(row), "partner_path": row.get("partner_path", "message_partner")}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO memories"):
+            # (about_user_id, content, content_encrypted, related_theme_ids, bot_id, topic_id)
+            about_user_id, content, _content_encrypted, related_theme_ids, _bot_id, _topic_id = args
+            row = {
+                "id": uuid4(),
+                "about_user_id": about_user_id,
+                "content": content,
+                "related_theme_ids": list(related_theme_ids or []),
+                "status": "active",
+                "supersedes_memory_id": None,
+                "created_at": datetime.now(UTC),
+                "last_referenced_at": None,
+            }
+            self.memories[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO memories (about_user_id"):
             # (about_user_id, content, content_encrypted, related_theme_ids)
             about_user_id, content, _content_encrypted, related_theme_ids = args
@@ -578,7 +595,7 @@ class FakePool:
             return {"id": memory_id}
         if compact.startswith("WITH old AS ( UPDATE memories SET status='superseded'"):
             # (old_id, new_content, content_encrypted, related_theme_ids)
-            old_id, new_content, _content_encrypted, related_theme_ids = args
+            old_id, new_content, _content_encrypted, related_theme_ids, *_rest = args
             old = self.memories[old_id]
             old["status"] = "superseded"
             new = {
@@ -593,6 +610,20 @@ class FakePool:
             }
             self.memories[new["id"]] = new
             return {"new_id": new["id"], "old_id": old_id}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO themes"):
+            title, description, sentiment, health, _bot_id, _topic_id = args
+            row = {
+                "id": uuid4(),
+                "title": title,
+                "description": description,
+                "status": "active",
+                "sentiment": sentiment,
+                "health": health,
+                "last_reinforced_at": datetime.now(UTC),
+                "last_active_at": datetime.now(UTC),
+            }
+            self.themes[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO themes"):
             title, description, sentiment, health = args
             row = {
@@ -611,6 +642,18 @@ class FakePool:
             theme_id = args[-1]
             self.themes.setdefault(theme_id, {"id": theme_id, "status": "active"})
             return {"id": theme_id}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO watch_items"):
+            owner_user_id, content, due_at, related_theme_ids, _bot_id, _topic_id = args
+            row = {
+                "id": uuid4(),
+                "owner_user_id": owner_user_id,
+                "content": content,
+                "due_at": due_at,
+                "related_theme_ids": list(related_theme_ids or []),
+                "status": "open",
+            }
+            self.watch_items[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO watch_items"):
             owner_user_id, content, due_at, related_theme_ids = args
             row = {
@@ -632,6 +675,22 @@ class FakePool:
             watch_item_id = args[-1]
             self.watch_items.setdefault(watch_item_id, {"id": watch_item_id})
             return {"id": watch_item_id}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO observations"):
+            # (content, content_encrypted, about_user_id, confidence, significance, scoring_prompt_version, related_theme_ids, supporting_message_ids, bot_id, topic_id)
+            content, _content_encrypted, about_user_id, confidence, significance, scoring_prompt_version, related_theme_ids, supporting_message_ids, _bot_id, _topic_id = args
+            row = {
+                "id": uuid4(),
+                "content": content,
+                "about_user_id": about_user_id,
+                "confidence": confidence,
+                "significance": significance,
+                "scoring_prompt_version": scoring_prompt_version,
+                "related_theme_ids": list(related_theme_ids or []),
+                "supporting_message_ids": list(supporting_message_ids or []),
+                "status": "active",
+            }
+            self.observations[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO observations"):
             # (content, content_encrypted, about_user_id, confidence, significance, scoring_prompt_version, related_theme_ids, supporting_message_ids)
             content, _content_encrypted, about_user_id, confidence, significance, scoring_prompt_version, related_theme_ids, supporting_message_ids = args
@@ -659,6 +718,52 @@ class FakePool:
             observation_id = args[-1]
             self.observations.setdefault(observation_id, {"id": observation_id, "status": "active"})
             return {"id": observation_id}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO distillations"):
+            (
+                content,
+                content_encrypted,
+                confidence,
+                sensitivity,
+                visibility,
+                shareable_summary,
+                shareable_summary_encrypted,
+                source_user_ids,
+                related_memory_ids,
+                related_observation_ids,
+                related_theme_ids,
+                supporting_message_ids,
+                triggering_message_id,
+                _bot_id,
+                _topic_id,
+            ) = args
+            row = {
+                "id": uuid4(),
+                "content": content,
+                "content_encrypted": content_encrypted,
+                "confidence": confidence,
+                "status": "active",
+                "sensitivity": sensitivity,
+                "visibility": visibility,
+                "shareable_summary": shareable_summary,
+                "shareable_summary_encrypted": shareable_summary_encrypted,
+                "source_user_ids": list(source_user_ids or []),
+                "related_memory_ids": list(related_memory_ids or []),
+                "related_observation_ids": list(related_observation_ids or []),
+                "related_theme_ids": list(related_theme_ids or []),
+                "supporting_message_ids": list(supporting_message_ids or []),
+                "created_from_tool_call_id": None,
+                "triggering_message_id": triggering_message_id,
+                "supersedes_distillation_id": None,
+                "superseded_by_distillation_id": None,
+                "revision_note": None,
+                "revision_count": 0,
+                "created_at": datetime.now(UTC),
+                "updated_at": datetime.now(UTC),
+                "revised_at": None,
+                "retired_at": None,
+            }
+            self.distillations[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO distillations"):
             (
                 content,
@@ -759,6 +864,7 @@ class FakePool:
                 supporting_message_ids,
                 triggering_message_id,
                 revision_note,
+                *_rest,
             ) = args
             old = self.distillations.get(old_id)
             if old is None or old.get("status") != "active":
@@ -798,6 +904,21 @@ class FakePool:
             old["revised_at"] = datetime.now(UTC)
             old["updated_at"] = datetime.now(UTC)
             return {"new_id": new["id"], "old_id": old_id}
+        if compact.startswith("WITH new_artifact AS ( INSERT INTO out_of_bounds"):
+            # (owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at, bot_id, topic_id)
+            owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at, _bot_id, _topic_id = args
+            row = {
+                "id": uuid4(),
+                "owner_id": owner_id,
+                "sensitive_core": sensitive_core,
+                "sensitive_core_encrypted": sensitive_core_encrypted,
+                "shareable_context": shareable_context,
+                "severity": severity,
+                "review_at": review_at,
+                "status": "active",
+            }
+            self.out_of_bounds[row["id"]] = row
+            return {"id": row["id"]}
         if compact.startswith("INSERT INTO out_of_bounds"):
             # (owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at)
             owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at = args
@@ -850,7 +971,7 @@ class FakePool:
             return {"id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("INSERT INTO scheduled_jobs") and "'weekly_summary'" in compact:
             user_id, scheduled_for, context_json = args[:3]
-            source_job_id = args[3] if len(args) > 3 else None
+            source_job_id = args[-1] if len(args) > 3 else None
             if any(
                 job["user_id"] == user_id
                 and job["job_type"] == "weekly_summary"
@@ -875,7 +996,12 @@ class FakePool:
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("INSERT INTO scheduled_jobs") and "'deferred_turn'" in compact:
-            user_id, scheduled_for, context_json = args
+            if len(args) >= 5:
+                user_id, scheduled_for, context_json, bot_id, topic_id = args[:5]
+            else:
+                user_id, scheduled_for, context_json = args[:3]
+                bot_id = None
+                topic_id = None
             if any(
                 job["user_id"] == user_id and job["job_type"] == "deferred_turn" and job["status"] == "pending"
                 for job in self.scheduled_jobs.values()
@@ -893,11 +1019,14 @@ class FakePool:
                 "delayed": False,
                 "claimed_at": None,
                 "claimed_by": None,
+                "bot_id": bot_id,
+                "topic_id": topic_id,
             }
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("INSERT INTO scheduled_jobs") and "'scheduled_task'" in compact and "WHERE NOT EXISTS" in compact:
-            user_id, scheduled_for, context_json, source_job_id = args
+            user_id, scheduled_for, context_json = args[:3]
+            source_job_id = args[-1]
             if any(
                 job.get("job_type") == "scheduled_task"
                 and job.get("status") == "pending"
@@ -923,7 +1052,7 @@ class FakePool:
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("INSERT INTO scheduled_jobs") and "'scheduled_task'" in compact:
-            user_id, scheduled_for, context_json = args
+            user_id, scheduled_for, context_json = args[:3]
             row = {
                 "id": uuid4(),
                 "user_id": user_id,
@@ -944,11 +1073,13 @@ class FakePool:
         if compact.startswith("SELECT id, user_id, scheduled_for, context, status FROM scheduled_jobs WHERE id"):
             row = self.scheduled_jobs.get(args[0])
             return dict(row) if row is not None else None
-        if compact.startswith("INSERT INTO scheduled_jobs") and ("'watch_item_due'" in compact or "VALUES ($1, $2, $3, $4::jsonb, 'pending')" in compact and args[1] == "watch_item_due"):
-            if len(args) == 4:
+        if compact.startswith("INSERT INTO scheduled_jobs") and ("'watch_item_due'" in compact or "VALUES ($1, $2, $3, $4::jsonb, 'pending'" in compact and args[1] == "watch_item_due"):
+            if len(args) >= 5:
+                user_id, job_type, scheduled_for, context_json = args[:4]
+            elif len(args) == 4:
                 user_id, job_type, scheduled_for, context_json = args
             else:
-                user_id, scheduled_for, context_json = args
+                user_id, scheduled_for, context_json = args[:3]
                 job_type = "watch_item_due"
             row = {
                 "id": uuid4(),
@@ -965,11 +1096,13 @@ class FakePool:
             }
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
-        if compact.startswith("INSERT INTO scheduled_jobs") and ("'oob_review'" in compact or "VALUES ($1, $2, $3, $4::jsonb, 'pending')" in compact and args[1] == "oob_review"):
-            if len(args) == 4:
+        if compact.startswith("INSERT INTO scheduled_jobs") and ("'oob_review'" in compact or "VALUES ($1, $2, $3, $4::jsonb, 'pending'" in compact and args[1] == "oob_review"):
+            if len(args) >= 5:
+                user_id, job_type, scheduled_for, context_json = args[:4]
+            elif len(args) == 4:
                 user_id, job_type, scheduled_for, context_json = args
             else:
-                user_id, scheduled_for, context_json = args
+                user_id, scheduled_for, context_json = args[:3]
                 job_type = "oob_review"
             row = {
                 "id": uuid4(),
@@ -987,7 +1120,7 @@ class FakePool:
             self.scheduled_jobs[row["id"]] = row
             return {"id": row["id"], "scheduled_for": scheduled_for}
         if compact.startswith("INSERT INTO scheduled_jobs"):
-            user_id, scheduled_for, context_json = args
+            user_id, scheduled_for, context_json = args[:3]
             row = {
                 "id": uuid4(),
                 "user_id": user_id,
@@ -1084,8 +1217,14 @@ class FakePool:
         if compact.startswith("SELECT id, owner_user_id, content, due_at, status FROM watch_items WHERE id"):
             return self.watch_items.get(args[0])
         if compact.startswith("INSERT INTO feedback"):
-            if len(args) == 6:
-                from_user_id, target_type, target_id, sentiment, content, source = args
+            if len(args) >= 8:
+                # log_feedback: from_user_id, target_type, target_id, sentiment, content, source, bot_id, topic_id
+                from_user_id, target_type, target_id, sentiment, content, source, _bot_id, _topic_id = args[:8]
+            elif len(args) == 6:
+                # discord reaction: from_user_id, target_id, sentiment, content, bot_id, topic_id
+                from_user_id, target_id, sentiment, content, _bot_id, _topic_id = args
+                target_type = "message"
+                source = "reaction"
             else:
                 from_user_id, target_id, sentiment, content = args
                 target_type = "message"
@@ -1190,13 +1329,15 @@ class FakePool:
         if compact.startswith("SELECT sender_id FROM messages WHERE id"):
             return self.messages[args[0]]["sender_id"]
         if compact.startswith("SELECT EXISTS ( SELECT 1 FROM messages WHERE direction='inbound'"):
-            user_id, since, triggering_message_ids = args
+            user_id, since, triggering_message_ids, *rest = args
+            bot_id_filter = rest[0] if rest else None
             triggering = set(triggering_message_ids or [])
             return any(
                 row.get("direction") == "inbound"
                 and row.get("sender_id") == user_id
                 and row.get("sent_at") > since
                 and row["id"] not in triggering
+                and (bot_id_filter is None or row.get("bot_id") == bot_id_filter or row.get("bot_id") is None)
                 for row in self.messages.values()
             )
         if compact.startswith("SELECT m.whatsapp_message_id FROM messages m JOIN users u ON u.id = m.sender_id"):
@@ -1223,6 +1364,9 @@ class FakePool:
             return None
         if compact.startswith("SELECT paused_at FROM system_state WHERE key = 'global_pause'"):
             return self.system_state["global_pause"].get("paused_at")
+        if compact.startswith("SELECT paused FROM user_bot_state WHERE user_id"):
+            # S2a: per-(user,bot) pause read path — always not paused in tests
+            return None
         if compact.startswith("SELECT COALESCE(reasoning, '') FROM bot_turns WHERE id"):
             return self.bot_turns[args[0]].get("reasoning") or ""
         raise AssertionError(f"unhandled fetchval SQL: {compact}")
@@ -1599,6 +1743,44 @@ class FakePool:
             ]
             rows.sort(key=lambda row: row["event_seq"])
             return rows
+        if "FROM feedback f JOIN messages m" in compact:
+            user_id, now_utc = args
+            previous_completed_at = max(
+                (
+                    turn["completed_at"]
+                    for turn in self.bot_turns.values()
+                    if turn.get("user_in_context") == user_id and turn.get("completed_at") is not None
+                ),
+                default=None,
+            )
+            if previous_completed_at is None:
+                return []
+            rows = []
+            for feedback in self.feedback.values():
+                message = self.messages.get(feedback.get("target_id"))
+                if message is None:
+                    continue
+                if feedback.get("from_user_id") != user_id:
+                    continue
+                if feedback.get("target_type") != "message" or feedback.get("source") != "reaction":
+                    continue
+                if message.get("direction") != "outbound" or message.get("recipient_id") != user_id:
+                    continue
+                if not previous_completed_at < feedback["created_at"] <= now_utc:
+                    continue
+                rows.append(
+                    {
+                        "id": feedback["id"],
+                        "sentiment": feedback["sentiment"],
+                        "content": feedback["content"],
+                        "created_at": feedback["created_at"],
+                        "message_id": message["id"],
+                        "message_content": message.get("content"),
+                        "message_sent_at": message["sent_at"],
+                    }
+                )
+            rows.sort(key=lambda row: row["created_at"], reverse=True)
+            return rows[:5]
         if "FROM bot_turns" in compact:
             rows = []
             for turn in self.bot_turns.values():

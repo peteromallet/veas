@@ -1,4 +1,4 @@
-"""Per-user inbound burst coalescing."""
+"""Per-user inbound burst coalescing with dual-key (user_id, bot_id) transition."""
 
 import asyncio
 from collections.abc import Awaitable, Callable
@@ -11,6 +11,10 @@ from resident_chat_runtime.coalescing import AsyncBurstCoalescer, BurstBatch
 from app.models.user import User
 from app.services.pacer import PacingDecision
 
+# Composite key type for the dual-key transition:
+# (user_id, bot_id_or_None) — bot_id=None is the legacy key.
+CompositeKey = tuple[UUID, str | None]
+
 
 @dataclass
 class _Burst:
@@ -18,6 +22,7 @@ class _Burst:
     user: User
     first_seen_at: float
     source: str = "live"
+    bot_id: str | None = None
 
 
 class BurstCoalescer:
@@ -39,9 +44,9 @@ class BurstCoalescer:
         self.pacer = pacer
         self.debounce_seconds = debounce_seconds
         self.max_seconds = max_seconds
-        self._bursts: dict[UUID, _Burst] = {}
-        self._locks: dict[UUID, asyncio.Lock] = {}
-        self._wait_tasks: dict[UUID, asyncio.Task] = {}
+        self._bursts: dict[CompositeKey, _Burst] = {}
+        self._locks: dict[CompositeKey, asyncio.Lock] = {}
+        self._wait_tasks: dict[CompositeKey, asyncio.Task] = {}
         self._live_typing_tasks: dict[UUID, asyncio.Task[None]] = {}
         self._live_typing_stops: dict[UUID, asyncio.Event] = {}
         self._coalescer: AsyncBurstCoalescer[UUID, UUID] = AsyncBurstCoalescer(
@@ -50,17 +55,18 @@ class BurstCoalescer:
             max_delay=max_seconds,
         )
 
-    async def add(self, user_id: UUID, message_id: UUID, user: User, *, source: str = "live") -> None:
+    async def add(self, user_id: UUID, message_id: UUID, user: User, *, source: str = "live", bot_id: str | None = None) -> None:
+        key: CompositeKey = (user_id, bot_id)
         loop = asyncio.get_running_loop()
-        lock = self._locks.setdefault(user_id, asyncio.Lock())
+        lock = self._locks.setdefault(key, asyncio.Lock())
         async with lock:
-            wait_task = self._wait_tasks.pop(user_id, None)
+            wait_task = self._wait_tasks.pop(key, None)
             if wait_task is not None:
                 wait_task.cancel()
-            burst = self._bursts.get(user_id)
+            burst = self._bursts.get(key)
             if burst is None:
-                burst = _Burst(message_ids=[], user=user, first_seen_at=loop.time(), source=source)
-                self._bursts[user_id] = burst
+                burst = _Burst(message_ids=[], user=user, first_seen_at=loop.time(), source=source, bot_id=bot_id)
+                self._bursts[key] = burst
             burst.message_ids.append(message_id)
             burst.user = user
             burst.source = self._merge_source(burst.source, source)
@@ -77,15 +83,45 @@ class BurstCoalescer:
         await self._coalescer.flush(user_id)
 
     async def _fire_batch(self, batch: BurstBatch[UUID, UUID]) -> None:
-        lock = self._locks.setdefault(batch.key, asyncio.Lock())
+        user_id = batch.key
+
+        # --- Composite-key lookup ---
+        # Try to find any burst for this user that carries a specific bot_id.
+        # AsyncBurstCoalescer serialises per user_id, so only one batch fires
+        # at a time for a given user.
+        composite_key: CompositeKey | None = None
+        burst: _Burst | None = None
+        for (uid, _bot_id), candidate in list(self._bursts.items()):
+            if uid == user_id and _bot_id is not None:
+                composite_key = (uid, _bot_id)
+                burst = candidate
+                break
+
+        if composite_key is not None:
+            lock = self._locks.setdefault(composite_key, asyncio.Lock())
+            async with lock:
+                burst = self._bursts.pop(composite_key, None)
+                if burst is not None:
+                    await self._handle_ready_burst(user_id, burst)
+            return
+
+        # --- Legacy fallback: (user_id, None) ---
+        # TODO(S2b): drop legacy (user_id, None) fallback
+        legacy_key: CompositeKey = (user_id, None)
+        lock = self._locks.setdefault(legacy_key, asyncio.Lock())
         async with lock:
-            burst = self._bursts.pop(batch.key, None)
-            if burst is None:
-                return
-            await self._handle_ready_burst(batch.key, burst)
+            burst = self._bursts.pop(legacy_key, None)
+            if burst is not None:
+                await self._handle_ready_burst(user_id, burst)
 
     def snapshot(self) -> dict[UUID, Any]:
-        return self._bursts
+        # Maintain backward compat: expose bursts keyed by user_id for callers
+        # that iterate snapshot().  Duplicate the last-seen burst when the same
+        # user_id appears under multiple bot_ids (unlikely in S2a but safe).
+        result: dict[UUID, Any] = {}
+        for (uid, _), burst in self._bursts.items():
+            result[uid] = burst
+        return result
 
     async def _handle_ready_burst(self, user_id: UUID, burst: _Burst) -> None:
         message_ids = list(burst.message_ids)
@@ -97,8 +133,12 @@ class BurstCoalescer:
 
         decision = await self.pacer.decide_and_record(burst.user, message_ids, source=burst.source)
         if decision.action == "wait":
-            self._bursts[user_id] = burst
-            self._wait_tasks[user_id] = asyncio.create_task(self._fire_after_wait(user_id, max(0.0, decision.wait_s)))
+            # Re-store under the burst's original composite key so the wait-task
+            # can find it later.
+            # TODO(S2b): drop legacy (user_id, None) fallback
+            rekey: CompositeKey = (user_id, burst.bot_id)
+            self._bursts[rekey] = burst
+            self._wait_tasks[rekey] = asyncio.create_task(self._fire_after_wait(rekey, max(0.0, decision.wait_s)))
             return
         if decision.action == "answer":
             await self._call_paced_answer(message_ids, burst.user, decision)
@@ -124,13 +164,14 @@ class BurstCoalescer:
             except Exception:
                 pass
 
-    async def _fire_after_wait(self, user_id: UUID, wait_s: float) -> None:
+    async def _fire_after_wait(self, key: CompositeKey, wait_s: float) -> None:
+        user_id = key[0]
         try:
             await asyncio.sleep(wait_s)
-            lock = self._locks.setdefault(user_id, asyncio.Lock())
+            lock = self._locks.setdefault(key, asyncio.Lock())
             async with lock:
-                self._wait_tasks.pop(user_id, None)
-                burst = self._bursts.pop(user_id, None)
+                self._wait_tasks.pop(key, None)
+                burst = self._bursts.pop(key, None)
                 if burst is not None:
                     await self._handle_ready_burst(user_id, burst)
         except asyncio.CancelledError:

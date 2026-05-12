@@ -144,6 +144,7 @@ def _failure_result(entries: list[dict[str, Any]], error: Exception) -> CheckOOB
             suggested_rewrite=None,
             checker_failed=True,
         )
+    # obs N/A: no scope in checker
     logger.warning("OOB checker failed open for soft-only OOB entries: %s", error)
     return CheckOOBOutput(
         verdict=OOBVerdict.ok,
@@ -302,6 +303,7 @@ async def _cluster_topics_with_haiku(pool: Any, entries: list[dict[str, Any]], c
         data = json.loads(_response_text(response))
         topics = [str(topic).strip().lower() for topic in data.get("topics", []) if str(topic).strip()]
     except Exception as exc:
+        # obs N/A: no scope in checker
         logger.warning("OOB countersummary clustering failed; falling back to deterministic categories: %s", exc)
         return None
     if len(topics) != len(entries):

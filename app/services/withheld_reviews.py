@@ -1,7 +1,11 @@
 """Persistence helpers for OOB-withheld outbound review rows."""
 
+import logging
 from typing import Any, Literal
 from uuid import UUID
+
+
+logger = logging.getLogger(__name__)
 
 
 ReviewVerdict = Literal["rewrite", "block"]
@@ -19,6 +23,8 @@ async def record_withheld_outbound_review(
     suggested_rewrite: str | None = None,
     checker_failed: bool = False,
     status: str = "pending",
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
 ) -> UUID:
     """Record a pending admin/retry review without scheduling or UI side effects."""
     row = await pool.fetchrow(

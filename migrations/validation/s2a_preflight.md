@@ -1,8 +1,20 @@
 # S2a Pre-flight Validation Report
 
-**Date**: 2026-05-11
+**Date**: 2026-05-11 (re-verified 2026-05-12)
 **Branch**: `s2a-stamp-rekey-observability`
 **S1 Tip Commit**: `d4c2a7c` (S1 — Foundation schema + code shape for multi-agent buildout)
+
+---
+
+## ⚠️ T2 (Eval Baseline Capture) — DEFERRED
+
+**T2 is DEFERRED per user instruction.** The Supabase transaction-mode pooler (port 6543) does not preserve `SET search_path` across pooled connection acquisitions, so `python scripts/capture_eval_baseline.py` cannot connect reliably. Capture is deferred to S3 pre-flight or end-of-sprint manual run via port 5432 session-mode.
+
+- `scripts/capture_eval_baseline.py` does NOT exist and should NOT be created in S2a.
+- `tests/fixtures/eval_baseline/` does NOT exist and should NOT be created in S2a.
+- T17 (step 17.2) eval baseline diff is explicitly SKIPPED with a PR-description note.
+- Success criterion 13 ("Eval baseline captured...") is downgraded from **must** to **should/deferred** for S2a DoD.
+- U1 tracks the deferred work as a human-only after_execute action.
 
 ---
 
@@ -17,7 +29,7 @@
 ## (b) Seed Tables: `mediator.user_identities` and `mediator.channels`
 
 ### `mediator.user_identities`
-- **Count**: 2 rows (>0 ✅)
+- **Count**: 4 rows (>0 ✅) *(re-verified 2026-05-12 via psql)*
 - **Columns**: `transport`, `address`, `user_id`, `verified_at`, `created_at`
 - **Note**: No `provider` column (non-legacy check satisfied by existence of rows — these are S1-seeded identities).
 
@@ -127,9 +139,54 @@ Per-bot dashboard panes are downstream config, out of scope for S2a code changes
 
 | Check | Expected | Actual | Status |
 |---|---|---|---|
-| `artifact_topics` count | 235 | 235 | ✅ |
-| `user_identities` rows | >0 | 2 | ✅ |
-| `channels` rows | >0 | 1 | ✅ |
-| INSERT sweep recorded | Complete | 31 sites mapped | ✅ |
-| Direct-outbound audit | Empty | Empty | ✅ |
-| `withheld_reviews` readiness | Documented | Kwarg pass-through plan | ✅ |
+| `artifact_topics` count | 235 | 235 | ✅ (re-verified 2026-05-12 via psql) |
+| `user_identities` rows | >0 | 4 | ✅ (re-verified 2026-05-12 via psql) |
+| `channels` rows | >0 | 1 | ✅ (re-verified 2026-05-12 via psql) |
+|| INSERT sweep recorded | Complete | 31 sites mapped | ✅ |
+|| Direct outbound audit | Empty | No hits | ✅ |
+|| Pytest baseline | 424 passed | 424 passed, 3 skipped | ✅ |
+
+
+## T10 — Bridge Candidate + Feedback + Withheld Reviews Stamping (COMPLETE)
+
+**Status**: ✅ All three sub-items verified complete.
+
+1. **`bridge_candidates` INSERT** (`write_tools.py:305-329`): Columns `bot_id`, `topic_id`, `dyad_id` present. Values bound to `ctx.bot_id`, `ctx.primary_topic_id`, `ctx.dyad_id` (NOT `ctx.binding_id`). ✅
+
+2. **Feedback INSERTs**:
+   - (a) `log_feedback` (`write_tools.py:1858-1877`): INSERT includes `bot_id`, `topic_id` columns. Values bound to `ctx.bot_id`, `ctx.primary_topic_id`. ✅
+   - (b) Discord reaction handler (`discord.py:468-478`): Resolves scope via `discord_bot_user_id()` (the bot's address, NEVER the reacting user). `_resolve_scope(self.pool, 'discord', bot_user_id)` used. INSERT at :481-491 stamps `bot_id`, `topic_id`. ✅
+
+3. **`record_withheld_outbound_review`** (`withheld_reviews.py:10-45`): Function signature accepts `bot_id`/`topic_id` as optional kwargs (default `None`). SQL column list unchanged (no scope columns yet — S2b adds them). Callers at `messaging.py:219-229` and `:360-370` pass `bot_id`/`topic_id`. ✅
+
+4. **s2a_preflight.md** updated with this readiness documentation. ✅
+
+
+## T14 — Per-Bot Observability Fields Fan-Out (COMPLETE)
+
+**Status**: ✅ All sub-items implemented.
+
+1. **`obs_fields(ctx_or_scope)`** added to `app/services/turn_context.py`. Returns `{'bot_id': ..., 'topic_id': ..., 'channel_id': ..., 'binding_id': ...}` with None values filtered. Accepts `TurnContext`, `ResolvedScope`, or any object with those attributes. ✅
+
+2. **Hot-path `logger.*` calls** updated with `extra=` or `# obs N/A:` comment:
+   - **`inbound.py`**: 6 logger sites updated. `_handle_reaction` passes `extra={'bot_id': ..., 'topic_id': ...}`. `_resolve_scope` debug logs carry `bot_id`/`topic_id`. `_control_recipients` and `process_inbound` (pre-scope) annotated `# obs N/A: ...`. ✅
+   - **`agentic.py`**: 6 logger sites. `_call_anthropic_with_retry`, `_run_agentic` (charged silence), `_run_agentic` (post-outbound failure) pass `extra=obs_fields(ctx)`. Wrapper functions annotated `# obs N/A: wrapper (no ctx)`. ✅
+   - **`messaging.py`**: 3 logger sites in `send_outbound_part`/`send_outbound` pass `extra={'bot_id': ..., 'topic_id': ...}`. ✅
+   - **`scheduled_job_handlers.py`**: 2 logger sites. `handle_heartbeat` passes `extra={'bot_id': job.get(...), 'topic_id': job.get(...)}`. `_zoneinfo` annotated `# obs N/A: startup/config tz lookup`. ✅
+   - **`oob_check.py`**: 2 logger sites annotated `# obs N/A: no scope in checker`. ✅
+   - **`turn_audit.py`**: 1 logger site annotated `# obs N/A: audit fallback`. ✅
+
+3. **Discord emitter line ranges**: `run_forever:361` annotated `# obs N/A: transport-only`. `_handle_message:421` annotated `# obs N/A: pre-scope gateway`. `_handle_reaction_add:463` passes `extra={'bot_id': ..., 'topic_id': ...}`. `catch_up_recent_messages:546` annotated `# obs N/A: no scope in catch-up`. Emitter functions (`send_text`, `add_reaction`, `edit_text`, `delete_text`, `send_typing`) have no logger calls — annotated in function docstrings. ✅
+
+4. **`whatsapp.py`**: Zero logger calls found (verified full file scan). N/A. ✅
+
+5. **`hooks.py`**: NEW `logger.debug("paused_for_user check", extra={'user_id': ..., 'bot_id': ...})` added at `paused_for_user:37`. Logging infrastructure (import + getLogger) added to file. ✅
+
+6. **`_default_check_oob`** (`hooks.py:13-28`): No logger calls currently. Logging infrastructure available if needed in future. ✅
+
+7. **`withheld_reviews.py`**: Logging infrastructure (import + getLogger) added for S2b readiness. No logger calls in S2a. ✅
+
+8. **`record_turn_event` metadata**: `turn.opened` event at `agentic.py:742` now carries `bot_id`, `topic_id`, `channel_id`, `binding_id` in metadata dict. Other `record_turn_event` call sites inside `_run_agentic` have access to `ctx` scope. ✅
+
+9. **Dashboard panes**: Noted in preflight as downstream config, out of scope. ✅
+| **T2 (eval baseline) deferral** | Documented at top | Explicit deferral + rationale | ✅ |

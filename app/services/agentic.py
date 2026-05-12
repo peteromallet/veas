@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import logging
 import re
@@ -12,7 +13,7 @@ from uuid import UUID
 
 import anthropic
 
-from app.bots.registry import get_bot_spec
+from app.bots.registry import get_bot_spec, get_relationship_topic_id
 from app.config import get_settings
 from app.models.user import User, claim_onboarding_welcome
 from app.services import discord, hooks, system_state
@@ -24,7 +25,13 @@ from app.services.text_safety import clean_user_facing_text
 from app.services.tools.registry import STEP_ALLOWED_TOOLS, call_tool, to_anthropic_tools
 from app.services.turn_audit import record_turn_event
 from app.services.turn_plan import TurnPlan, make_turn_plan, orient_summary, pick_default_skeleton
-from app.services.turn_context import BeforePacedSend, TurnContext, partner_of
+from app.services.turn_context import BeforePacedSend, TurnContext, obs_fields, partner_of
+
+import tool_schemas as _tool_schemas_module
+
+_TOOL_SCHEMA_VERSION: str = hashlib.sha1(
+    open(_tool_schemas_module.__file__, "rb").read()
+).hexdigest()[:12]
 
 logger = logging.getLogger(__name__)
 
@@ -257,7 +264,7 @@ async def _create_message_with_retry(
         except Exception as exc:  # Anthropic SDK transient subclasses vary by version.
             last_error = exc
             if attempt == 0:
-                logger.warning("anthropic message create failed; retrying once: %s", exc)
+                logger.warning("anthropic message create failed; retrying once: %s", exc, extra=obs_fields(ctx))
                 continue
             raise LLMPhaseError(str(exc)) from exc
         await _record_response_cost(ctx.pool, _attr(response, "usage", {}))
@@ -477,14 +484,21 @@ async def _open_turn(
     prompt_snapshot: str,
     model_version: str,
     system_prompt_version: str,
+    *,
+    bot_id: str,
+    topic_id: UUID | None,
+    bot_spec_version: str,
+    hot_context_builder_version: str,
+    tool_schema_version: str,
 ) -> tuple[UUID, datetime]:
     row = await pool.fetchrow(
         """
         INSERT INTO bot_turns (
             triggered_by_message_id, triggering_message_ids, user_in_context,
-            system_prompt_version, model_version, prompt_snapshot, prompt_snapshot_encrypted, started_at
+            system_prompt_version, model_version, prompt_snapshot, prompt_snapshot_encrypted, started_at,
+            bot_id, topic_id, bot_spec_version, hot_context_builder_version, tool_schema_version
         )
-        VALUES ($1, $2, $3, $4, $5, $6, $7, now())
+        VALUES ($1, $2, $3, $4, $5, $6, $7, now(), $8, $9, $10, $11, $12)
         RETURNING id, started_at
         """,
         triggering_message_ids[0] if triggering_message_ids else None,
@@ -494,6 +508,11 @@ async def _open_turn(
         model_version,
         prompt_snapshot,
         encrypt_value(prompt_snapshot),
+        bot_id,
+        topic_id,
+        bot_spec_version,
+        hot_context_builder_version,
+        tool_schema_version,
     )
     try:
         started_at = row["started_at"]
@@ -566,16 +585,24 @@ async def _fail_turn(pool: Any, turn_id: UUID | None, failure_reason: str) -> No
     )
 
 
-async def _defer_for_text_cap(pool: Any, user: User, message_ids: list[UUID]) -> bool:
+async def _defer_for_text_cap(pool: Any, user: User, message_ids: list[UUID], *, bot_id: str | None = None, topic_id: UUID | None = None) -> bool:
     if message_ids:
         await pool.execute(
             "UPDATE messages SET processing_state='deferred' WHERE id = ANY($1)",
             message_ids,
         )
+    context_payload: dict[str, Any] = {
+        "triggering_message_ids": [str(message_id) for message_id in message_ids],
+        "reason": "text_spend_cap",
+    }
+    if bot_id is not None:
+        context_payload["bot_id"] = bot_id
+    if topic_id is not None:
+        context_payload["topic_id"] = str(topic_id)
     row = await pool.fetchrow(
         """
-        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status)
-        SELECT $1, 'deferred_turn', $2, $3::jsonb, 'pending'
+        INSERT INTO scheduled_jobs (user_id, job_type, scheduled_for, context, status, bot_id, topic_id)
+        SELECT $1, 'deferred_turn', $2, $3::jsonb, 'pending', $4, $5
         WHERE NOT EXISTS (
             SELECT 1 FROM scheduled_jobs
             WHERE user_id = $1 AND job_type = 'deferred_turn' AND status = 'pending'
@@ -584,7 +611,9 @@ async def _defer_for_text_cap(pool: Any, user: User, message_ids: list[UUID]) ->
         """,
         user.id,
         datetime.now(UTC) + timedelta(days=1),
-        {"triggering_message_ids": [str(message_id) for message_id in message_ids], "reason": "text_spend_cap"},
+        context_payload,
+        bot_id,
+        topic_id,
     )
     return row is not None
 
@@ -595,6 +624,7 @@ async def _newer_inbound_exists(
     triggering_message_ids: list[UUID],
     *,
     fallback_started_at: datetime | None = None,
+    bot_id: str | None = None,
 ) -> bool:
     boundary = fallback_started_at
     if triggering_message_ids:
@@ -616,11 +646,13 @@ async def _newer_inbound_exists(
                   AND sender_id=$1
                   AND sent_at > $2
                   AND NOT (id = ANY($3::uuid[]))
+                  AND (bot_id = $4 OR bot_id IS NULL)
             )
             """,
             user.id,
             boundary,
             triggering_message_ids,
+            bot_id,
         )
     )
 
@@ -693,6 +725,7 @@ async def _run_agentic(
             prompt_version=selected_prompt_version,
         )
         prompt_snapshot = f"{system_prompt}\n\n{rendered_hot_context}"
+        bot_spec_version = hashlib.sha1(repr(bot_spec).encode()).hexdigest()[:12]
         turn_id, started_at = await _open_turn(
             active_pool,
             triggering_message_ids,
@@ -700,6 +733,11 @@ async def _run_agentic(
             prompt_snapshot,
             settings.conversational_model,
             selected_prompt_version,
+            bot_id=bot_spec.bot_id,
+            topic_id=get_relationship_topic_id(),
+            bot_spec_version=bot_spec_version,
+            hot_context_builder_version=bot_spec.hot_context_builder_version,
+            tool_schema_version=_TOOL_SCHEMA_VERSION,
         )
         await record_turn_event(
             active_pool,
@@ -711,6 +749,10 @@ async def _run_agentic(
                 "user_in_context": user.id,
                 "model_version": settings.conversational_model,
                 "system_prompt_version": selected_prompt_version,
+                "bot_id": bot_spec.bot_id,
+                "topic_id": str(get_relationship_topic_id()) if get_relationship_topic_id() else None,
+                "channel_id": None,
+                "binding_id": None,
             },
         )
         charge = _trigger_charge(hot_context)
@@ -728,6 +770,14 @@ async def _run_agentic(
             user,
             partner,
             triggering_message_ids,
+            bot_id=bot_spec.bot_id,
+            bot_spec=bot_spec,
+            binding_id=None,
+            dyad_id=None,
+            participants_shape=bot_spec.participants_shape,
+            primary_topic_id=get_relationship_topic_id(),
+            primary_topic_slug=bot_spec.primary_topic_slug,
+            channel_id=None,
             current_step=turn_plan.current,
             turn_plan=turn_plan,
             trigger_charge=charge,
@@ -853,6 +903,7 @@ async def _run_agentic(
                                 user,
                                 triggering_message_ids,
                                 fallback_started_at=started_at,
+                                bot_id=ctx.bot_id,
                             ):
                                 await _append_reasoning(
                                     active_pool,
@@ -880,6 +931,7 @@ async def _run_agentic(
                                         user,
                                         triggering_message_ids,
                                         fallback_started_at=started_at,
+                                        bot_id=ctx.bot_id,
                                     ):
                                         raise NewerInboundBeforeFinalSend()
 
@@ -891,6 +943,8 @@ async def _run_agentic(
                                         bot_turn_id=turn_id,
                                         protected_owner_ids=dyad_owner_ids,
                                         send_typing_indicator=send_typing_indicator,
+                                        bot_id=ctx.bot_id,
+                                        topic_id=ctx.primary_topic_id,
                                         before_provider_send=(
                                             before_final_provider_send
                                             if before_paced_send is not None and not send_typing_indicator
@@ -931,7 +985,8 @@ async def _run_agentic(
                             assistant_text = sendable_text
                 elif charge in {"charged", "crisis"}:
                     await _append_reasoning(active_pool, turn_id, "silence; charged trigger but no justification produced")
-                    logger.warning("charged/crisis trigger produced silence without model justification turn_id=%s", turn_id)
+                    logger.warning("charged/crisis trigger produced silence without model justification turn_id=%s", turn_id,
+                                   extra=obs_fields(ctx))
 
                 respond_text = assistant_text
                 delivered_parts = [part["content"] for part in (ctx.sent_message_parts or [])]
@@ -967,7 +1022,7 @@ async def _run_agentic(
         )
     except SpendCapExceeded:
         if turn_id is not None:
-            scheduled = await _defer_for_text_cap(active_pool, user, triggering_message_ids)
+            scheduled = await _defer_for_text_cap(active_pool, user, triggering_message_ids, bot_id=bot_spec.bot_id, topic_id=get_relationship_topic_id())
             final_output_message_id = None
             if scheduled:
                 fallback_text = "I'm running into limits today, will catch up tomorrow."
@@ -980,6 +1035,7 @@ async def _run_agentic(
                         user,
                         triggering_message_ids,
                         fallback_started_at=started_at,
+                        bot_id=ctx.bot_id,
                     ):
                         raise NewerInboundBeforeFinalSend()
 
@@ -988,6 +1044,7 @@ async def _run_agentic(
                     user,
                     triggering_message_ids,
                     fallback_started_at=started_at,
+                    bot_id=ctx.bot_id,
                 ):
                     await _append_reasoning(
                         active_pool,
@@ -1002,6 +1059,8 @@ async def _run_agentic(
                             fallback_text,
                             bot_turn_id=turn_id,
                             send_typing_indicator=send_typing_indicator,
+                            bot_id=ctx.bot_id,
+                            topic_id=ctx.primary_topic_id,
                             before_provider_send=(
                                 before_fallback_provider_send
                                 if before_paced_send is not None and not send_typing_indicator
@@ -1028,13 +1087,14 @@ async def _run_agentic(
         failure_reason = getattr(exc, "failure_reason", "crashed")
         await _fail_turn(active_pool, turn_id, failure_reason)
         if responded_to_user:
-            logger.warning("agentic turn failed after outbound was sent: %s", exc)
+            logger.warning("agentic turn failed after outbound was sent: %s", exc, extra=obs_fields(ctx))
             return
         raise
 
 
 async def run_agentic_turn(triggering_message_ids: list[UUID], user: User) -> None:
     if not triggering_message_ids:
+        # obs N/A: wrapper (no ctx)
         logger.warning("run_agentic_turn called without triggering messages for user_id=%s", user.id)
         return
     await _run_agentic(triggering_message_ids, user)
@@ -1049,6 +1109,7 @@ async def run_agentic_turn_with_metadata(
     before_paced_send: BeforePacedSend | None = None,
 ) -> None:
     if not triggering_message_ids:
+        # obs N/A: wrapper (no ctx)
         logger.warning("run_agentic_turn_with_metadata called without triggering messages for user_id=%s", user.id)
         return
     await _run_agentic(
@@ -1071,6 +1132,7 @@ async def run_agentic_turn_with_pool(
     prompt_version: str,
 ) -> None:
     if not triggering_message_ids:
+        # obs N/A: wrapper (no ctx)
         logger.warning("run_agentic_turn_with_pool called without triggering messages for user_id=%s", user.id)
         return
     await _run_agentic(triggering_message_ids, user, pool=pool, prompt_version=prompt_version)

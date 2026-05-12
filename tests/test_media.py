@@ -22,7 +22,7 @@ class Recorder:
     def __init__(self) -> None:
         self.calls = []
 
-    async def add(self, user_id, message_id, user, *, source: str = "live"):
+    async def add(self, user_id, message_id, user, *, source: str = "live", bot_id: str | None = None):
         self.calls.append((user_id, message_id, user, source))
 
 
@@ -168,7 +168,7 @@ async def test_voice_double_failure_expires_with_audio_retained(fake_pool, monke
     async def no_sleep(seconds):
         return None
 
-    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False):
+    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback))
         return uuid4()
 
@@ -255,7 +255,7 @@ async def test_image_vision_failure_retains_media_and_keeps_raw(fake_pool, monke
     async def fail(image_bytes, content_type):
         raise RuntimeError("vision down")
 
-    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False):
+    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback))
         return uuid4()
 
@@ -302,7 +302,7 @@ async def test_process_inbound_text_plus_image_waits_for_vision_before_text_add(
         def __init__(self) -> None:
             self.calls = []
 
-        async def add(self, user_id, message_id, user, *, source="live"):
+        async def add(self, user_id, message_id, user, *, source="live", bot_id=None):
             row = fake_pool.messages.get(message_id)
             self.calls.append(
                 {
@@ -402,7 +402,7 @@ async def test_process_inbound_text_plus_image_still_replies_when_vision_fails(
     async def fail(image_bytes, content_type):
         raise RuntimeError("vision down")
 
-    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False):
+    async def fake_send(pool, recipient, content, *, template_fallback=None, bot_turn_id=None, ignore_pause=False, bot_id=None, topic_id=None):
         return uuid4()
 
     monkeypatch.setattr("app.services.inbound.classify_charge", fake_classify_charge)

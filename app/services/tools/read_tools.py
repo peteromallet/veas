@@ -170,11 +170,13 @@ async def _newer_inbound_exists(ctx: TurnContext) -> bool:
                   AND sender_id=$1
                   AND sent_at > $2
                   AND NOT (id = ANY($3::uuid[]))
+                  AND (bot_id = $4 OR bot_id IS NULL)
             )
             """,
             ctx.user.id,
             boundary,
             ctx.triggering_message_ids,
+            ctx.bot_id,
         )
     )
 
@@ -258,6 +260,8 @@ async def send_message_part(ctx: TurnContext, args: SendMessagePartInput) -> Sen
             protected_owner_ids=ctx.protected_owner_ids,
             send_typing_indicator=ctx.send_typing_indicator,
             before_provider_send=before_provider_send,
+            bot_id=ctx.bot_id,
+            topic_id=ctx.primary_topic_id,
         )
     except NewerInboundDuringPacedSend:
         return SendMessagePartOutput(

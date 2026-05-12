@@ -109,6 +109,8 @@ class HotContextPool:
         self.messages[-1]["id"] = self.trigger_id
         self.messages[-1]["charge"] = "charged"
         self.bridge_candidates = []
+        self.bot_turns = []
+        self.feedback = []
 
     async def fetchrow(self, sql, *args):
         compact = " ".join(sql.split())
@@ -166,6 +168,45 @@ class HotContextPool:
                 and row["status"] == "ready"
                 and row.get("partner_path", "message_partner") == "message_partner"
             ][:5]
+        if "FROM feedback" in compact:
+            user_id, now_utc = args
+            previous_completed_at = max(
+                (
+                    row["completed_at"]
+                    for row in self.bot_turns
+                    if row.get("user_in_context") == user_id and row.get("completed_at") is not None
+                ),
+                default=None,
+            )
+            if previous_completed_at is None:
+                return []
+            messages_by_id = {row["id"]: row for row in self.messages}
+            rows = []
+            for item in self.feedback:
+                message = messages_by_id.get(item.get("target_id"))
+                if message is None:
+                    continue
+                if item.get("from_user_id") != user_id:
+                    continue
+                if item.get("target_type") != "message" or item.get("source") != "reaction":
+                    continue
+                if message.get("direction") != "outbound" or message.get("recipient_id") != user_id:
+                    continue
+                if not previous_completed_at < item["created_at"] <= now_utc:
+                    continue
+                rows.append(
+                    {
+                        "id": item["id"],
+                        "sentiment": item["sentiment"],
+                        "content": item["content"],
+                        "created_at": item["created_at"],
+                        "message_id": message["id"],
+                        "message_content": message["content"],
+                        "message_sent_at": message["sent_at"],
+                    }
+                )
+            rows.sort(key=lambda row: row["created_at"], reverse=True)
+            return rows[:5]
         if "FROM messages" in compact and "WHERE id = ANY" in compact:
             ids = set(args[0])
             return [
@@ -231,9 +272,57 @@ async def test_build_hot_context_returns_expected_fields(hot_context_seed):
     assert hc.conversation_load["total_count"] == 25
     assert hc.conversation_load["inbound_count"] == 24
     assert hc.conversation_load["outbound_count"] == 1
+    assert hc.recent_reactions == []
     assert hc.trigger_metadata["messages"][0]["charge"] == "charged"
     partner_rows = [item for item in hc.recent_messages if item["sender_id"] == partner.id or item["recipient_id"] == partner.id]
     assert any(item.get("raw_content_hidden") for item in partner_rows)
+
+
+async def test_build_hot_context_surfaces_reactions_since_previous_turn(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    outbound = next(row for row in pool.messages if row["direction"] == "outbound")
+    outbound["sender_id"] = None
+    outbound["recipient_id"] = user.id
+    pool.bot_turns = [
+        {
+            "id": uuid4(),
+            "user_in_context": user.id,
+            "completed_at": pool.now - timedelta(minutes=10),
+        }
+    ]
+    pool.feedback = [
+        {
+            "id": uuid4(),
+            "from_user_id": user.id,
+            "target_type": "message",
+            "target_id": outbound["id"],
+            "sentiment": "positive",
+            "content": "👍",
+            "source": "reaction",
+            "created_at": pool.now - timedelta(minutes=3),
+        },
+        {
+            "id": uuid4(),
+            "from_user_id": user.id,
+            "target_type": "message",
+            "target_id": outbound["id"],
+            "sentiment": "negative",
+            "content": "👎",
+            "source": "reaction",
+            "created_at": pool.now - timedelta(minutes=20),
+        },
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert len(hc.recent_reactions) == 1
+    assert hc.recent_reactions[0]["content"] == "👍"
+    assert hc.recent_reactions[0]["message_id"] == outbound["id"]
+    assert "## New reactions since previous turn" in text
+    assert "reaction=👍" in text
+    assert "reaction=👎" not in text
+    assert "passive feedback only" in text
 
 
 async def test_build_hot_context_shows_partner_raw_when_partner_opted_in(hot_context_seed):
@@ -428,6 +517,7 @@ async def test_render_hot_context_respects_default_token_budget(hot_context_seed
     assert "core=" not in text
     assert "## Trigger" in text
     assert "; utc=" in text
+    assert "one_month_from_now:" in text
     assert "[raw partner content hidden by sharing_default]" in text
 
 

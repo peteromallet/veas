@@ -1120,6 +1120,10 @@ class ScheduledTaskRow(BaseModel):
     scheduled_for: datetime
     scheduled_for_time: TemporalReference | None = None
     recurrence: ScheduledTaskRecurrence | None = None
+    recurrence_until_time: TemporalReference | None = Field(
+        default=None,
+        description="Relative/local rendering of recurrence.until when the task has a bounded recurrence.",
+    )
     delayed: bool = False
     created_at: datetime | None = None
     created_at_time: TemporalReference | None = None

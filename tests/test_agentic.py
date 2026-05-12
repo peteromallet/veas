@@ -52,7 +52,7 @@ class TrackingPool(FakePool):
             if args and isinstance(args[0], str):
                 self.observations[observation_id]["content"] = args[0]
             return {"id": observation_id}
-        if compact.startswith("INSERT INTO watch_items"):
+        if compact.startswith("INSERT INTO watch_items") or compact.startswith("WITH new_artifact AS ( INSERT INTO watch_items"):
             self.mark("write:add_watch_item")
         if compact.startswith("INSERT INTO scheduled_jobs"):
             self.mark("write:schedule_checkin")
@@ -456,7 +456,7 @@ async def test_agentic_crisis_escalation_routes_to_partner_with_template(app_env
     monkeypatch.setattr(hooks, "check_oob", async_oob)
     original_send = write_tools.send_outbound
 
-    async def spy_send(pool_arg, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def spy_send(pool_arg, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         escalation_spy.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return await original_send(
             pool_arg,
@@ -465,6 +465,8 @@ async def test_agentic_crisis_escalation_routes_to_partner_with_template(app_env
             template_fallback=template_fallback,
             bot_turn_id=bot_turn_id,
             protected_owner_ids=protected_owner_ids,
+            bot_id=bot_id,
+            topic_id=topic_id,
         )
 
     monkeypatch.setattr(write_tools, "send_outbound", spy_send)

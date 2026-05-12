@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import logging
 from typing import Any
+from uuid import UUID
 
 from app.bots.base import BotSpec, ReadScopes, WriteScopes
 from app.bots.mediator import MEDIATOR_BOT
 
 logger = logging.getLogger(__name__)
+
+_RELATIONSHIP_TOPIC_ID: UUID | None = None
 
 BOT_SPECS: dict[str, BotSpec] = {
     MEDIATOR_BOT.bot_id: MEDIATOR_BOT,
@@ -74,3 +77,37 @@ async def populate_mediator_spec_from_db(pool: Any) -> None:
     )
     BOT_SPECS["mediator"] = rebuilt
     logger.info("populate_mediator_spec_from_db: mediator spec updated (display_name=%s)", display_name)
+
+
+async def populate_topic_ids_from_db(pool: Any) -> None:
+    """Read the relationship topic id from mediator.topics and cache it.
+
+    Must be called at startup AFTER the pool is available.  On miss the
+    module-level slot stays None and a warning is logged — callers must
+    tolerate get_relationship_topic_id() returning None.
+    """
+    global _RELATIONSHIP_TOPIC_ID
+    try:
+        row = await pool.fetchrow(
+            "SELECT id FROM mediator.topics WHERE slug = 'relationship'"
+        )
+    except Exception:
+        logger.warning(
+            "populate_topic_ids_from_db: could not query topics table — "
+            "relationship topic id unavailable",
+            exc_info=True,
+        )
+        return
+    if row is None:
+        logger.warning(
+            "populate_topic_ids_from_db: no relationship row in topics table — "
+            "relationship topic id unavailable"
+        )
+        return
+    _RELATIONSHIP_TOPIC_ID = row["id"]
+    logger.info("populate_topic_ids_from_db: relationship topic id cached (%s)", _RELATIONSHIP_TOPIC_ID)
+
+
+def get_relationship_topic_id() -> UUID | None:
+    """Return the cached relationship topic id, or None if not yet populated."""
+    return _RELATIONSHIP_TOPIC_ID

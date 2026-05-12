@@ -18,11 +18,12 @@ Requires:
 from __future__ import annotations
 
 import asyncio
-import base64
 import logging
 import os
 
 import asyncpg
+
+from app.services.discord_id import _decode_discord_user_id
 
 logger = logging.getLogger(__name__)
 
@@ -50,25 +51,6 @@ async def _get_pool() -> asyncpg.Pool:
         max_size=2,
         statement_cache_size=0,
     )
-
-
-def _decode_discord_user_id(token: str) -> str | None:
-    """Decode the user-id prefix of a Discord bot token.
-
-    Discord bot tokens are "<base64url(user_id)>.<timestamp>.<hmac>". The first
-    segment is the user id encoded as urlsafe base64 (no padding). Decode it to
-    the canonical decimal user id (e.g. '1245222614276898866') which is what
-    inbound webhooks use and what `routing.resolve_bot` will need.
-    """
-    prefix = token.split(".", 1)[0]
-    if not prefix:
-        return None
-    # base64 needs len-multiple-of-4 input; add the missing padding.
-    padding = "=" * (-len(prefix) % 4)
-    try:
-        return base64.urlsafe_b64decode(prefix + padding).decode("ascii")
-    except (ValueError, UnicodeDecodeError):
-        return None
 
 
 async def seed_discord(pool: asyncpg.Pool) -> bool:

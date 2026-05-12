@@ -244,12 +244,13 @@ async def test_scheduled_task_current_task_requires_scheduled_task_turn(tool_ctx
 
 async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx):
     scheduled_for = datetime.now(UTC) + timedelta(days=2)
+    recurrence_until = scheduled_for + timedelta(days=30)
     created = await write_tools.schedule_task(
         tool_ctx,
         ScheduleTaskInput(
             brief="Prepare a morning repair brief.",
             when=scheduled_for,
-            recurrence={"type": "daily", "interval": 1},
+            recurrence={"type": "daily", "interval": 1, "until": recurrence_until},
         ),
     )
 
@@ -272,6 +273,8 @@ async def test_scheduled_task_tools_create_list_update_cancel_and_audit(tool_ctx
     listed = await write_tools.list_scheduled_tasks(tool_ctx, ListScheduledTasksInput())
     assert [task.job_id for task in listed.tasks] == [created.job_id]
     assert listed.tasks[0].task_id == created.task_id
+    assert listed.tasks[0].recurrence_until_time is not None
+    assert listed.tasks[0].recurrence_until_time.utc == recurrence_until.isoformat()
 
     updated_for = scheduled_for + timedelta(days=1, hours=1, minutes=15)
     updated = await write_tools.update_scheduled_task(
@@ -644,7 +647,7 @@ def _distillation_revise_call(ctx):
 async def test_every_write_tool_inserts_tool_call(tool_ctx, monkeypatch, tool_name, call_factory):
     sent = []
 
-    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return uuid4()
 
@@ -964,7 +967,7 @@ async def test_bridge_candidate_create_list_update_and_send(tool_ctx, monkeypatc
     async def fake_oob(pool, content, recipient_id, protected_owner_ids=None):
         return {"verdict": "ok", "reason": "ok", "suggested_rewrite": None, "checker_failed": False}
 
-    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         sent.append((recipient.id, content, protected_owner_ids))
         return sent_message_id
 
@@ -1468,7 +1471,7 @@ async def test_escalate_to_partner_passes_dyad_protected_owner_ids(tool_ctx, mon
     sent = []
     tool_ctx.trigger_charge = "crisis"
 
-    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return uuid4()
 
@@ -1595,7 +1598,7 @@ async def test_call_tool_validation_error_is_typed(tool_ctx):
 async def test_escalation_gate_rejects_before_outbound_and_allows_crisis(tool_ctx, monkeypatch):
     sent = []
 
-    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return uuid4()
 
@@ -1656,7 +1659,7 @@ async def test_escalation_gate_rejects_before_outbound_and_allows_crisis(tool_ct
 async def test_escalation_allows_trusted_explicit_partner_alert(tool_ctx, monkeypatch):
     sent = []
 
-    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None):
+    async def fake_send(pool, recipient, content, template_fallback=None, bot_turn_id=None, protected_owner_ids=None, bot_id=None, topic_id=None):
         sent.append((recipient, content, template_fallback, bot_turn_id, protected_owner_ids))
         return uuid4()
 

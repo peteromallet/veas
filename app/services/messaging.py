@@ -48,15 +48,17 @@ async def _insert_outbound(
     bot_turn_id: UUID | None = None,
     outbound_part_key: str | None = None,
     outbound_part_index: int | None = None,
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
 ) -> UUID:
     if bot_turn_id is not None or outbound_part_key is not None or outbound_part_index is not None:
         row = await pool.fetchrow(
             """
             INSERT INTO messages (
                 direction, recipient_id, content, content_encrypted, processing_state, sent_at,
-                bot_turn_id, outbound_part_key, outbound_part_index
+                bot_turn_id, outbound_part_key, outbound_part_index, bot_id, topic_id
             )
-            VALUES ('outbound', $1, $2, $3, $4, now(), $5, $6, $7)
+            VALUES ('outbound', $1, $2, $3, $4, now(), $5, $6, $7, $8, $9)
             ON CONFLICT (outbound_part_key) DO NOTHING
             RETURNING id
             """,
@@ -67,6 +69,8 @@ async def _insert_outbound(
             bot_turn_id,
             outbound_part_key,
             outbound_part_index,
+            bot_id,
+            topic_id,
         )
         if row is not None:
             return row["id"]
@@ -81,14 +85,16 @@ async def _insert_outbound(
         return existing["id"]
     row = await pool.fetchrow(
         """
-        INSERT INTO messages (direction, recipient_id, content, content_encrypted, processing_state, sent_at)
-        VALUES ('outbound', $1, $2, $3, $4, now())
+        INSERT INTO messages (direction, recipient_id, content, content_encrypted, processing_state, sent_at, bot_id, topic_id)
+        VALUES ('outbound', $1, $2, $3, $4, now(), $5, $6)
         RETURNING id
         """,
         user.id,
         content,
         encrypt_value(content),
         state,
+        bot_id,
+        topic_id,
     )
     return row["id"]
 
@@ -132,6 +138,8 @@ async def send_outbound_part(
     protected_owner_ids: list[UUID] | None = None,
     send_typing_indicator: bool = True,
     before_provider_send: Callable[[], Awaitable[None]] | None = None,
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
 ) -> dict[str, Any]:
     existing = await _fetch_outbound_part(pool, part_key)
     if (
@@ -167,7 +175,7 @@ async def send_outbound_part(
             "suggested_rewrite": None,
         }
 
-    if await system_state.is_paused(pool) or await hooks.paused_for_user(user.id):
+    if await system_state.is_paused(pool) or await hooks.paused_for_user(user.id) or (bot_id and await system_state.user_bot_paused(pool, user.id, bot_id)):
         row_id = await _insert_outbound(
             pool,
             user,
@@ -176,6 +184,8 @@ async def send_outbound_part(
             bot_turn_id=bot_turn_id,
             outbound_part_key=part_key,
             outbound_part_index=part_index,
+            bot_id=bot_id,
+            topic_id=topic_id,
         )
         return {
             "status": "withheld",
@@ -203,6 +213,8 @@ async def send_outbound_part(
             bot_turn_id=bot_turn_id,
             outbound_part_key=part_key,
             outbound_part_index=part_index,
+            bot_id=bot_id,
+            topic_id=topic_id,
         )
         await record_withheld_outbound_review(
             pool,
@@ -213,6 +225,8 @@ async def send_outbound_part(
             reason=reason,
             verdict=verdict["verdict"],
             checker_failed=bool(verdict.get("checker_failed")),
+            bot_id=bot_id,
+            topic_id=topic_id,
         )
         return {
             "status": status,
@@ -237,6 +251,8 @@ async def send_outbound_part(
         bot_turn_id=bot_turn_id,
         outbound_part_key=part_key,
         outbound_part_index=part_index,
+        bot_id=bot_id,
+        topic_id=topic_id,
     )
 
     try:
@@ -244,7 +260,8 @@ async def send_outbound_part(
             lambda: discord.send_text(user.phone, content, send_typing_indicator=send_typing_indicator)
         )
     except Exception as exc:
-        logger.warning("incremental outbound send failed after retries: %s", exc)
+        logger.warning("incremental outbound send failed after retries: %s", exc,
+                       extra={"bot_id": bot_id or "mediator", "topic_id": str(topic_id) if topic_id else None})
         await pool.execute("UPDATE messages SET processing_state='expired' WHERE id=$1", row_id)
         await _append_turn_reasoning(pool, bot_turn_id, f"Incremental outbound send failed: {exc}")
         return {
@@ -331,14 +348,16 @@ async def send_outbound(
     protected_owner_ids: list[UUID] | None = None,
     send_typing_indicator: bool = True,
     before_provider_send: Callable[[], Awaitable[None]] | None = None,
+    bot_id: str | None = None,
+    topic_id: UUID | None = None,
 ) -> UUID:
-    if not ignore_pause and (await system_state.is_paused(pool) or await hooks.paused_for_user(user.id)):
-        return await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id)
+    if not ignore_pause and (await system_state.is_paused(pool) or await hooks.paused_for_user(user.id) or (bot_id and await system_state.user_bot_paused(pool, user.id, bot_id))):
+        return await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id, bot_id=bot_id, topic_id=topic_id)
 
     verdict = await _call_oob_hook(pool, content, user.id, protected_owner_ids)
     if verdict["verdict"] == "block":
         await _append_turn_reasoning(pool, bot_turn_id, f"Outbound blocked by OOB hook: {verdict['reason']}")
-        row_id = await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id)
+        row_id = await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id, bot_id=bot_id, topic_id=topic_id)
         await record_withheld_outbound_review(
             pool,
             recipient_id=user.id,
@@ -348,11 +367,13 @@ async def send_outbound(
             reason=verdict["reason"],
             verdict="block",
             checker_failed=bool(verdict.get("checker_failed")),
+            bot_id=bot_id,
+            topic_id=topic_id,
         )
         return row_id
     if verdict["verdict"] == "rewrite":
         await _append_turn_reasoning(pool, bot_turn_id, f"Outbound withheld for OOB rewrite review: {verdict['reason']}")
-        row_id = await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id)
+        row_id = await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id, bot_id=bot_id, topic_id=topic_id)
         await record_withheld_outbound_review(
             pool,
             recipient_id=user.id,
@@ -365,7 +386,8 @@ async def send_outbound(
         )
         return row_id
     if verdict.get("checker_failed"):
-        logger.warning("OOB checker failed open for recipient_id=%s: %s", user.id, verdict.get("reason"))
+        logger.warning("OOB checker failed open for recipient_id=%s: %s", user.id, verdict.get("reason"),
+                       extra={"bot_id": bot_id or "mediator", "topic_id": str(topic_id) if topic_id else None})
 
     provider = get_settings().messaging_provider.strip().lower()
     if provider == "discord":
@@ -379,7 +401,7 @@ async def send_outbound(
 
     if not within_window and template_fallback is None:
         await _append_turn_reasoning(pool, bot_turn_id, "Outbound deferred: outside WhatsApp 24h window with no template")
-        return await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id)
+        return await _insert_outbound(pool, user, content, "withheld", bot_turn_id=bot_turn_id, bot_id=bot_id, topic_id=topic_id)
 
     template_payload = None
     if not within_window:
@@ -388,7 +410,7 @@ async def send_outbound(
     if before_provider_send is not None:
         await before_provider_send()
 
-    row_id = await _insert_outbound(pool, user, content, bot_turn_id=bot_turn_id)
+    row_id = await _insert_outbound(pool, user, content, bot_turn_id=bot_turn_id, bot_id=bot_id, topic_id=topic_id)
 
     async def send_call() -> dict[str, Any]:
         if provider == "discord":
@@ -400,7 +422,8 @@ async def send_outbound(
     try:
         response = await _send_with_retry(send_call)
     except Exception as exc:
-        logger.warning("outbound send failed after retries: %s", exc)
+        logger.warning("outbound send failed after retries: %s", exc,
+                       extra={"bot_id": bot_id or "mediator", "topic_id": str(topic_id) if topic_id else None})
         await pool.execute("UPDATE messages SET processing_state='expired' WHERE id=$1", row_id)
         await _append_turn_reasoning(pool, bot_turn_id, f"Outbound send failed: {exc}")
         return row_id

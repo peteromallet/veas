@@ -1,4 +1,11 @@
-"""DB-backed global system state helpers."""
+"""DB-backed global and per-(user,bot) system state helpers.
+
+S2a NOTE: Per-(user,bot) pause WRITE-path is deferred to S2b.
+The write-path for user_bot_state.paused is NOT implemented in this sprint.
+Only the READ-path (user_bot_paused) is active, gating outbound sends,
+scheduler dispatch, OOB releases, withheld-review emissions, and pacer
+emissions. Global pause (system_state.is_paused) remains the kill switch.
+"""
 
 from __future__ import annotations
 
@@ -23,6 +30,20 @@ def _utc_now() -> datetime:
 async def is_paused(pool: Any) -> bool:
     paused_at = await pool.fetchval("SELECT paused_at FROM system_state WHERE key = 'global_pause'")
     return paused_at is not None
+
+
+async def user_bot_paused(pool: Any, user_id: UUID, bot_id: str) -> bool:
+    """Return True if per-(user, bot) pause is active.
+
+    Reads user_bot_state.paused for the given user and bot.
+    S2a: READ-path only. WRITE-path (setting paused=True) is deferred to S2b.
+    """
+    paused = await pool.fetchval(
+        "SELECT paused FROM user_bot_state WHERE user_id = $1 AND bot_id = $2",
+        user_id,
+        bot_id,
+    )
+    return bool(paused)
 
 
 async def pause(pool: Any, paused_by_user_id: UUID, *, now: datetime | None = None) -> None:

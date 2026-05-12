@@ -15,7 +15,7 @@ from app.services.cross_thread_privacy import (
     raw_message_visibility,
 )
 from app.services.text_safety import clean_user_facing_text, looks_like_internal_process_text
-from app.services.time_context import temporal_reference, timezone_or_utc
+from app.services.time_context import add_calendar_months, temporal_reference, timezone_or_utc
 from app.services.tools.common import media_analysis_text
 
 
@@ -35,6 +35,7 @@ class HotContext:
     temporal_context: dict[str, Any] = field(default_factory=dict)
     distillations: list[dict[str, Any]] = field(default_factory=list)
     bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
+    recent_reactions: list[dict[str, Any]] = field(default_factory=list)
 
 
 def _row_dict(row: Any) -> dict[str, Any]:
@@ -58,6 +59,8 @@ def _temporal_context(timezone_name: str | None, now_utc: datetime | None = None
     now_local = now.astimezone(tz)
     local_day_start = now_local.replace(hour=0, minute=0, second=0, microsecond=0)
     local_day_end = local_day_start + timedelta(days=1)
+    one_month_from_now_local = add_calendar_months(now_local, 1)
+    one_month_from_today_local_date = add_calendar_months(now_local.date(), 1)
     return {
         "now_utc": now.isoformat(),
         "now_local": now_local.isoformat(),
@@ -69,6 +72,9 @@ def _temporal_context(timezone_name: str | None, now_utc: datetime | None = None
         "local_day_end": local_day_end.isoformat(),
         "local_day_start_utc": local_day_start.astimezone(UTC).isoformat(),
         "local_day_end_utc": local_day_end.astimezone(UTC).isoformat(),
+        "one_month_from_now_local": one_month_from_now_local.isoformat(),
+        "one_month_from_now_utc": one_month_from_now_local.astimezone(UTC).isoformat(),
+        "one_month_from_today_local_date": one_month_from_today_local_date.isoformat(),
     }
 
 
@@ -455,6 +461,49 @@ async def build_hot_context(
         """,
         triggering_message_ids,
     )
+    recent_reactions = [
+        {
+            "id": row["id"],
+            "sentiment": row["sentiment"],
+            "content": row["content"],
+            "created_at": _iso(row["created_at"]),
+            "created_at_time": _time_context(row["created_at"], user_timezone, now_utc),
+            "message_id": row["message_id"],
+            "message_content": row["message_content"],
+            "message_sent_at": _iso(row["message_sent_at"]),
+            "message_sent_at_time": _time_context(row["message_sent_at"], user_timezone, now_utc),
+        }
+        for row in reversed(
+            await pool.fetch(
+                """
+                WITH previous_turn AS (
+                    SELECT completed_at
+                    FROM bot_turns
+                    WHERE user_in_context = $1
+                      AND completed_at IS NOT NULL
+                    ORDER BY completed_at DESC
+                    LIMIT 1
+                )
+                SELECT f.id, f.sentiment, f.content, f.created_at,
+                       m.id AS message_id, m.content AS message_content, m.sent_at AS message_sent_at
+                FROM feedback f
+                JOIN messages m ON m.id = f.target_id
+                WHERE EXISTS (SELECT 1 FROM previous_turn)
+                  AND f.from_user_id = $1
+                  AND f.target_type = 'message'
+                  AND f.source = 'reaction'
+                  AND m.direction = 'outbound'
+                  AND m.recipient_id = $1
+                  AND f.created_at > (SELECT completed_at FROM previous_turn)
+                  AND f.created_at <= $2
+                ORDER BY f.created_at DESC
+                LIMIT 5
+                """,
+                user.id,
+                now_utc,
+            )
+        )
+    ]
     return HotContext(
         current_user=current_user,
         partner_user=partner_user,
@@ -467,6 +516,7 @@ async def build_hot_context(
         observations=observations,
         distillations=distillations,
         bridge_candidates=bridge_candidates,
+        recent_reactions=recent_reactions,
         recent_messages=recent_messages,
         time_since_last_message=_duration_since(latest_sent_at),
         trigger_metadata={
@@ -547,7 +597,8 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
             f"- local_time: {_clip(hc.temporal_context.get('local_time'), clip_limit)}",
             f"- local_weekday: {_clip(hc.temporal_context.get('local_weekday'), clip_limit)}",
             f"- local_day_bounds: {_clip(hc.temporal_context.get('local_day_start'), clip_limit)} to {_clip(hc.temporal_context.get('local_day_end'), clip_limit)} (UTC {_clip(hc.temporal_context.get('local_day_start_utc'), clip_limit)} to {_clip(hc.temporal_context.get('local_day_end_utc'), clip_limit)})",
-            "- scheduling_note: Default to scheduling tool delay fields for simple duration phrases like 'in two hours', 'in 10 hours', or 'in two days'. Use local_when for concrete local clock phrases like '9pm tonight' or 'Monday at 8'. Use absolute when only for exact timezone-aware instants.",
+            f"- one_month_from_now: local={_clip(hc.temporal_context.get('one_month_from_now_local'), clip_limit)} utc={_clip(hc.temporal_context.get('one_month_from_now_utc'), clip_limit)} local_date={_clip(hc.temporal_context.get('one_month_from_today_local_date'), clip_limit)}",
+            "- scheduling_note: Default to scheduling tool delay fields for simple duration phrases like 'in two hours', 'in 10 hours', or 'in two days'. Use local_when for concrete local clock phrases like '9pm tonight' or 'Monday at 8'. Use absolute when only for exact timezone-aware instants. For phrases like 'for the next month', use the one_month_from_now/local_date anchors rather than guessing.",
         ]
     lines += [
         "",
@@ -627,6 +678,15 @@ def _render_with_counts(hc: HotContext, truncations: dict[str, int], clip_limit:
     )
     if truncations.get("recent_messages"):
         lines.append(f"- [truncated, {truncations['recent_messages']} more]")
+    lines += ["", "## New reactions since previous turn"]
+    if hc.recent_reactions:
+        lines.extend(
+            f"- {_time_label(item, 'created_at') or item['created_at']} sentiment={item['sentiment']} reaction={_clip(item['content'], clip_limit)} on_message={_clip_id(item['message_id'], clip_limit)} sent={_clip(_time_label(item, 'message_sent_at') or item['message_sent_at'], clip_limit)}: {_clip(clean_user_facing_text(str(item.get('message_content') or '')) or item.get('message_content') or '[no text]', clip_limit)}"
+            for item in hc.recent_reactions
+        )
+        lines.append("- Treat these as passive feedback only; do not mention them unless naturally relevant to the user's new message.")
+    else:
+        lines.append("- none")
     lines += [
         "",
         "## Trigger",
@@ -661,6 +721,7 @@ def render_hot_context(hc: HotContext) -> str:
         observations=list(hc.observations),
         distillations=list(hc.distillations),
         bridge_candidates=list(hc.bridge_candidates),
+        recent_reactions=list(hc.recent_reactions),
         recent_messages=list(hc.recent_messages),
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,
