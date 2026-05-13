@@ -397,7 +397,7 @@ async def build_hot_context_solo(
         )
     ]
 
-    # Messages: sender or recipient is the user
+    # Messages: sender or recipient is the user, scoped to this bot+topic
     message_rows = await pool.fetch(
         """\
         SELECT id, direction, sender_id, recipient_id, content, media_type, media_duration_seconds,
@@ -405,10 +405,14 @@ async def build_hot_context_solo(
         FROM messages
         WHERE deleted_at IS NULL
           AND (sender_id = $1 OR recipient_id = $1)
+          AND bot_id = $2
+          AND topic_id = $3
         ORDER BY sent_at DESC
         LIMIT 20
         """,
         user.id,
+        bot_id,
+        primary_topic_id,
     )
 
     # Distillations: scoped to primary topic, source includes user
