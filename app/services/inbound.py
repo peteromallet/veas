@@ -16,7 +16,7 @@ from app.services import routing, system_state
 from app.services.charge import classify_charge
 from app.services.crypto import encrypt_value
 from app.services.messaging import send_outbound
-from app.services.scheduled_job_handlers import seed_weekly_summaries
+from app.services.scheduled_job_handlers import seed_weekly_reflections
 from app.services.templates import TemplateCall
 from app.services.transcription import handle_voice
 from app.services.turn_context import obs_fields, partner_of
@@ -159,7 +159,7 @@ async def _handle_pause_command(pool: Any, user) -> None:
 
 async def _handle_resume_command(pool: Any, user) -> None:
     await system_state.resume(pool)
-    await seed_weekly_summaries(pool)
+    await seed_weekly_reflections(pool)
 
 
 class ResolvedScope(NamedTuple):

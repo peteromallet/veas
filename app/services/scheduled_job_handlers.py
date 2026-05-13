@@ -365,7 +365,7 @@ async def schedule_next_weekly_summary(
     )
 
 
-async def seed_weekly_summaries(pool: Any, *, now: datetime | None = None) -> list[Any]:
+async def seed_weekly_reflections(pool: Any, *, now: datetime | None = None) -> list[Any]:
     rows = await pool.fetch(
         """
         SELECT id, name, phone, timezone, weekly_summary_enabled,
