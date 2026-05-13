@@ -479,6 +479,12 @@ class DiscordGatewayBot:
                             "token": self.client._token,
                             "intents": intents,
                             "properties": {"os": "linux", "browser": "veas", "device": "veas"},
+                            "presence": {
+                                "status": "online",
+                                "afk": False,
+                                "since": None,
+                                "activities": [],
+                            },
                         },
                     }
                 )
