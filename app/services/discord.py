@@ -484,12 +484,19 @@ class DiscordGatewayBot:
             )
             logger.info("[gateway:%s] IDENTIFY sent, awaiting events", self.bot_id)
             events_seen = 0
+            interesting_event_types = {
+                "READY", "RESUMED", "INVALID_SESSION",
+                "MESSAGE_CREATE", "MESSAGE_UPDATE", "MESSAGE_DELETE",
+                "MESSAGE_REACTION_ADD", "MESSAGE_REACTION_REMOVE",
+                "TYPING_START", "CHANNEL_CREATE",
+                "GUILD_CREATE", "GUILD_DELETE",
+            }
             async for raw in ws:
                 event = json.loads(raw)
                 events_seen += 1
                 op = event.get("op")
                 t = event.get("t")
-                if events_seen <= 5 or t in {"READY", "RESUMED", "INVALID_SESSION"} or op in {9, 7}:
+                if events_seen <= 5 or t in interesting_event_types or op in {9, 7, 1}:
                     if t == "READY":
                         d = event.get("d", {}) or {}
                         user = d.get("user", {}) or {}
@@ -503,10 +510,53 @@ class DiscordGatewayBot:
                         logger.warning("[gateway:%s] INVALID_SESSION op=9 d=%r", self.bot_id, event.get("d"))
                     elif op == 7:
                         logger.info("[gateway:%s] RECONNECT requested by server (op=7)", self.bot_id)
+                    elif t == "MESSAGE_CREATE":
+                        d = event.get("d", {}) or {}
+                        author = d.get("author", {}) or {}
+                        is_dm = d.get("guild_id") is None
+                        logger.info(
+                            "[gateway:%s] MESSAGE_CREATE channel=%s author=%s(%s) guild_id=%s is_dm=%s content=%r",
+                            self.bot_id,
+                            d.get("channel_id"),
+                            author.get("username"),
+                            author.get("id"),
+                            d.get("guild_id"),
+                            is_dm,
+                            (d.get("content") or "")[:120],
+                        )
+                    elif t in {"MESSAGE_UPDATE", "MESSAGE_DELETE"}:
+                        d = event.get("d", {}) or {}
+                        logger.info(
+                            "[gateway:%s] %s channel=%s message_id=%s",
+                            self.bot_id, t, d.get("channel_id"), d.get("id"),
+                        )
+                    elif t == "TYPING_START":
+                        d = event.get("d", {}) or {}
+                        logger.info(
+                            "[gateway:%s] TYPING_START channel=%s user_id=%s",
+                            self.bot_id, d.get("channel_id"), d.get("user_id"),
+                        )
+                    elif t == "CHANNEL_CREATE":
+                        d = event.get("d", {}) or {}
+                        logger.info(
+                            "[gateway:%s] CHANNEL_CREATE channel=%s type=%s",
+                            self.bot_id, d.get("id"), d.get("type"),
+                        )
+                    elif t == "GUILD_CREATE":
+                        d = event.get("d", {}) or {}
+                        logger.info(
+                            "[gateway:%s] GUILD_CREATE guild=%s(%s) members=%s",
+                            self.bot_id, d.get("name"), d.get("id"), d.get("member_count"),
+                        )
                     else:
                         logger.info("[gateway:%s] event #%d op=%s t=%s", self.bot_id, events_seen, op, t)
                 if op == 0:
-                    await self._gateway_loop.dispatch_payload(event)
+                    try:
+                        await self._gateway_loop.dispatch_payload(event)
+                    except Exception:
+                        logger.exception(
+                            "[gateway:%s] dispatch_payload failed for t=%s", self.bot_id, t,
+                        )
                 if self._closed.is_set():
                     logger.info("[gateway:%s] closed flag set; breaking event loop after %d events", self.bot_id, events_seen)
                     break
