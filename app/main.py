@@ -2,6 +2,7 @@
 
 import asyncio
 import logging
+import sys
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager, suppress
 from typing import Any
@@ -20,10 +21,25 @@ from app.services.agentic import run_agentic_turn, run_agentic_turn_with_metadat
 from app.services.debouncer import BurstCoalescer
 from app.services.pacer import DiscordPacer, PacedSendKind, PacingDecision
 from app.services.recovery import recover_on_startup, run_recovery_forever
-from app.services.scheduled_job_handlers import ScheduledJobHandlers, seed_weekly_summaries
+from app.services.scheduled_job_handlers import ScheduledJobHandlers, seed_weekly_reflections
 from app.services.scheduled_jobs import ScheduledJobWorker, seed_heartbeat
 
 logger = logging.getLogger(__name__)
+
+
+def _configure_logging() -> None:
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(logging.Formatter("%(levelname)s:%(name)s: %(message)s"))
+        root.addHandler(handler)
+    root.setLevel(logging.INFO)
+    # Uvicorn installs its own handlers; don't double-log through root.
+    for name in ("uvicorn", "uvicorn.error", "uvicorn.access"):
+        logging.getLogger(name).propagate = False
+
+
+_configure_logging()
 
 
 def _log_startup_diagnostics() -> None:
@@ -245,9 +261,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         app.state.background_tasks.add(recovery_task)
         if settings.messaging_provider.strip().lower() == "discord":
             # ── Per-bot gateway registration ──────────────────────────
+            logger.info("lifespan: entering discord per-bot gateway registration")
             try:
                 channel_rows = await pool.fetch(
                     "SELECT bot_id, address FROM channels WHERE transport = 'discord'"
+                )
+                logger.info(
+                    "lifespan: channels query returned %d row(s): %s",
+                    len(channel_rows),
+                    [f"{r['bot_id']}@{r['address']}" for r in channel_rows],
                 )
             except Exception as _e:
                 if _e.__class__.__name__ == "UndefinedTableError":
@@ -261,6 +283,11 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
             per_bot_tokens = settings.discord_bot_tokens
             legacy_token = settings.discord_bot_token
+            logger.info(
+                "lifespan: per-bot tokens available for bot_ids=%s, legacy_token=%s",
+                sorted(per_bot_tokens.keys()),
+                "set" if legacy_token else "absent",
+            )
 
             # Determine which bots to start
             bot_entries: list[tuple[str, str]] = []  # (bot_id, token_value)
@@ -290,8 +317,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 )
                 bot_entries.append(("mediator", legacy_token.get_secret_value()))
 
+            logger.info(
+                "lifespan: will start gateways for bot_ids=%s",
+                [bid for bid, _ in bot_entries],
+            )
             app.state.discord_gateways: dict[str, discord.DiscordGatewayBot] = {}
             for bot_id, token_val in bot_entries:
+                logger.info("lifespan: constructing DiscordClient for bot_id=%s (token_len=%d)", bot_id, len(token_val))
                 client = discord.DiscordClient(bot_id, token_val)
                 discord.register_client(bot_id, client)
 
@@ -350,7 +382,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
                 logger.info("startup diagnostic discord_gateways=none_started")
         if settings.scheduler_enabled:
             await seed_heartbeat(pool, settings=settings)
-            await seed_weekly_summaries(pool)
+            await seed_weekly_reflections(pool)
             worker = ScheduledJobWorker(
                 pool,
                 settings=settings,

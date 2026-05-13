@@ -435,45 +435,96 @@ class DiscordGatewayBot:
                 await self._heartbeat_task
 
     async def run_forever(self) -> None:
+        logger.info("[gateway:%s] run_forever entered", self.bot_id)
+        attempt = 0
         while not self._closed.is_set():
+            attempt += 1
             try:
+                logger.info("[gateway:%s] connect attempt #%d", self.bot_id, attempt)
                 await self._run_once()
+                logger.info("[gateway:%s] _run_once returned cleanly (attempt #%d)", self.bot_id, attempt)
             except asyncio.CancelledError:
+                logger.info("[gateway:%s] cancelled", self.bot_id)
                 raise
-            except Exception:
-                # obs N/A: transport-only
-                logger.exception("discord gateway loop failed")
+            except websockets.exceptions.ConnectionClosed as e:
+                logger.warning(
+                    "[gateway:%s] WS closed code=%s reason=%r (attempt #%d) — reconnecting in 5s",
+                    self.bot_id, getattr(e, "code", "?"), getattr(e, "reason", "?"), attempt,
+                )
+                await asyncio.sleep(5)
+            except Exception as e:
+                logger.exception(
+                    "[gateway:%s] gateway loop failed (attempt #%d, %s): %s — reconnecting in 5s",
+                    self.bot_id, attempt, type(e).__name__, e,
+                )
                 await asyncio.sleep(5)
 
     async def _run_once(self) -> None:
+        intents = (1 << 12) | (1 << 14) | (1 << 15)
+        logger.info("[gateway:%s] dialing wss://gateway.discord.gg/?v=10&encoding=json", self.bot_id)
         async with websockets.connect("wss://gateway.discord.gg/?v=10&encoding=json") as ws:
-            hello = json.loads(await ws.recv())
+            logger.info("[gateway:%s] WS connected, awaiting HELLO", self.bot_id)
+            hello_raw = await ws.recv()
+            hello = json.loads(hello_raw)
             interval = hello["d"]["heartbeat_interval"] / 1000
+            logger.info("[gateway:%s] HELLO received op=%s heartbeat=%.1fs", self.bot_id, hello.get("op"), interval)
             self._heartbeat_task = asyncio.create_task(self._heartbeat(ws, interval))
+            logger.info("[gateway:%s] sending IDENTIFY intents=0x%x", self.bot_id, intents)
             await ws.send(
                 json.dumps(
                     {
                         "op": 2,
                         "d": {
                             "token": self.client._token,
-                            "intents": (1 << 12) | (1 << 14) | (1 << 15),
-                            "properties": {"os": "macos", "browser": "veas", "device": "veas"},
+                            "intents": intents,
+                            "properties": {"os": "linux", "browser": "veas", "device": "veas"},
                         },
                     }
                 )
             )
+            logger.info("[gateway:%s] IDENTIFY sent, awaiting events", self.bot_id)
+            events_seen = 0
             async for raw in ws:
                 event = json.loads(raw)
-                if event.get("op") == 0:
+                events_seen += 1
+                op = event.get("op")
+                t = event.get("t")
+                if events_seen <= 5 or t in {"READY", "RESUMED", "INVALID_SESSION"} or op in {9, 7}:
+                    if t == "READY":
+                        d = event.get("d", {}) or {}
+                        user = d.get("user", {}) or {}
+                        logger.info(
+                            "[gateway:%s] READY received bot=%s id=%s session=%s guilds=%s",
+                            self.bot_id, user.get("username"), user.get("id"),
+                            (d.get("session_id") or "")[:20],
+                            len(d.get("guilds", []) or []),
+                        )
+                    elif op == 9:
+                        logger.warning("[gateway:%s] INVALID_SESSION op=9 d=%r", self.bot_id, event.get("d"))
+                    elif op == 7:
+                        logger.info("[gateway:%s] RECONNECT requested by server (op=7)", self.bot_id)
+                    else:
+                        logger.info("[gateway:%s] event #%d op=%s t=%s", self.bot_id, events_seen, op, t)
+                if op == 0:
                     await self._gateway_loop.dispatch_payload(event)
                 if self._closed.is_set():
+                    logger.info("[gateway:%s] closed flag set; breaking event loop after %d events", self.bot_id, events_seen)
                     break
 
     async def _heartbeat(self, ws: Any, interval: float) -> None:
-        with contextlib.suppress(websockets.exceptions.ConnectionClosed):
+        ticks = 0
+        try:
             while not self._closed.is_set():
                 await asyncio.sleep(interval)
                 await ws.send(json.dumps({"op": 1, "d": None}))
+                ticks += 1
+                if ticks in (1, 5, 20) or ticks % 100 == 0:
+                    logger.info("[gateway:%s] heartbeat tick #%d", self.bot_id, ticks)
+        except websockets.exceptions.ConnectionClosed as e:
+            logger.warning(
+                "[gateway:%s] heartbeat stopped after %d ticks: WS closed code=%s reason=%r",
+                self.bot_id, ticks, getattr(e, "code", "?"), getattr(e, "reason", "?"),
+            )
 
     async def _handle_gateway_event(self, payload: dict[str, Any]) -> None:
         if payload.get("t") != "TYPING_START" or self.coalescer is None:
