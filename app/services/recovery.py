@@ -113,7 +113,7 @@ async def recover_on_startup(pool: Any, coalescer: Any, *, now: datetime | None 
 
     raw_messages = await pool.fetch(
         """
-        SELECT m.id, m.sender_id AS user_id, m.sender_id, m.bot_id, m.topic_id, m.channel_id, m.binding_id, m.dyad_id
+        SELECT m.id, m.sender_id AS user_id, m.bot_id, m.topic_id
         FROM messages m
         WHERE m.processing_state='raw'
           AND m.sent_at < now() - interval '30 seconds'
