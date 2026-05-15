@@ -138,23 +138,59 @@ async def healthz(pool: Any = Depends(get_pool)) -> dict[str, Any]:
     return {"ok": overall_ok, "checks": checks}
 
 
+async def _bound_bot_ids(pool: Any, user_id: UUID) -> set[str]:
+    """Return the bot_ids that this user is bound to.
+
+    Mirrors the pattern in ``app/services/routing.py::resolve_binding`` —
+    a row matches if it's a direct user binding OR if the user is a member
+    of the bound dyad. Returns the empty set when no rows match (the caller
+    decides what fallback to use).
+    """
+    try:
+        rows = await pool.fetch(
+            """
+            SELECT DISTINCT bb.bot_id
+            FROM bot_bindings bb
+            LEFT JOIN dyad_members dm ON dm.dyad_id = bb.dyad_id
+            WHERE bb.user_id = $1 OR dm.user_id = $1
+            """,
+            user_id,
+        )
+    except Exception:
+        logger.warning("live_voice: bot_bindings lookup failed", exc_info=True)
+        return set()
+    return {row["bot_id"] for row in rows}
+
+
 @router.get("/api/live/personas")
-async def list_personas() -> list[dict[str, str]]:
+async def list_personas(pool: Any = Depends(get_pool)) -> dict[str, Any]:
     """Return personas the caller may steer.
 
-    Sprint-0: returns *all* registered bots.
-    TODO: scope to the caller's rows in ``mediator.bot_bindings`` once auth
-    is wired (then this becomes per-user).
+    Scoped to the caller's rows in ``bot_bindings`` (joined through
+    ``dyad_members`` when the binding is dyadic). When no bindings match
+    (fresh install / unauthed dev), returns the full ``BOT_SPECS`` registry
+    with ``scoped=false`` so the frontend can surface a "dev mode" hint.
     """
     _maybe_register_staging_bots()
-    return [
+    user_id = _resolve_test_user_id()  # replaced by auth.uid() when OAuth lands
+
+    bound = await _bound_bot_ids(pool, user_id)
+    if bound:
+        specs = [s for s in BOT_SPECS.values() if s.bot_id in bound]
+        scoped = True
+    else:
+        specs = list(BOT_SPECS.values())
+        scoped = False
+
+    personas = [
         {
             "id": spec.bot_id,
             "display_name": spec.display_name,
             "topic": spec.primary_topic_slug,
         }
-        for spec in sorted(BOT_SPECS.values(), key=lambda s: s.display_name.lower())
+        for spec in sorted(specs, key=lambda s: s.display_name.lower())
     ]
+    return {"personas": personas, "scoped": scoped, "user_id": str(user_id)}
 
 
 @router.get("/api/live/config")
