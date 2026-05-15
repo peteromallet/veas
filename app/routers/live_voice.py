@@ -205,7 +205,9 @@ async def public_config() -> dict[str, Any]:
         settings.openai_api_key and settings.openai_api_key.get_secret_value()
     )
     return {
-        "discord_oauth_enabled": False,  # TODO: flip when OAuth lands.
+        "discord_oauth_enabled": False,  # OAuth deferred to v1.1 — see R5.
+        "auth_mode": "magic_link",       # v1 auth path: Discord DM magic-link.
+        "magic_link_enabled": True,
         "openai_voice_enabled": openai_key_present,
         "env_name": settings.env_name,
     }

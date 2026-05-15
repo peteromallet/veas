@@ -170,7 +170,7 @@ Privacy/abuse hardening per critique L1+L3:
   - [ ] Migration applied to local DB
   - [ ] Migration applied to production DB
   - [ ] Production deploy verified live (`/api/live/healthz` from `https://veas-production.up.railway.app/api/live/healthz`)
-  - [~] Discord auth — **UNBLOCKED via magic-link** (R5). OAuth deferred to v1.1. Magic-link migration + endpoints + JWT mint pending under this turn.
+  - [x] Discord auth — **UNBLOCKED via magic-link** (R5). Migration `0043_auth_magic_links.sql` applied. `POST /api/auth/discord-magic-link/{request,verify}` live. HMAC-SHA256 JWT minted with 15-min TTL. Sends DM via `DISCORD_BOT_TOKEN[_<bot_id>]`; in dev (no token) the cleartext code is logged at WARN so a human operator can still grab it. End-to-end verified locally + 6 unit tests (happy path, wrong code, attempts cap, unknown user, rate limit, JWT tamper) all pass.
   - [x] Persona picker scoped to `bot_bindings` — `/api/live/personas` now filters via `bot_bindings ⨝ dyad_members`, falls back to full `BOT_SPECS` with `scoped=false` when the caller has no bindings (dev mode). Response shape: `{personas, scoped, user_id}`.
   - [x] `tests/test_live_migrations.py` for RLS + migration apply — 9 static checks green; live-DB check skips cleanly until `DATABASE_URL` / `EVAL_DATABASE_URL` is set.
 - [x] **Sprint 1 — Prep + session card** (end-to-end verified in the browser at `/live`)

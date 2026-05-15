@@ -18,7 +18,7 @@ from app.config import Settings, get_settings
 from app.bots.ids import MEDIATOR_BOT_ID
 from app.db import db_lifespan
 from app.models.user import User
-from app.routers import admin, health, live_voice, whatsapp as whatsapp_router
+from app.routers import admin, auth_magic_link, health, live_voice, whatsapp as whatsapp_router
 from app.services import agentic, discord, hooks, whatsapp
 from app.services.agentic import run_agentic_turn, run_agentic_turn_with_metadata
 from app.services.debouncer import BurstCoalescer
@@ -449,6 +449,7 @@ app.include_router(health.router)
 app.include_router(admin.router)
 app.include_router(whatsapp_router.router)
 app.include_router(live_voice.router)
+app.include_router(auth_magic_link.router)
 
 # Serve the React build for the live-voice UI at /live, but only if the build
 # exists.  Local dev that hasn't run `vite build` yet should still boot.
