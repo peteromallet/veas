@@ -1,6 +1,7 @@
 """Per-user inbound burst coalescing with explicit inbound scope."""
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass
 from typing import Any
@@ -15,6 +16,7 @@ from app.services.scope import InboundScope
 
 # Composite key type: (user_id, bot_id).  bot_id is always required.
 CompositeKey = tuple[UUID, str]
+logger = logging.getLogger(__name__)
 
 
 @dataclass
@@ -167,6 +169,12 @@ class BurstCoalescer:
                     await self._handle_ready_burst(user_id, burst)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            logger.exception(
+                "paced wait flush failed for user_id=%s bot_id=%s",
+                key[0],
+                key[1],
+            )
 
     async def _call_paced_answer(self, message_ids: list[UUID], user: User, decision: PacingDecision, *, scope: InboundScope | None = None) -> None:
         if self.on_paced_answer is not None:

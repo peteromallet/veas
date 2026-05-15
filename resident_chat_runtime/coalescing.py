@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+import logging
 from collections.abc import Awaitable, Callable, Hashable
 from dataclasses import dataclass
 from typing import Generic, TypeVar
 
 K = TypeVar("K", bound=Hashable)
 V = TypeVar("V")
+logger = logging.getLogger(__name__)
 
 
 @dataclass(frozen=True)
@@ -74,6 +76,8 @@ class AsyncBurstCoalescer(Generic[K, V]):
             await self.flush(key)
         except asyncio.CancelledError:
             raise
+        except Exception:
+            logger.exception("coalescer delayed flush failed for key=%r", key)
 
     async def _pop_batch(self, key: K) -> BurstBatch[K, V] | None:
         async with self._lock:
