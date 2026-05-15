@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from "react";
-import { liveSocketUrl, type Persona } from "../api";
+import { liveSocketUrl, postConsent, type Persona } from "../api";
 import { ConsentGate, type ConsentSelection } from "./ConsentGate";
 import { openMic, type MicSession } from "../mic";
 
@@ -179,7 +179,19 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
     return (
       <ConsentGate
         persona={persona}
-        onConfirm={(sel) => {
+        onConfirm={async (sel) => {
+          // Record consent BEFORE opening the mic; the WS effect runs
+          // once `consent` is set in state below.
+          try {
+            await postConsent(sessionId, {
+              kind: sel.kind,
+              partner_label: sel.kind === "partner_present" ? sel.partner_label : undefined,
+            });
+          } catch (err) {
+            // Soft-fail: still proceed so the user isn't stuck in dev runs
+            // without the conversation_consent_events table.
+            console.warn("consent persist failed", err);
+          }
           setConsent(sel);
         }}
         onCancel={onEnd}

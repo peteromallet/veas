@@ -336,6 +336,77 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
     }
 
 
+class ConsentBody(BaseModel):
+    model_config = {"extra": "ignore"}
+    kind: str = Field(..., description="'solo' or 'partner_present'")
+    partner_label: str | None = Field(default=None, max_length=80)
+
+
+@router.post("/api/live/sessions/{session_id}/consent")
+async def post_consent(
+    session_id: UUID,
+    body: ConsentBody,
+    pool: Any = Depends(get_pool),
+) -> dict[str, Any]:
+    """Record the pre-mic consent decision.
+
+    Writes a conversation_consent_events row for the primary speaker
+    (granted) and, when partner_present, a second row for the partner
+    keyed on the partner_label. Both rows are atomic under one txn so
+    "consent recorded" implies "ready to open the mic".
+    """
+    if not await _conversations_table_exists(pool):
+        raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if body.kind not in ("solo", "partner_present"):
+        raise HTTPException(status_code=400, detail="kind must be 'solo' or 'partner_present'")
+    if body.kind == "partner_present" and not (body.partner_label or "").strip():
+        raise HTTPException(status_code=400, detail="partner_label required when partner_present")
+
+    async with pool.acquire() as conn:
+        async with conn.transaction():
+            await conn.execute(
+                """
+                INSERT INTO mediator.conversation_consent_events
+                    (conversation_id, speaker_label, role, event_type, method)
+                VALUES ($1, 'speaker_0', 'primary', 'granted', 'screen_tap')
+                """,
+                session_id,
+            )
+            await conn.execute(
+                """
+                INSERT INTO mediator.conversation_speakers
+                    (conversation_id, speaker_label, role, consent_state, consented_at)
+                VALUES ($1, 'speaker_0', 'primary', 'granted', now())
+                ON CONFLICT (conversation_id, speaker_label) DO UPDATE
+                SET consent_state = 'granted', consented_at = now()
+                """,
+                session_id,
+            )
+            if body.kind == "partner_present":
+                partner_label = body.partner_label.strip()
+                await conn.execute(
+                    """
+                    INSERT INTO mediator.conversation_consent_events
+                        (conversation_id, speaker_label, role, event_type, method, note)
+                    VALUES ($1, $2, 'partner', 'granted', 'screen_tap', 'partner acknowledged by primary')
+                    """,
+                    session_id,
+                    partner_label,
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO mediator.conversation_speakers
+                        (conversation_id, speaker_label, role, consent_state, consented_at)
+                    VALUES ($1, $2, 'partner', 'granted', now())
+                    ON CONFLICT (conversation_id, speaker_label) DO UPDATE
+                    SET consent_state = 'granted', consented_at = now()
+                    """,
+                    session_id,
+                    partner_label,
+                )
+    return {"ok": True, "kind": body.kind, "partner_label": body.partner_label}
+
+
 @router.post("/api/live/sessions/{session_id}/end")
 async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
     """Flip the session to review_pending and synthesize the review payload."""

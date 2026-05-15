@@ -153,6 +153,24 @@ export interface SessionReview {
   is_empty: boolean;
 }
 
+export async function postConsent(
+  sessionId: string,
+  body: { kind: "solo" | "partner_present"; partner_label?: string },
+): Promise<{ ok: boolean }> {
+  const res = await fetch(
+    `/api/live/sessions/${encodeURIComponent(sessionId)}/consent`,
+    {
+      method: "POST",
+      headers: {
+        "Content-Type": "application/json",
+        Accept: "application/json",
+      },
+      body: JSON.stringify(body),
+    },
+  );
+  return handle<{ ok: boolean }>(res);
+}
+
 export async function endSession(sessionId: string): Promise<SessionReview> {
   const res = await fetch(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/end`,
