@@ -34,7 +34,20 @@ async function handle<T>(res: Response): Promise<T> {
     try {
       const body = await res.json();
       if (body && typeof body === "object" && "detail" in body) {
-        detail = String((body as { detail: unknown }).detail);
+        const raw = (body as { detail: unknown }).detail;
+        if (typeof raw === "string") {
+          detail = raw;
+        } else if (Array.isArray(raw)) {
+          detail = raw
+            .map((d: unknown) =>
+              d && typeof d === "object" && "msg" in d
+                ? String((d as { msg: unknown }).msg)
+                : JSON.stringify(d),
+            )
+            .join("; ");
+        } else {
+          detail = JSON.stringify(raw);
+        }
       }
     } catch {
       // ignore
@@ -70,4 +83,43 @@ export async function createSession(
 export function liveSocketUrl(sessionId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
   return `${proto}//${window.location.host}/ws/live/${encodeURIComponent(sessionId)}`;
+}
+
+export type CoverageEvidence =
+  | "explicit_answer"
+  | "emotional_shift"
+  | "concrete_decision"
+  | "blocker_named";
+
+export interface AgendaItemCard {
+  id: string;
+  title: string;
+  intent: string | null;
+  ask: string | null;
+  done_when: string | null;
+  kind: "planned" | "dynamic" | "thread";
+  priority: "must" | "should" | "optional";
+  speaker_scope: "primary" | "partner" | "both";
+  coverage_evidence_required: CoverageEvidence;
+  theme: { slug: string; label: string } | null;
+}
+
+export interface SessionCardPayload {
+  session_id: string;
+  bot_id: string;
+  mode: string;
+  status: string;
+  prep_summary: string | null;
+  current_item_id: string | null;
+  items: AgendaItemCard[];
+}
+
+export async function fetchSessionCard(
+  sessionId: string,
+): Promise<SessionCardPayload> {
+  const res = await fetch(
+    `/api/live/sessions/${encodeURIComponent(sessionId)}/card`,
+    { headers: { Accept: "application/json" } },
+  );
+  return handle<SessionCardPayload>(res);
 }

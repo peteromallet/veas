@@ -1,1 +1,1 @@
-{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/components/header.tsx","./src/components/livescreen.tsx","./src/components/personapicker.tsx","./src/components/sessioncard.tsx"],"version":"5.9.3"}
+{"root":["./src/app.tsx","./src/api.ts","./src/main.tsx","./src/components/agendacard.tsx","./src/components/header.tsx","./src/components/livescreen.tsx","./src/components/personapicker.tsx","./src/components/sessioncard.tsx"],"version":"5.9.3"}

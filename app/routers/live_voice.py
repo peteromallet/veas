@@ -38,6 +38,8 @@ router = APIRouter()
 
 
 class CreateSessionRequest(BaseModel):
+    model_config = {"extra": "ignore"}
+
     bot_id: str = Field(..., description="Persona id, e.g. 'tante_rosi'")
     topic: str | None = Field(default=None, description="Optional topic label / slug")
     steering_text: str | None = Field(
@@ -186,7 +188,7 @@ async def list_personas(pool: Any = Depends(get_pool)) -> dict[str, Any]:
 
     personas = [
         {
-            "id": spec.bot_id,
+            "bot_id": spec.bot_id,
             "display_name": spec.display_name,
             "topic": spec.primary_topic_slug,
         }
@@ -291,9 +293,9 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
         SELECT ci.id, ci.title, ci.intent, ci.ask, ci.done_when,
                ci.kind, ci.priority, ci.speaker_scope,
                ci.coverage_evidence_required, ci.order_hint,
-               ci.theme_id, t.slug AS theme_slug, t.label AS theme_label
+               ci.theme_id, t.title AS theme_label
         FROM mediator.conversation_items ci
-        LEFT JOIN themes t ON t.id = ci.theme_id
+        LEFT JOIN mediator.themes t ON t.id = ci.theme_id
         WHERE ci.conversation_id = $1
         ORDER BY ci.order_hint, ci.created_at
         """,
@@ -319,7 +321,7 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
                 "speaker_scope": row["speaker_scope"],
                 "coverage_evidence_required": row["coverage_evidence_required"],
                 "theme": (
-                    {"slug": row["theme_slug"], "label": row["theme_label"]}
+                    {"slug": str(row["theme_id"]), "label": row["theme_label"]}
                     if row["theme_id"]
                     else None
                 ),

@@ -2,12 +2,14 @@ import { useState } from "react";
 import { Header } from "./components/Header";
 import { PersonaPicker } from "./components/PersonaPicker";
 import { SessionCard } from "./components/SessionCard";
+import { AgendaCard } from "./components/AgendaCard";
 import { LiveScreen } from "./components/LiveScreen";
 import type { Persona } from "./api";
 
 type View =
   | { kind: "picker" }
   | { kind: "session"; persona: Persona }
+  | { kind: "card"; persona: Persona; sessionId: string }
   | { kind: "live"; persona: Persona; sessionId: string };
 
 export default function App() {
@@ -27,7 +29,17 @@ export default function App() {
             persona={view.persona}
             onCancel={() => setView({ kind: "picker" })}
             onStarted={(sessionId) =>
-              setView({ kind: "live", persona: view.persona, sessionId })
+              setView({ kind: "card", persona: view.persona, sessionId })
+            }
+          />
+        )}
+        {view.kind === "card" && (
+          <AgendaCard
+            persona={view.persona}
+            sessionId={view.sessionId}
+            onCancel={() => setView({ kind: "session", persona: view.persona })}
+            onConfirm={() =>
+              setView({ kind: "live", persona: view.persona, sessionId: view.sessionId })
             }
           />
         )}
