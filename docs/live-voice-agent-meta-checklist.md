@@ -173,7 +173,17 @@ Privacy/abuse hardening per critique L1+L3:
   - [~] Discord auth — **UNBLOCKED via magic-link** (R5). OAuth deferred to v1.1. Magic-link migration + endpoints + JWT mint pending under this turn.
   - [x] Persona picker scoped to `bot_bindings` — `/api/live/personas` now filters via `bot_bindings ⨝ dyad_members`, falls back to full `BOT_SPECS` with `scoped=false` when the caller has no bindings (dev mode). Response shape: `{personas, scoped, user_id}`.
   - [x] `tests/test_live_migrations.py` for RLS + migration apply — 9 static checks green; live-DB check skips cleanly until `DATABASE_URL` / `EVAL_DATABASE_URL` is set.
-- [ ] **Sprint 1 — Prep + session card** (Opus prep step that produces schema-validated agenda; not started)
+- [~] **Sprint 1 — Prep + session card** (backend in; React + real Opus call still open)
+  - [x] `app/services/live/` package with `__init__.py`, `schemas.py`, `prep.py`, `orchestrator.py`, `turn_loop.py`, `synthesis.py` (closes a Sprint 0 DoD gap)
+  - [x] `Agenda` + `AgendaItem` Pydantic schemas with internal-ref / `must`-anchor / enum guards
+  - [x] `produce_agenda()` end-to-end: gathers context (user / themes / distillations), calls a `AgendaProducer`, persists `conversations` + `conversation_items` in one transaction, seeds `current_item_id`
+  - [x] `StubAgendaProducer` — deterministic 3-item agenda; powers tests AND dev runs without an Anthropic key
+  - [x] `POST /api/live/sessions` now runs prep instead of the placeholder INSERT; returns `status='ready'`
+  - [x] `GET /api/live/sessions/{id}/card` returns prep_summary + items grouped by theme (the session-card payload)
+  - [x] `tests/test_live_prep.py` — 9 tests: schema validators (6) + persistence/transaction shape (3); all pass
+  - [ ] React `/start` page wired to `/api/live/sessions/{id}/card` (renders the session card; no mic yet)
+  - [ ] Streamed phase descriptors over WSS (`Catching up…` → `Thinking about focus…` → `Getting ready…`)
+  - [ ] Real Anthropic Opus producer (swap from `StubAgendaProducer` once the prompt template is iterated)
 - [ ] **Sprint 2 — Transcript-only live + consent** (mic capture, OpenAI streaming STT, transcript_turns persistence, consent flow; not started)
 - [ ] **Sprint 3 — Haiku bot turns + TTS + review screen** (`emit_live_turn` schema, ElevenLabs Flash TTS, controls footer, non-skippable review; not started)
 - [ ] **Sprint 4 — VAD + barge-in + latency polish** (not started)

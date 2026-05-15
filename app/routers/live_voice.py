@@ -26,6 +26,8 @@ from pydantic import BaseModel, Field
 from app.bots.registry import BOT_SPECS, _maybe_register_staging_bots
 from app.config import get_settings
 from app.db import get_pool
+from app.services.live.prep import StubAgendaProducer, produce_agenda
+from app.services.live.schemas import PrepRequest
 
 logger = logging.getLogger(__name__)
 
@@ -212,7 +214,16 @@ async def create_session(
     body: CreateSessionRequest,
     pool: Any = Depends(get_pool),
 ) -> CreateSessionResponse:
-    """Create a new live-voice conversation row in ``mediator.conversations``."""
+    """Create a new live-voice conversation + run prep (Sprint 1).
+
+    Calls :func:`app.services.live.prep.produce_agenda`, which inserts the
+    ``mediator.conversations`` row plus its ``conversation_items`` agenda
+    in a single transaction and seeds ``current_item_id``.
+
+    Sprint 1 uses :class:`StubAgendaProducer` (deterministic, no LLM key
+    required). Sprint 1b swaps in the real Anthropic Opus producer — same
+    call site, only the producer changes.
+    """
     if not await _conversations_table_exists(pool):
         raise HTTPException(
             status_code=503,
@@ -229,34 +240,93 @@ async def create_session(
             detail=f"unknown bot_id={body.bot_id!r}; known: {known}",
         )
 
-    mode = "steered" if (body.steering_text or "").strip() else "open"
-    status_value = "prepping"
-    user_id = _resolve_test_user_id()  # TODO: replace with auth user id.
-    session_id = uuid4()
-
+    user_id = _resolve_test_user_id()  # TODO: replace with auth.uid() once magic-link lands.
+    request = PrepRequest(
+        user_id=str(user_id),
+        bot_id=body.bot_id,
+        steering_text=body.steering_text,
+        topic_slug=body.topic,
+    )
     try:
-        await pool.execute(
-            """
-            INSERT INTO mediator.conversations
-                (id, user_id, bot_id, topic, mode, status, steering_text)
-            VALUES ($1, $2, $3, $4, $5, $6, $7)
-            """,
-            session_id,
-            user_id,
-            body.bot_id,
-            body.topic,
-            mode,
-            status_value,
-            body.steering_text,
-        )
+        result = await produce_agenda(pool, request, producer=StubAgendaProducer())
     except Exception as exc:
-        logger.exception("live_voice: failed to insert conversation row")
+        logger.exception("live_voice: prep failed")
         raise HTTPException(
             status_code=500,
-            detail=f"failed to create live session: {exc}",
+            detail=f"failed to prep live session: {exc}",
         ) from exc
 
-    return CreateSessionResponse(session_id=session_id, mode=mode, status=status_value)
+    mode = "steered" if (body.steering_text or "").strip() else "open"
+    return CreateSessionResponse(
+        session_id=UUID(result.session_id),
+        mode=mode,
+        status="ready",
+    )
+
+
+@router.get("/api/live/sessions/{session_id}/card")
+async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
+    """Return the session card payload: prep_summary + items grouped by theme.
+
+    The session card is what the user sees before pressing Start; the raw
+    agenda is never exposed. See ``docs/live-conversation-mode.md`` §UI.
+    """
+    if not await _conversations_table_exists(pool):
+        raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+
+    conv = await pool.fetchrow(
+        """
+        SELECT id, user_id, bot_id, mode, status, prep_summary,
+               current_item_id, started_at
+        FROM mediator.conversations
+        WHERE id = $1
+        """,
+        session_id,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    items = await pool.fetch(
+        """
+        SELECT ci.id, ci.title, ci.intent, ci.ask, ci.done_when,
+               ci.kind, ci.priority, ci.speaker_scope,
+               ci.coverage_evidence_required, ci.order_hint,
+               ci.theme_id, t.slug AS theme_slug, t.label AS theme_label
+        FROM mediator.conversation_items ci
+        LEFT JOIN themes t ON t.id = ci.theme_id
+        WHERE ci.conversation_id = $1
+        ORDER BY ci.order_hint, ci.created_at
+        """,
+        session_id,
+    )
+
+    return {
+        "session_id": str(conv["id"]),
+        "bot_id": conv["bot_id"],
+        "mode": conv["mode"],
+        "status": conv["status"],
+        "prep_summary": conv["prep_summary"],
+        "current_item_id": str(conv["current_item_id"]) if conv["current_item_id"] else None,
+        "items": [
+            {
+                "id": str(row["id"]),
+                "title": row["title"],
+                "intent": row["intent"],
+                "ask": row["ask"],
+                "done_when": row["done_when"],
+                "kind": row["kind"],
+                "priority": row["priority"],
+                "speaker_scope": row["speaker_scope"],
+                "coverage_evidence_required": row["coverage_evidence_required"],
+                "theme": (
+                    {"slug": row["theme_slug"], "label": row["theme_label"]}
+                    if row["theme_id"]
+                    else None
+                ),
+            }
+            for row in items
+        ],
+    }
 
 
 @router.get("/api/live/sessions/{session_id}")
