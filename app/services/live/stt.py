@@ -169,6 +169,46 @@ _WHISPER_URL = "https://api.openai.com/v1/audio/transcriptions"
 _MIN_FLUSH_BYTES = 16000 * 2 * 1  # 1 second of 16 kHz int16 PCM
 _MAX_BUFFER_BYTES = 16000 * 2 * 12  # 12 seconds — force-flush ceiling
 
+# Known Whisper hallucinations on silence — strip these before emitting
+# a final.  The Russian one (DimaTorzok) shows up on roughly every
+# 5th silent flush; the Korean one likewise.
+_WHISPER_HALLUCINATIONS = (
+    "субтитры предоставил",
+    "dimatorzok",
+    "thanks for watching",
+    "thank you for watching",
+    "사용자에게 자막을",
+    "韩国语字幕",
+)
+
+
+def _rms_below_threshold(pcm_blob: bytes, *, threshold: float) -> bool:
+    """Compute RMS of an int16 PCM blob; True if below threshold (0..1)."""
+    import array
+    if not pcm_blob:
+        return True
+    samples = array.array("h")
+    samples.frombytes(pcm_blob)
+    if not samples:
+        return True
+    # Mean square in int^2 space, then sqrt + normalize to [0,1] by 32768.
+    s = 0
+    for v in samples:
+        s += v * v
+    mean_sq = s / len(samples)
+    rms = (mean_sq ** 0.5) / 32768.0
+    return rms < threshold
+
+
+def _looks_like_hallucination(text: str) -> bool:
+    low = text.lower().strip()
+    if not low:
+        return True
+    for marker in _WHISPER_HALLUCINATIONS:
+        if marker in low:
+            return True
+    return False
+
 
 class WhisperBufferedTranscriber:
     """Buffer PCM frames; flush each user turn to OpenAI Whisper-1.
@@ -246,6 +286,15 @@ class WhisperBufferedTranscriber:
         if not api_key.startswith("sk-") or "stub" in api_key:
             await self._safe_emit({"type": "error", "message": "OPENAI_API_KEY missing or stub"})
             return
+
+        # Energy gate: if the entire buffer is below a minimum RMS, skip
+        # the Whisper call.  Whisper hallucinates plausible-but-wrong text
+        # (e.g. "Субтитры предоставил DimaTorzok" — Russian subtitle credit)
+        # on pure silence/noise, and those costs add up.
+        if _rms_below_threshold(pcm_blob, threshold=0.0035):
+            await self._safe_emit({"type": "partial", "text": "(silence)", "ts": time.time()})
+            return
+
         num_samples = len(pcm_blob) // 2
         wav_bytes = _wav_header(num_samples, self._sample_rate) + pcm_blob
 
@@ -254,6 +303,15 @@ class WhisperBufferedTranscriber:
             "model": os.environ.get("LIVE_VOICE_WHISPER_MODEL") or "whisper-1",
             "response_format": "json",
             "temperature": "0",
+            # Force English unless the operator overrides — kills the
+            # Whisper Russian/Korean subtitle hallucinations on silence.
+            "language": os.environ.get("LIVE_VOICE_WHISPER_LANGUAGE") or "en",
+            # Optional grounding prompt to bias the model toward English
+            # conversational speech rather than music/subtitle templates.
+            "prompt": (
+                "This is a live one-on-one English-language coaching conversation. "
+                "Transcribe only what the speaker actually says. Output empty on silence."
+            ),
         }
         headers = {"Authorization": f"Bearer {api_key}"}
         try:
@@ -274,9 +332,8 @@ class WhisperBufferedTranscriber:
         except Exception as exc:
             await self._safe_emit({"type": "error", "message": f"whisper response parse failed: {exc}"})
             return
-        if not text:
-            # Whisper returned empty — usually silence. Surface as a partial
-            # so the client knows something happened, but don't fire a final.
+        if not text or _looks_like_hallucination(text):
+            # Whisper returned empty / known hallucination on silence.
             await self._safe_emit({"type": "partial", "text": "(silence)", "ts": time.time()})
             return
         await self._safe_emit({"type": "final", "text": text, "ts": time.time()})
