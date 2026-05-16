@@ -30,6 +30,12 @@ from app.services.live.prep import produce_agenda, select_agenda_producer
 from app.services.live.schemas import PrepRequest, TurnRequest
 from app.services.live.stt import select_transcriber
 from app.services.charge import classify_charge
+from app.services.live.budget import (
+    HARD_CAP_CENTS,
+    SOFT_CAP_CENTS,
+    charge_session,
+    check_budget,
+)
 from app.services.live.synthesis import finalize_session, save_review, synthesize_review
 from app.services.live.turn_loop import apply_emission, load_turn_context, select_turn_caller
 from app.services.live.tts import select_tts_provider
@@ -619,6 +625,24 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                 }})
 
                 if etype == "final" and (event.get("text") or "").strip():
+                    # Budget gate: if the session has hit the hard cap we
+                    # refuse to spawn a new bot turn (but still persist
+                    # the user transcript and let them keep talking).
+                    state = await check_budget(pool, session_uuid)
+                    if state.hard_capped:
+                        await websocket.send_json({
+                            "type": "budget_hard_capped",
+                            "cents": state.cents,
+                            "hard_cap_cents": HARD_CAP_CENTS,
+                        })
+                        continue
+                    if state.soft_warned:
+                        await websocket.send_json({
+                            "type": "budget_soft_warned",
+                            "cents": state.cents,
+                            "soft_cap_cents": SOFT_CAP_CENTS,
+                            "hard_cap_cents": HARD_CAP_CENTS,
+                        })
                     turn_index += 1
                     ear_to_ear_start = perf_counter()
                     asr_finalize_ms = 0

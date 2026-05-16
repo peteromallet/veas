@@ -239,6 +239,12 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
         } else if (parsed?.type === "bot_turn_error") {
           kind = "error";
           text = `Bot turn failed: ${parsed.message ?? "unknown"}`;
+        } else if (parsed?.type === "budget_soft_warned") {
+          kind = "info";
+          text = `Heads-up: this session has spent $${(parsed.cents / 100).toFixed(2)} of the $${(parsed.hard_cap_cents / 100).toFixed(2)} cap.`;
+        } else if (parsed?.type === "budget_hard_capped") {
+          kind = "error";
+          text = `This session has hit its $${(parsed.hard_cap_cents / 100).toFixed(2)} cost cap — bot turns are paused. End and save when you're ready.`;
         } else {
           text = parsed.label ?? parsed.phase ?? parsed.text ?? JSON.stringify(parsed);
         }
