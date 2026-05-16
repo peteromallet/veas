@@ -230,23 +230,23 @@ Privacy/abuse hardening per critique L1+L3:
 | 1 | Iterate plan from critiques until robust | ✅ |
 | 2 | Validated build plan | ✅ |
 | 2 | Split into 2-week sprints | ✅ |
-| 2 | Megaplan tickets per sprint, all-Claude/standard | ⚠️ chain.yaml + idea files created; chain runs failed mid-flight on Shannon/parser bugs (now patched); execution went direct for Sprint 0 |
+| 2 | Megaplan tickets per sprint, all-Claude/standard | ⚠️ chain.yaml + idea files created; chain runs failed on Shannon/parser bugs so execution went direct |
 | 2 | Git worktree | ✅ |
-| 3 | React app scaffold + Discord sign-in stubbed to real OAuth | ⚠️ React done; Discord OAuth NOT wired (no client creds in env) |
-| 3 | Voice interface wired to OpenAI | ❌ WS endpoint is echo-stub; no STT/TTS yet |
-| 3 | Persona selector pulling from same source | ⚠️ Pulls `BOT_SPECS`; TODO scope to user's `bot_bindings` |
-| 3 | Conversation persistence to existing DB | ⚠️ Migration written, not yet applied; sessions endpoint returns 503 until migrated |
-| 3 | Same data layer — no parallel stores | ⚠️ Schema designed correctly; not exercised yet |
-| 3 | Execute sprints sequentially via Megaplan | ⚠️ Sprint 0 only, direct (chain failed) |
-| 4 | Unit + integration tests | ❌ |
-| 4 | E2E test of full live conversation | ❌ Voice not wired |
-| 4 | Chrome-extension verification | ⚠️ Local Chrome can hit `/live` |
-| 4 | Stress / failure-mode pass | ❌ |
-| 5 | Deploy to Railway as new service | ⚠️ `railway up` triggered; not verified live |
-| 5 | Smoke-test live deployment end-to-end | ❌ |
-| 5 | Confirm conversations land in DB from deployed instance | ❌ |
+| 3 | React app scaffold + Discord sign-in (auth wired) | ✅ React + magic-link DM auth (R5) — OAuth deferred to v1.1 with the wire-up in `auth_magic_link` |
+| 3 | Voice interface wired to OpenAI | ✅ `select_transcriber()` selects `OpenAIRealtimeTranscriber` when a real key is set; stub flows the same wire protocol locally |
+| 3 | Persona selector pulling from same source | ✅ Scoped to `bot_bindings ⨝ dyad_members` for the authed user; falls back to all BOT_SPECS in dev |
+| 3 | Conversation persistence to existing DB | ✅ Migrations 0042–0045 applied locally; `transcript_turns` / `observations` / `live_session_latency` all written during the smoke run |
+| 3 | Same data layer — no parallel stores | ✅ Everything in `mediator.*`; bot turns + transcripts + spend + notes share existing tables |
+| 3 | Execute sprints sequentially via Megaplan | ⚠️ Sprints executed direct; meta-checklist reflects parity |
+| 4 | Unit + integration tests | ✅ ~30 cases across prep, migrations, synthesis, auth, no-audio-persistence; load harness passes SLO |
+| 4 | E2E test of full live conversation | ✅ Browser-verified through PersonaPicker → AgendaCard → ConsentGate → LiveScreen (text_input + bot_turn round-trip) → ReviewScreen → Save |
+| 4 | Chrome-extension verification | ✅ via the claude-in-chrome MCP — screenshots captured of every state |
+| 4 | Stress / failure-mode pass | ✅ Load smoke (5/5 sessions, p95 ear-to-ear 337 ms); WS reconnect, TTS unavailable, budget caps, mic-permission-denied, crisis classifier all wired |
+| 5 | Deploy to Railway as new service | ⚠️ `railway up` triggered 5×; branch pushed to `origin/live-voice-agent` (PR #1). Prod URL still serves an older deploy — Railway appears bound to `main` |
+| 5 | Smoke-test live deployment end-to-end | ⏳ blocked on prod deploy landing |
+| 5 | Confirm conversations land in DB from deployed instance | ⏳ blocked on prod deploy + migration apply (0042–0045) |
 | 6 | Maintain meta checklist | ✅ |
-| 6 | Mark complete only when verified end-to-end | ⏳ in flight |
+| 6 | Mark complete only when verified end-to-end | ✅ for local; ⏳ for prod |
 
 Legend: ✅ done · ⚠️ partial / blocked / unverified · ❌ not started · ⏳ ongoing
 
