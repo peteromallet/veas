@@ -26,6 +26,7 @@ from pydantic import BaseModel, Field
 from app.bots.registry import BOT_SPECS, _maybe_register_staging_bots
 from app.config import get_settings
 from app.db import get_pool
+from app.services.auth import jwt as live_jwt
 from app.services.live.prep import produce_agenda, select_agenda_producer
 from app.services.live.rate_limit import WS_RATE_LIMITER
 from app.services.live.schemas import PrepRequest, TurnRequest
@@ -685,11 +686,41 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
             extra={"client_ip": client_ip, "session_id": session_id},
         )
         return
-    # Pre-handshake log so we can join events to a conversation_id in any
-    # log shipper that filters on "session_id".
+
+    # Magic-link JWT auth: token=… query param.  When
+    # LIVE_VOICE_WS_AUTH_REQUIRED=1 we refuse the upgrade on missing/expired
+    # tokens; when unset (the local dev default) we still verify tokens
+    # when present but allow tokenless connections so the dev flow keeps
+    # working until the frontend wires the magic-link DM path.
+    require_auth = (os.environ.get("LIVE_VOICE_WS_AUTH_REQUIRED") or "").strip() == "1"
+    token = websocket.query_params.get("token") or ""
+    authed_user_id: str | None = None
+    if token:
+        try:
+            claims = live_jwt.verify(token)
+            authed_user_id = claims.user_id
+        except Exception as exc:
+            logger.warning(
+                "live_voice: WS bad token (%s)", exc,
+                extra={"session_id": session_id, "client_ip": client_ip},
+            )
+            await websocket.close(code=4401)
+            return
+    elif require_auth:
+        logger.warning(
+            "live_voice: WS missing token (auth required)",
+            extra={"session_id": session_id, "client_ip": client_ip},
+        )
+        await websocket.close(code=4401)
+        return
+
     logger.info(
         "live_voice: WS accepted",
-        extra={"session_id": session_id, "client_ip": client_ip},
+        extra={
+            "session_id": session_id,
+            "client_ip": client_ip,
+            "user_id": authed_user_id,
+        },
     )
     _record_event("ws_open")
     """Sprint 1+2 WS handler.

@@ -82,7 +82,19 @@ export async function createSession(
 
 export function liveSocketUrl(sessionId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  return `${proto}//${window.location.host}/ws/live/${encodeURIComponent(sessionId)}`;
+  // Magic-link JWT (set by ReviewScreen.tsx / future login) is stored on
+  // sessionStorage under "veas.live.token". When present, append it as a
+  // query param so the WS handler can authenticate the connection.
+  let token = "";
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      token = window.sessionStorage.getItem("veas.live.token") || "";
+    }
+  } catch {
+    token = "";
+  }
+  const tokenSuffix = token ? `?token=${encodeURIComponent(token)}` : "";
+  return `${proto}//${window.location.host}/ws/live/${encodeURIComponent(sessionId)}${tokenSuffix}`;
 }
 
 export type CoverageEvidence =
