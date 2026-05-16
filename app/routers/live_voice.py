@@ -41,6 +41,36 @@ from app.services.live.synthesis import finalize_session, save_review, synthesiz
 from app.services.live.turn_loop import apply_emission, load_turn_context, select_turn_caller
 from app.services.live.tts import select_tts_provider
 
+# --------------------------------------------------------------------------- #
+# In-memory event-rate counters for the alarms endpoint.
+# Simple sliding window of (timestamp, event_kind) over the last 10 min.
+# Resets on process restart — fine for the briefing's single-replica deploy;
+# would be Redis-backed in a multi-replica setup.
+# --------------------------------------------------------------------------- #
+
+from collections import deque as _deque
+from time import time as _time
+
+_LIVE_EVENTS: _deque = _deque(maxlen=4096)
+
+
+def _record_event(kind: str) -> None:
+    _LIVE_EVENTS.append((_time(), kind))
+
+
+def _event_rate_5m(numerator_kind: str, denominator_kind: str) -> float:
+    cutoff = _time() - 300.0
+    num = den = 0
+    for ts, k in _LIVE_EVENTS:
+        if ts < cutoff:
+            continue
+        if k == denominator_kind:
+            den += 1
+        if k == numerator_kind:
+            num += 1
+    return num / den if den > 0 else 0.0
+
+
 _CRISIS_UTTERANCE = (
     "I'm staying with you. Right now, what matters most is reaching someone who "
     "can be present with you safely. If you're in the US or Canada, please call or "
@@ -518,8 +548,8 @@ async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
         "latency_ms": latency,
         "spend_usd_today": (int(spend_row["total"]) if spend_row else 0) / 100.0,
         "active_sessions": int(active_count or 0),
-        "error_rate_5m": 0.0,
-        "ws_disconnect_rate_5m": 0.0,
+        "error_rate_5m": _event_rate_5m("ws_5xx", "ws_open"),
+        "ws_disconnect_rate_5m": _event_rate_5m("ws_unexpected_disconnect", "ws_open"),
         "thresholds": {
             "p95_ear_to_ear_ms": 2000,
             "error_rate_5m": 0.01,
@@ -661,6 +691,7 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
         "live_voice: WS accepted",
         extra={"session_id": session_id, "client_ip": client_ip},
     )
+    _record_event("ws_open")
     """Sprint 1+2 WS handler.
 
     On connect: stream phase descriptors (``Catching up…`` → ``Thinking…``
@@ -1030,8 +1061,10 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
             forwarder_task.cancel()
             await transcriber.aclose()
     except WebSocketDisconnect:
+        _record_event("ws_unexpected_disconnect")
         return
     except Exception:
+        _record_event("ws_5xx")
         logger.exception("live_voice: websocket handler crashed")
         try:
             await websocket.close(code=1011)
