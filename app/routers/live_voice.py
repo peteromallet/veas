@@ -32,6 +32,7 @@ from app.services.live.stt import select_transcriber
 from app.services.charge import classify_charge
 from app.services.live.synthesis import finalize_session, save_review, synthesize_review
 from app.services.live.turn_loop import apply_emission, load_turn_context, select_turn_caller
+from app.services.live.tts import select_tts_provider
 
 _CRISIS_UTTERANCE = (
     "I'm staying with you. Right now, what matters most is reaching someone who "
@@ -455,6 +456,49 @@ async def save_review_endpoint(
     return {"ok": True, "status": "synthesized", "counts": counts}
 
 
+@router.get("/api/live/sessions/{session_id}/tts/{turn_id}")
+async def stream_tts(session_id: UUID, turn_id: UUID, pool: Any = Depends(get_pool)):
+    """Stream mp3 TTS audio for a previously emitted bot turn.
+
+    The bot_turn WS event includes `tts_url` when a TTS provider is
+    configured.  Returns 404 if there's no matching bot turn.  Falls
+    through to an empty chunked response on stub provider so the
+    browser still gets a clean 200 (the frontend then plays via
+    SpeechSynthesis as a fallback).
+    """
+    from starlette.responses import StreamingResponse
+
+    if not await _conversations_table_exists(pool):
+        raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    turn = await pool.fetchrow(
+        """
+        SELECT text FROM mediator.transcript_turns
+        WHERE id = $1 AND conversation_id = $2 AND speaker_role = 'bot'
+        """,
+        turn_id,
+        session_id,
+    )
+    if turn is None:
+        raise HTTPException(status_code=404, detail="bot turn not found")
+
+    provider = select_tts_provider()
+    text = turn["text"]
+
+    async def iter_chunks():
+        try:
+            async for chunk in provider.synthesize_mp3(text):
+                yield chunk
+        except Exception:
+            logger.warning("tts: stream crashed", exc_info=True)
+            return
+
+    return StreamingResponse(
+        iter_chunks(),
+        media_type="audio/mpeg",
+        headers={"X-TTS-Provider": provider.name},
+    )
+
+
 @router.get("/api/live/sessions/{session_id}")
 async def get_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
     """Return a single conversation row (or 404)."""
@@ -650,11 +694,27 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                         logger.warning("live_voice: failed to persist bot turn", exc_info=True)
                     db_ms = int((perf_counter() - db_start) * 1000)
                     ear_to_ear_ms = int((perf_counter() - ear_to_ear_start) * 1000)
+                    # Look up the just-inserted bot turn id so the client
+                    # can fetch TTS audio for it.
+                    bot_turn_row = await pool.fetchrow(
+                        """
+                        SELECT id FROM mediator.transcript_turns
+                        WHERE conversation_id = $1::uuid AND speaker_role = 'bot'
+                        ORDER BY ts DESC LIMIT 1
+                        """,
+                        session_id,
+                    )
+                    bot_turn_id = str(bot_turn_row["id"]) if bot_turn_row else None
                     # Fire-and-forget latency persistence.
                     await record_latency(session_id, turn_index, "asr_finalize", asr_finalize_ms)
                     await record_latency(session_id, turn_index, "llm_ttft", llm_ttft_ms)
                     await record_latency(session_id, turn_index, "orchestrator_db", db_ms)
                     await record_latency(session_id, turn_index, "ear_to_ear", ear_to_ear_ms)
+                    tts_url = (
+                        f"/api/live/sessions/{session_id}/tts/{bot_turn_id}"
+                        if bot_turn_id
+                        else None
+                    )
                     await websocket.send_json({
                         "type": "bot_turn",
                         "utterance": emission.utterance,
@@ -665,6 +725,7 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                             "orchestrator_db": db_ms,
                             "ear_to_ear": ear_to_ear_ms,
                         },
+                        "tts_url": tts_url,
                     })
 
         forwarder_task = asyncio.create_task(forward_events())

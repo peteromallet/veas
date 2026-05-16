@@ -17,6 +17,47 @@ interface PhaseEvent {
 
 type Status = "consent" | "connecting" | "open" | "live" | "closed" | "error";
 
+function speakViaSpeechSynthesis(
+  utterance: string,
+  setBotSpeaking: (v: boolean) => void,
+  botSpeakingRef: React.MutableRefObject<boolean>,
+  setTtsUnavailable: (v: boolean) => void,
+) {
+  try {
+    if (typeof window !== "undefined" && "speechSynthesis" in window) {
+      const u = new SpeechSynthesisUtterance(utterance);
+      u.rate = 1.0;
+      u.pitch = 1.0;
+      window.speechSynthesis.cancel();
+      setBotSpeaking(true);
+      botSpeakingRef.current = true;
+      u.onend = () => {
+        setBotSpeaking(false);
+        botSpeakingRef.current = false;
+      };
+      u.onerror = () => {
+        setTtsUnavailable(true);
+        setBotSpeaking(false);
+        botSpeakingRef.current = false;
+      };
+      window.speechSynthesis.speak(u);
+      window.setTimeout(() => {
+        if (
+          !botSpeakingRef.current &&
+          !window.speechSynthesis.speaking &&
+          !window.speechSynthesis.pending
+        ) {
+          setTtsUnavailable(true);
+        }
+      }, 250);
+    } else {
+      setTtsUnavailable(true);
+    }
+  } catch {
+    setTtsUnavailable(true);
+  }
+}
+
 function TextInputFallback({
   disabled,
   onSend,
@@ -144,42 +185,53 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
         } else if (parsed?.type === "bot_turn") {
           kind = "phase";
           text = `${persona.display_name}: ${parsed.utterance}`;
-          // v0 TTS fallback: speak the bot utterance via the browser's
-          // SpeechSynthesis API. Real ElevenLabs Flash lands in Sprint 3b.
-          try {
-            if (typeof window !== "undefined" && "speechSynthesis" in window) {
-              const u = new SpeechSynthesisUtterance(parsed.utterance);
-              u.rate = 1.0;
-              u.pitch = 1.0;
-              window.speechSynthesis.cancel();
-              setBotSpeaking(true);
-              botSpeakingRef.current = true;
-              u.onend = () => {
-                setBotSpeaking(false);
-                botSpeakingRef.current = false;
-              };
-              u.onerror = () => {
-                setTtsUnavailable(true);
-                setBotSpeaking(false);
-                botSpeakingRef.current = false;
-              };
-              window.speechSynthesis.speak(u);
-              // If utterance hasn't started speaking within 250ms,
-              // assume TTS is unavailable and degrade to text-only.
-              window.setTimeout(() => {
-                if (
-                  !botSpeakingRef.current &&
-                  !window.speechSynthesis.speaking &&
-                  !window.speechSynthesis.pending
-                ) {
-                  setTtsUnavailable(true);
+          // Try ElevenLabs Flash via /tts/{turn_id} first; the backend
+          // returns audio/mpeg when a real key is set, or an empty
+          // stream when on the stub.  Empty stream -> we fall back to
+          // browser SpeechSynthesis below.
+          if (parsed.tts_url) {
+            void (async () => {
+              try {
+                const res = await fetch(parsed.tts_url);
+                if (!res.ok || (res.headers.get("X-TTS-Provider") || "") === "stub") {
+                  throw new Error("tts unavailable");
                 }
-              }, 250);
-            } else {
-              setTtsUnavailable(true);
-            }
-          } catch {
-            setTtsUnavailable(true);
+                const blob = await res.blob();
+                if (blob.size === 0) throw new Error("empty tts stream");
+                const url = URL.createObjectURL(blob);
+                const audio = new Audio(url);
+                botSpeakingRef.current = true;
+                setBotSpeaking(true);
+                audio.onended = () => {
+                  setBotSpeaking(false);
+                  botSpeakingRef.current = false;
+                  URL.revokeObjectURL(url);
+                };
+                audio.onerror = () => {
+                  setBotSpeaking(false);
+                  botSpeakingRef.current = false;
+                  setTtsUnavailable(true);
+                  URL.revokeObjectURL(url);
+                };
+                await audio.play();
+                return; // ElevenLabs path succeeded, skip SpeechSynthesis.
+              } catch {
+                // Fall through to SpeechSynthesis fallback below.
+              }
+              speakViaSpeechSynthesis(
+                parsed.utterance,
+                setBotSpeaking,
+                botSpeakingRef,
+                setTtsUnavailable,
+              );
+            })();
+          } else {
+            speakViaSpeechSynthesis(
+              parsed.utterance,
+              setBotSpeaking,
+              botSpeakingRef,
+              setTtsUnavailable,
+            );
           }
           if (ttsUnavailable && !text.endsWith("(voice unavailable)")) {
             text = `${text} (voice unavailable)`;
