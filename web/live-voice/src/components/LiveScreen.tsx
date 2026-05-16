@@ -62,6 +62,9 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
   const [frameCount, setFrameCount] = useState(0);
   const [voice, setVoice] = useState<VoiceState>("silent");
   const [botSpeaking, setBotSpeaking] = useState(false);
+  const [ttsUnavailable, setTtsUnavailable] = useState(false);
+  const [reconnecting, setReconnecting] = useState(false);
+  const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const wsRef = useRef<WebSocket | null>(null);
   const micRef = useRef<MicSession | null>(null);
   const botSpeakingRef = useRef(false);
@@ -74,22 +77,50 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
 
   useEffect(() => {
     if (!consent) return;
-    setStatus("connecting");
-    const ws = new WebSocket(liveSocketUrl(sessionId));
-    ws.binaryType = "arraybuffer";
-    wsRef.current = ws;
+    let cancelledLifetime = false;
+    let attempt = 0;
 
-    ws.onopen = () => {
-      setStatus("open");
-      pushEvent("WebSocket connected.", "info");
-    };
-    ws.onclose = () =>
-      setStatus((s) => (s === "error" ? s : "closed"));
-    ws.onerror = () => {
-      setStatus("error");
-      pushEvent("WebSocket error.", "error");
-    };
-    ws.onmessage = (msg) => {
+    function connect() {
+      attempt += 1;
+      setReconnectAttempt(attempt);
+      setStatus("connecting");
+      const ws = new WebSocket(liveSocketUrl(sessionId));
+      ws.binaryType = "arraybuffer";
+      wsRef.current = ws;
+
+      ws.onopen = () => {
+        setStatus("open");
+        setReconnecting(false);
+        pushEvent(
+          attempt === 1
+            ? "WebSocket connected."
+            : `Reconnected (attempt ${attempt}).`,
+          "info",
+        );
+      };
+      ws.onclose = (ev) => {
+        if (cancelledLifetime) return;
+        // Clean close (1000 / 1001) = end-session; don't reconnect.
+        if (ev.code === 1000 || ev.code === 1001) {
+          setStatus((s) => (s === "error" ? s : "closed"));
+          return;
+        }
+        setReconnecting(true);
+        pushEvent(`Connection dropped (code ${ev.code}). Reconnecting…`, "error");
+        // Reconnect within 2s (briefing target).
+        window.setTimeout(() => {
+          if (!cancelledLifetime) connect();
+        }, 1500);
+      };
+      ws.onerror = () => {
+        setStatus((s) => (s === "open" || s === "live" ? "error" : s));
+        pushEvent("WebSocket error.", "error");
+      };
+      hookMessageHandler(ws);
+    }
+
+    function hookMessageHandler(ws: WebSocket) {
+    ws.onmessage = (msg) => {  // closed below in connect()
       let text: string;
       let kind: PhaseEvent["kind"] = "info";
       try {
@@ -128,13 +159,30 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
                 botSpeakingRef.current = false;
               };
               u.onerror = () => {
+                setTtsUnavailable(true);
                 setBotSpeaking(false);
                 botSpeakingRef.current = false;
               };
               window.speechSynthesis.speak(u);
+              // If utterance hasn't started speaking within 250ms,
+              // assume TTS is unavailable and degrade to text-only.
+              window.setTimeout(() => {
+                if (
+                  !botSpeakingRef.current &&
+                  !window.speechSynthesis.speaking &&
+                  !window.speechSynthesis.pending
+                ) {
+                  setTtsUnavailable(true);
+                }
+              }, 250);
+            } else {
+              setTtsUnavailable(true);
             }
           } catch {
-            // ignore — TTS is best-effort
+            setTtsUnavailable(true);
+          }
+          if (ttsUnavailable && !text.endsWith("(voice unavailable)")) {
+            text = `${text} (voice unavailable)`;
           }
         } else if (parsed?.type === "bot_turn_error") {
           kind = "error";
@@ -148,10 +196,14 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
       // Cap to last 50 to keep the DOM light.
       setEvents((prev) => [...prev.slice(-49), { ts: Date.now(), text, kind }]);
     };
+    }
+
+    connect();
 
     return () => {
+      cancelledLifetime = true;
       try {
-        ws.close();
+        wsRef.current?.close(1000);
       } catch {
         // ignore
       }
@@ -344,14 +396,27 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
         </header>
 
         <div className="rounded-md border border-white/5 bg-veas-bg/60 px-4 py-3 text-sm">
-          {status === "live" ? (
+          {reconnecting ? (
+            <p className="text-amber-200">
+              Connection dropped — reconnecting (attempt {reconnectAttempt})…
+            </p>
+          ) : status === "live" ? (
             <p className="text-white/90">
               {paused
                 ? "Mic paused. Press Resume to continue."
                 : "Listening — speak when you're ready."}
             </p>
+          ) : status === "error" ? (
+            <p className="text-rose-300">
+              Trouble hearing you. Type below — we can keep going.
+            </p>
           ) : (
             <p className="text-veas-muted">Connecting…</p>
+          )}
+          {ttsUnavailable && (
+            <p className="mt-1 text-[11px] text-veas-muted">
+              Voice playback unavailable — bot turns will show as text.
+            </p>
           )}
           {micError && (
             <p className="mt-2 text-xs text-rose-300">Mic error: {micError}</p>
