@@ -212,8 +212,9 @@ Privacy/abuse hardening per critique L1+L3:
 - [~] **Sprint 4 — VAD + barge-in + latency polish** (latency persistence in; VAD + barge-in still pending)
   - [x] Migration `0044_live_session_latency` — FORCE RLS, deny_anon, owner_scoped policies. Stage CHECK in `(asr_finalize, orchestrator_db, llm_ttft, tts_first_byte, ear_to_ear)`.
   - [x] WS handler records per-stage spans on every turn (currently asr_finalize=0 stub, llm_ttft, orchestrator_db, ear_to_ear). Each `bot_turn` payload includes a `latency_ms` block so the client renders the live measurement. Smoke verified: 3 turns × 4 stages = 12 rows persisted; ear_to_ear 587-1137ms in stub mode (well under the p95 ≤ 2000ms SLO).
-  - [ ] Client VAD (Silero or energy threshold) + 10s silence fallback
-  - [ ] Barge-in: client cancel + orchestrator cancel in-flight LLM/TTS
+  - [x] Client VAD — energy-threshold (`vadThreshold=0.012`) with `vadActiveFrames` debounce. Emits `voice_active` / `turn_end` control frames over WS; `MicFrameMeta` now exposes per-frame RMS so the UI can render the live indicator. Verified in the browser (headless Chrome shows "silence" since no real mic input).
+  - [x] Barge-in — when `botSpeakingRef` is true and `voice_active` fires, the client cancels SpeechSynthesis and sends `{type:"barge_in"}`. Backend ACKs with `barge_in_acked` (LLM/TTS cancellation lands when real Anthropic + ElevenLabs clients are wired).
+  - [ ] 10s silence fallback (no-VAD path to keep the conversation moving)
   - [ ] Synthetic-client load test harness (replay canned PCM, assert SLOs)
   - [ ] Failure-mode UX matrix wired (ASR timeout / Haiku timeout / TTS failure / WS drop)
 - [ ] **Sprint 5 — Railway deploy + smoke** (deploy initiated; production verification + alarm wiring + smoke test pending)

@@ -24,7 +24,10 @@ export interface MicFrameMeta {
   totalBytes: number;
   sampleRate: number;
   durationMs: number;
+  rms: number;
 }
+
+export type VoiceState = "silent" | "active";
 
 export interface MicSession {
   stop: () => void;
@@ -36,7 +39,17 @@ export interface MicSession {
 export interface MicOpenOptions {
   onFrame: (pcm: ArrayBuffer, meta: MicFrameMeta) => void;
   onError?: (err: Error) => void;
+  /**
+   * VAD transitions (energy-threshold based).  Fires when RMS crosses the
+   * `vadThreshold` AFTER N consecutive frames of new state — debounces
+   * single-frame fluctuations.  `turnEndMs` is the silence-after-speech
+   * gap that triggers `silent` (a "turn just ended" hint).
+   */
+  onVoiceState?: (state: VoiceState, meta: { rms: number; silenceMs: number }) => void;
   targetSampleRate?: number; // default 16000
+  vadThreshold?: number; // default 0.012
+  vadActiveFrames?: number; // default 2 (debounce activation)
+  turnEndMs?: number; // default 600
 }
 
 function floatToInt16(input: Float32Array): Int16Array {
@@ -64,10 +77,20 @@ function resampleLinear(input: Float32Array, srcRate: number, dstRate: number): 
   return out;
 }
 
+function computeRms(samples: Float32Array): number {
+  let sum = 0;
+  for (let i = 0; i < samples.length; i += 1) sum += samples[i] * samples[i];
+  return Math.sqrt(sum / Math.max(1, samples.length));
+}
+
 export async function openMic({
   onFrame,
   onError,
+  onVoiceState,
   targetSampleRate = 16000,
+  vadThreshold = 0.012,
+  vadActiveFrames = 2,
+  turnEndMs = 600,
 }: MicOpenOptions): Promise<MicSession> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("MediaDevices.getUserMedia is not available in this browser.");
@@ -89,24 +112,51 @@ export async function openMic({
   let frameIndex = 0;
   let totalBytes = 0;
   let paused = false;
+  let activeFrameStreak = 0;
+  let voiceState: VoiceState = "silent";
+  let lastActiveAt = 0;
 
   processor.onaudioprocess = (event: AudioProcessingEvent) => {
     if (paused) return;
     try {
       const channel = event.inputBuffer.getChannelData(0);
       const resampled = resampleLinear(channel, audioCtx.sampleRate, targetSampleRate);
+      const rms = computeRms(resampled);
       const pcm = floatToInt16(resampled);
       const copy = new ArrayBuffer(pcm.byteLength);
       new Uint8Array(copy).set(new Uint8Array(pcm.buffer, pcm.byteOffset, pcm.byteLength));
       const buffer = copy;
       frameIndex += 1;
       totalBytes += pcm.byteLength;
+
+      // VAD: debounce activation (require N consecutive loud frames);
+      // turn-end fires after a configurable silence gap.
+      const now = performance.now();
+      if (rms >= vadThreshold) {
+        activeFrameStreak += 1;
+        lastActiveAt = now;
+        if (voiceState === "silent" && activeFrameStreak >= vadActiveFrames) {
+          voiceState = "active";
+          onVoiceState?.("active", { rms, silenceMs: 0 });
+        }
+      } else {
+        activeFrameStreak = 0;
+        if (voiceState === "active") {
+          const silenceMs = lastActiveAt === 0 ? 0 : now - lastActiveAt;
+          if (silenceMs >= turnEndMs) {
+            voiceState = "silent";
+            onVoiceState?.("silent", { rms, silenceMs });
+          }
+        }
+      }
+
       onFrame(buffer, {
         frameIndex,
         bytes: pcm.byteLength,
         totalBytes,
         sampleRate: targetSampleRate,
         durationMs: (resampled.length / targetSampleRate) * 1000,
+        rms,
       });
     } catch (err) {
       onError?.(err instanceof Error ? err : new Error(String(err)));

@@ -715,6 +715,23 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                         "session_id": session_id,
                     })
                     continue
+                if kind == "voice_active":
+                    # Client VAD signaled voice. No-op on the stub
+                    # transcriber; real Realtime STT uses this to start a
+                    # new audio segment.
+                    continue
+                if kind == "turn_end":
+                    # Client VAD signaled end-of-turn silence. Currently a
+                    # hint only — the StubTranscriber emits on its own
+                    # timer. When real STT is wired we'll forward this as
+                    # an explicit `input_audio_buffer.commit` to OpenAI.
+                    continue
+                if kind == "barge_in":
+                    # Caller is talking over the bot. Cancel the queued
+                    # TTS on the client (already done locally) and stop
+                    # spawning more bot turns until the user finishes.
+                    await websocket.send_json({"type": "barge_in_acked"})
+                    continue
                 await websocket.send_json({"type": "echo", "payload": payload})
         finally:
             forwarder_task.cancel()

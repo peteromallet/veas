@@ -1,7 +1,7 @@
 import { useEffect, useRef, useState } from "react";
 import { liveSocketUrl, postConsent, type Persona } from "../api";
 import { ConsentGate, type ConsentSelection } from "./ConsentGate";
-import { openMic, type MicSession } from "../mic";
+import { openMic, type MicSession, type VoiceState } from "../mic";
 
 interface Props {
   persona: Persona;
@@ -24,8 +24,11 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
   const [micError, setMicError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [voice, setVoice] = useState<VoiceState>("silent");
+  const [botSpeaking, setBotSpeaking] = useState(false);
   const wsRef = useRef<WebSocket | null>(null);
   const micRef = useRef<MicSession | null>(null);
+  const botSpeakingRef = useRef(false);
 
   function pushEvent(text: string, kind: PhaseEvent["kind"] = "info") {
     setEvents((prev) => [...prev, { ts: Date.now(), text, kind }]);
@@ -80,6 +83,16 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
               u.rate = 1.0;
               u.pitch = 1.0;
               window.speechSynthesis.cancel();
+              setBotSpeaking(true);
+              botSpeakingRef.current = true;
+              u.onend = () => {
+                setBotSpeaking(false);
+                botSpeakingRef.current = false;
+              };
+              u.onerror = () => {
+                setBotSpeaking(false);
+                botSpeakingRef.current = false;
+              };
               window.speechSynthesis.speak(u);
             }
           } catch {
@@ -122,6 +135,32 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
       },
       onError: (err) => {
         if (!cancelled) setMicError(err.message);
+      },
+      onVoiceState: (state) => {
+        if (cancelled) return;
+        setVoice(state);
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (state === "active") {
+          // Barge-in: if the bot is currently speaking via TTS, cancel
+          // playback locally AND tell the backend to abort the in-flight
+          // turn so the next bot turn isn't queued behind a stale one.
+          if (botSpeakingRef.current) {
+            try {
+              if (typeof window !== "undefined" && "speechSynthesis" in window) {
+                window.speechSynthesis.cancel();
+              }
+            } catch {
+              // ignore
+            }
+            ws.send(JSON.stringify({ type: "barge_in" }));
+            botSpeakingRef.current = false;
+            setBotSpeaking(false);
+          }
+          ws.send(JSON.stringify({ type: "voice_active" }));
+        } else {
+          ws.send(JSON.stringify({ type: "turn_end" }));
+        }
       },
     })
       .then((session) => {
@@ -255,9 +294,23 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
           {micError && (
             <p className="mt-2 text-xs text-rose-300">Mic error: {micError}</p>
           )}
-          <p className="mt-2 text-[11px] text-veas-muted">
-            Frames sent: {frameCount}
-          </p>
+          <div className="mt-2 flex items-center gap-3 text-[11px] text-veas-muted">
+            <span>Frames sent: {frameCount}</span>
+            <span className="inline-flex items-center gap-1">
+              <span
+                className={`h-1.5 w-1.5 rounded-full ${
+                  voice === "active" ? "bg-emerald-400" : "bg-slate-500"
+                }`}
+                aria-hidden
+              />
+              {voice === "active" ? "voice detected" : "silence"}
+            </span>
+            {botSpeaking && (
+              <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-sky-300">
+                bot speaking
+              </span>
+            )}
+          </div>
         </div>
 
         <div className="mt-6 grid grid-cols-3 gap-2">
