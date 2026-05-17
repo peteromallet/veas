@@ -186,7 +186,7 @@ When **ON**:
 Setting `LEDGER_DUAL_WRITE_ENABLED=false` (or removing the env var) and
 restarting the app reverts to messages-only writes.  No schema rollback
 is required — the table can stay in place.  Migration `0044` is
-reversible via `0044_inbound_handling_attempts.down.sql` if the table
+reversible via `0048_inbound_handling_attempts.down.sql` if the table
 is removed altogether.
 
 ### Backfill

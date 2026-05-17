@@ -84,13 +84,13 @@ async def test_messages_table_has_recovery_v2_columns(pg_pool) -> None:
 
     assert "next_retry_at" in by_name, (
         "mediator.messages.next_retry_at is missing — "
-        "did migration 0042_message_lifecycle_columns.sql run?"
+        "did migration 0046_message_lifecycle_columns.sql run?"
     )
     assert by_name["next_retry_at"] == "timestamp with time zone"
 
     assert "failure_class" in by_name, (
         "mediator.messages.failure_class is missing — "
-        "did migration 0042_message_lifecycle_columns.sql run?"
+        "did migration 0046_message_lifecycle_columns.sql run?"
     )
     assert by_name["failure_class"] == "text"
 

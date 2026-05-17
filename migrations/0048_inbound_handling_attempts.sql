@@ -1,4 +1,4 @@
--- 0044_inbound_handling_attempts: Per-attempt ledger for inbound message handling.
+-- 0048_inbound_handling_attempts: Per-attempt ledger for inbound message handling.
 --
 -- Project C, C2.  Per SD-009 (user override of SD-001), this ledger is
 -- written but NOT read by the existing recovery / retry paths — they

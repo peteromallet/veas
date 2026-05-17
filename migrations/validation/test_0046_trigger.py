@@ -25,8 +25,8 @@ pytestmark = [pytest.mark.anyio, pytest.mark.requires_postgres]
 
 
 _LIVE_DB_URL = os.environ.get("RECOVERY_V2_TRIGGER_TEST_DB_URL")
-_MIGRATION = Path(__file__).resolve().parents[1] / "0042_message_lifecycle_columns.sql"
-_DOWN = Path(__file__).resolve().parents[1] / "0042_message_lifecycle_columns.down.sql"
+_MIGRATION = Path(__file__).resolve().parents[1] / "0046_message_lifecycle_columns.sql"
+_DOWN = Path(__file__).resolve().parents[1] / "0046_message_lifecycle_columns.down.sql"
 
 
 @pytest.mark.skipif(

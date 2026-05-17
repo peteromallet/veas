@@ -1,4 +1,4 @@
--- 0042_message_lifecycle_columns.down: Revert recovery-v2 lifecycle columns.
+-- 0046_message_lifecycle_columns.down: Revert recovery-v2 lifecycle columns.
 --
 -- Order:
 --   1. Drop trigger and function (depend on the columns).

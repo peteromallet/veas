@@ -1,4 +1,4 @@
--- 0042_message_lifecycle_columns: Recovery-v2 lifecycle columns + writer-marker trigger.
+-- 0046_message_lifecycle_columns: Recovery-v2 lifecycle columns + writer-marker trigger.
 --
 -- Adds two nullable columns to mediator.messages that are mutated only by the
 -- inbound_queue mutator helpers (claim_messages_for_turn / complete_messages /

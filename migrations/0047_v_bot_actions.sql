@@ -1,4 +1,4 @@
--- 0043_v_bot_actions: Define mediator.v_bot_actions, the SQL view that
+-- 0047_v_bot_actions: Define mediator.v_bot_actions, the SQL view that
 -- backs the ``get_bot_actions`` audit read tool.
 --
 -- Rationale (Project B work item 3)
@@ -80,6 +80,6 @@ LEFT JOIN LATERAL (
 COMMENT ON VIEW mediator.v_bot_actions IS
     'Denormalised per-turn audit row used by get_bot_actions. '
     'Consumers MUST filter by bot_id; no opt-out scope flag exists. '
-    'See migrations/0043_v_bot_actions.sql for rationale (Project B work item 3).';
+    'See migrations/0047_v_bot_actions.sql for rationale (Project B work item 3).';
 
 COMMIT;

@@ -1,6 +1,6 @@
 """Real-Postgres tests for the ``mediator.v_bot_actions`` view (B.3).
 
-The view (migration 0043_v_bot_actions.sql) replaces the in-Python join +
+The view (migration 0047_v_bot_actions.sql) replaces the in-Python join +
 GROUP BY that previously powered ``get_bot_actions``. These tests:
 
 1. Assert the view returns the right shape for all three Project B
@@ -76,7 +76,7 @@ async def test_view_exposes_expected_columns(pg_pool) -> None:
         f"  Added:   {sorted(actual - EXPECTED_VIEW_COLUMNS)}\n"
         f"  Removed: {sorted(EXPECTED_VIEW_COLUMNS - actual)}\n"
         "If this is intentional, update EXPECTED_VIEW_COLUMNS in this test "
-        "AND update migrations/0043_v_bot_actions.sql to match."
+        "AND update migrations/0047_v_bot_actions.sql to match."
     )
 
 

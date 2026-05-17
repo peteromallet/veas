@@ -188,19 +188,19 @@ If none of these fire within 6 weeks of B shipping, this project is **cancelled*
 
 ## Operator Runbook — Project A1 (recovery-v2 + lifecycle columns)
 
-### Deployment handoff: migration `0042_message_lifecycle_columns.sql`
+### Deployment handoff: migration `0046_message_lifecycle_columns.sql`
 
 Apply against staging, verify, then promote to production.
 
 ```bash
 # 1. Staging
-psql "$DATABASE_URL_STAGING" -f migrations/0042_message_lifecycle_columns.sql
+psql "$DATABASE_URL_STAGING" -f migrations/0046_message_lifecycle_columns.sql
 
 # 2. Verify the writer-marker trigger and assertion function are installed.
 psql "$DATABASE_URL_STAGING" -c "\dft mediator.assert_lifecycle_columns_writer"
 
 # 3. Promote to production once staging is clean.
-psql "$DATABASE_URL_PROD" -f migrations/0042_message_lifecycle_columns.sql
+psql "$DATABASE_URL_PROD" -f migrations/0046_message_lifecycle_columns.sql
 psql "$DATABASE_URL_PROD" -c "\dft mediator.assert_lifecycle_columns_writer"
 ```
 
@@ -212,7 +212,7 @@ is required; both columns are nullable.
 
 #### Manual trigger verification
 
-`migrations/validation/test_0042_trigger.py` exercises the trigger against a
+`migrations/validation/test_0046_trigger.py` exercises the trigger against a
 live Postgres but is skipped unless `RECOVERY_V2_TRIGGER_TEST_DB_URL` is set
 (per SD-008 — no CI infra changes).  To reproduce the assertion by hand
 against a scratch database that already has migration `0042` applied:
@@ -239,7 +239,7 @@ psql "$DATABASE_URL_SCRATCH" -c "
 ```
 
 Alternatively, set `RECOVERY_V2_TRIGGER_TEST_DB_URL` and run
-`pytest migrations/validation/test_0042_trigger.py` to execute both halves
+`pytest migrations/validation/test_0046_trigger.py` to execute both halves
 in one shot.
 
 ### Kill switch: `recovery_v2_kill`
