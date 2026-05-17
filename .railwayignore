@@ -42,7 +42,6 @@ megaplans/
 *.dump
 data/
 fixtures/
-evals/
 backups/
 supabase/
 
