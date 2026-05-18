@@ -575,7 +575,7 @@ async def test_cross_topic_rows_not_visible():
         current_step="record",
     )
     # The _check_hector_read_scope will reject because topic_slug != "fitness"
-    with pytest.raises(ValueError, match="fitness topic"):
+    with pytest.raises(ValueError, match="commitment topic"):
         await list_commitments(ctx_other, ListCommitmentsInput())
 
 
@@ -616,7 +616,7 @@ async def test_cross_bot_rows_not_visible():
         "pregnancy_started_at": None, "pregnancy_ended_at": None,
         "pregnancy_outcome": None,
     }
-    with pytest.raises(ValueError, match="Only bot_id='hector'"):
+    with pytest.raises(ValueError, match="restricted to.*hector"):
         await list_commitments(ctx_coach, ListCommitmentsInput())
 
 
@@ -682,13 +682,13 @@ async def test_coach_rejected_by_read_tools():
         current_step="read",
     )
 
-    with pytest.raises(ValueError, match="Only bot_id='hector'"):
+    with pytest.raises(ValueError, match="restricted to.*hector"):
         await list_commitments(ctx, ListCommitmentsInput())
 
-    with pytest.raises(ValueError, match="Only bot_id='hector'"):
+    with pytest.raises(ValueError, match="restricted to.*hector"):
         await list_events(ctx, ListEventsInput())
 
-    with pytest.raises(ValueError, match="Only bot_id='hector'"):
+    with pytest.raises(ValueError, match="restricted to.*hector"):
         await get_adherence(ctx, GetAdherenceInput())
 
 

@@ -119,14 +119,14 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "set_pregnancy_edd": "Capture a pregnancy's estimated due date the first time a user mentions they are pregnant. You MUST call this before any other pregnancy tool. Provide `edd` as an ISO date (e.g. '2026-10-22') and `dating_basis` as 'lmp' (last menstrual period) or 'scan' (dating ultrasound). If you know the LMP or scan date, include those as well; `started_at` defaults to now. This will error if there is already an active pregnancy — use correct_pregnancy_edd to revise instead.",
     "correct_pregnancy_edd": "Revise the EDD mid-pregnancy — for example when a dating scan gives a more precise date. Requires an active pregnancy (set_pregnancy_edd must have been called first). If the dating basis flips to 'scan', the correction timestamp is recorded automatically. This will error with 'no_active_pregnancy' if there is no pregnancy to correct — use set_pregnancy_edd first.",
     "end_pregnancy": "Close the active pregnancy with its outcome: 'birth', 'loss', or 'termination'. Call this when the user tells you the pregnancy has ended. Requires an active pregnancy. If the pregnancy is already ended this will error with 'pregnancy already ended on <date>' — do not retry; the state is already recorded.",
-    # hector (commitments/events)
-    "list_commitments": "List active or recently active fitness commitments for the current user and topic. Use before creating, updating, or closing a commitment to avoid duplicates and to answer questions about what is currently tracked.",
-    "create_commitment": "Create a new fitness commitment for the current user. Only create a commitment from a concrete plan the user has explicitly described (e.g., 'I'm working out Mon/Wed/Fri'). For vague goals ('I want to get healthier'), ask a clarifying question first — do not create a commitment. Set pressure_style to 'very_gentle', 'low_key' (default), or 'firm'. cadence must be one of 'daily', 'weekdays', 'weekly_count', 'custom', or 'custom_days'.",
-    "update_commitment": "Update an existing fitness commitment's fields (label, kind, cadence, target_count, days_of_week, schedule_rule, pressure_style, start_date, end_date). Only fields you provide are changed. Call list_commitments first to get the commitment_id.",
+    # commitment/event tools (shared by Hector + Habits)
+    "list_commitments": "List active or recently active commitments for the current user and topic. Use before creating, updating, or closing a commitment to avoid duplicates and to answer questions about what is currently tracked.",
+    "create_commitment": "Create a new commitment for the current user. Only create a commitment from a concrete plan the user has explicitly described (e.g., 'I'm working out Mon/Wed/Fri' or 'I meditate every morning before coffee'). For vague goals ('I want to get healthier', 'I should be more present'), ask a clarifying question first — do not create a commitment. Set pressure_style to 'very_gentle', 'low_key' (default), or 'firm'. cadence must be one of 'daily', 'weekdays', 'weekly_count', 'custom', or 'custom_days'.",
+    "update_commitment": "Update an existing commitment's fields (label, kind, cadence, target_count, days_of_week, schedule_rule, pressure_style, start_date, end_date). Only fields you provide are changed. Call list_commitments first to get the commitment_id.",
     "close_commitment": "Close an active commitment by setting its status to 'paused', 'completed', or 'dropped'. Call this when the user says they are stopping, pausing, or have finished a commitment. Once closed, the commitment is no longer active but remains auditable.",
-    "log_event": "Log a fitness event against a commitment (or standalone with a metric_key). Provide at least one of adherence_status ('done', 'missed', 'excused'), value_numeric, or value_text. Use adherence_status to mark whether a scheduled slot was completed, missed, or excused. Events are scoped to the current user, fitness topic, and Hector bot.",
-    "list_events": "List recent fitness events for the current user and topic, optionally filtered by commitment_id. Use before logging a corrective event to avoid duplicates, and to answer questions about recent activity.",
-    "get_adherence": "Compute this week's adherence status for active fitness commitments. Returns per-day slot status for each commitment (done, missed, excused, unknown, pending). Use this before asking the user about missed days — check the adherence board first so you can distinguish unknown from missed and avoid shaming.",
+    "log_event": "Log an event against a commitment (or standalone with a metric_key). Provide at least one of adherence_status ('done', 'missed', 'excused'), value_numeric, or value_text. Use adherence_status to mark whether a scheduled slot was completed, missed, or excused. Events are scoped to the current user, topic, and bot.",
+    "list_events": "List recent events for the current user and topic, optionally filtered by commitment_id. Use before logging a corrective event to avoid duplicates, and to answer questions about recent activity.",
+    "get_adherence": "Compute this week's adherence status for active commitments. Returns per-day slot status for each commitment (done, missed, excused, unknown, pending). Use this before asking the user about missed days — check the adherence board first so you can distinguish unknown from missed and avoid shaming.",
 }
 
 
@@ -200,11 +200,13 @@ TOOL_DISPATCH: dict[str, ToolFn] = {
     "get_adherence": read_tools.get_adherence,
 }
 
-# ── Hector-only tools ──────────────────────────────────────────────────────
-# These tools are exclusive to the Hector fitness bot.  Other bots (coach,
-# tante_rosi, mediator) MUST subtract this set from their tool_allowlist to
-# prevent leakage.  This frozenset is the single source of truth for
-# containment checks.
+# ── Commitment/event tools (shared by Hector + Habits) ────────────────────
+# These tools live on the mediator.commitments / mediator.events substrate.
+# They are exclusive to bots that own a commitment-tracking topic (Hector on
+# `fitness`, Habits on `habits`). Every other bot (coach, tante_rosi,
+# mediator) MUST subtract this set from its tool_allowlist to prevent
+# leakage. Name kept as HECTOR_ONLY_TOOLS for backward compatibility with
+# tests and other bot specs that already import it.
 HECTOR_ONLY_TOOLS: frozenset[str] = frozenset({
     "create_commitment",
     "update_commitment",
@@ -216,10 +218,11 @@ HECTOR_ONLY_TOOLS: frozenset[str] = frozenset({
 })
 
 # ── Bot-exclusive tools ────────────────────────────────────────────────────
-# Dict mapping bot_id → tools that ONLY that bot may use. Non-matching bots
-# have these tools removed in _step_allowed(). Consumed by T11's filter.
-BOT_EXCLUSIVE_TOOLS: dict[str, frozenset[str]] = {
-    "hector": HECTOR_ONLY_TOOLS,
+# Dict mapping a *set* of bot_ids → tools that ONLY those bots may use.
+# Any bot whose id is not in the keyed frozenset has these tools removed in
+# _step_allowed(). Commitment/event tools are shared by Hector and Habits.
+BOT_EXCLUSIVE_TOOLS: dict[frozenset[str], frozenset[str]] = {
+    frozenset({"hector", "habits"}): HECTOR_ONLY_TOOLS,
 }
 
 # Tools whose implementation already calls audit.log_tool_call themselves
@@ -362,6 +365,12 @@ RECORD_WRITE_TOOLS = WRITE_PHASE_TOOLS - SCHEDULE_TOOLS | {
     "close_commitment",
     "log_event",
 }
+# Scheduling tools (schedule_checkin, schedule_task, etc.) are deliberately
+# excluded from RESPOND_TOOLS.  Check-in scheduling intent is detected by
+# CHECKIN_CONFIRM_RE in pick_default_skeleton and routed to the "standard"
+# skeleton which includes a dedicated ``schedule`` step.  Adding scheduling
+# to respond would let any skeleton (including quick_reply) schedule inline
+# but increases the risk of premature scheduling during lightweight turns.
 RESPOND_TOOLS = {"send_message_part", "search_emojis", "check_oob", "log_event"}
 READ_TOOLS_FOR_STEP = READ_PHASE_TOOLS - {"send_message_part"}
 STEP_ALLOWED_TOOLS: dict[TurnStep, set[str]] = {
@@ -419,11 +428,11 @@ def _step_allowed(ctx: TurnContext) -> set[str]:
     if ctx.bot_spec is not None and ctx.bot_spec.tool_allowlist is not None:
         allowed &= ctx.bot_spec.tool_allowlist | ALWAYS_ALLOWED_TOOLS
     # Remove bot-exclusive tools for non-matching bots.
-    # This ensures non-Hector bots never see commitment/event tools even
-    # when their allowlist is broad or None.  Handler-level Hector guards
-    # in read_tools/write_tools are the backstop.
-    for exclusive_bot_id, exclusive_tools in BOT_EXCLUSIVE_TOOLS.items():
-        if getattr(ctx, 'bot_id', None) != exclusive_bot_id:
+    # This ensures bots outside the keyed bot-id set never see commitment/
+    # event tools even when their allowlist is broad or None. Handler-level
+    # scope guards in read_tools/write_tools are the backstop.
+    for exclusive_bot_ids, exclusive_tools in BOT_EXCLUSIVE_TOOLS.items():
+        if getattr(ctx, 'bot_id', None) not in exclusive_bot_ids:
             allowed -= exclusive_tools
     return allowed
 

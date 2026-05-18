@@ -1528,14 +1528,17 @@ async def get_adherence(
     )
 
 
+_COMMITMENT_BOT_IDS: frozenset[str] = frozenset({"hector", "habits"})
+_COMMITMENT_TOPIC_SLUGS: frozenset[str] = frozenset({"fitness", "habits"})
+
+
 def _check_hector_read_scope(ctx: TurnContext) -> None:
-    """Enforce that only Hector bot can call fitness commitment/event read tools.
+    """Enforce that only commitment-tracking bots can call these read tools.
 
     Rejects if any scope value (bot_id, primary_topic_id, user.id) is None,
-    or if the bot is not Hector.
+    or if the (bot_id, topic_slug) pair is not in the commitment-tracking
+    set. Today: Hector on `fitness`, Habits on `habits`.
     """
-    from app.bots.ids import HECTOR_BOT_ID
-
     if ctx.bot_id is None:
         raise ValueError(
             "commitment/event read tools require ctx.bot_id (got None)"
@@ -1548,13 +1551,14 @@ def _check_hector_read_scope(ctx: TurnContext) -> None:
         raise ValueError(
             "commitment/event read tools require ctx.user.id (got None)"
         )
-    if ctx.bot_id != HECTOR_BOT_ID:
+    if ctx.bot_id not in _COMMITMENT_BOT_IDS:
         raise ValueError(
-            f"Only bot_id='{HECTOR_BOT_ID}' can use commitment/event read tools, "
-            f"got bot_id={ctx.bot_id!r}"
+            f"Commitment/event read tools are restricted to "
+            f"{sorted(_COMMITMENT_BOT_IDS)}, got bot_id={ctx.bot_id!r}"
         )
-    if ctx.primary_topic_slug != "fitness":
+    if ctx.primary_topic_slug not in _COMMITMENT_TOPIC_SLUGS:
         raise ValueError(
-            f"Commitment/event read tools require fitness topic, "
+            f"Commitment/event read tools require a commitment topic "
+            f"({sorted(_COMMITMENT_TOPIC_SLUGS)}), "
             f"got primary_topic_slug={ctx.primary_topic_slug!r}"
         )

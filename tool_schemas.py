@@ -1938,7 +1938,7 @@ class CreateCommitmentInput(BaseModel):
 
     label: str = Field(description="Short human-readable label for the commitment.")
     kind: str = Field(
-        description="Category: workout, nutrition, steps, mobility, sleep, alcohol, body_measurement, other."
+        description="Free-form category for this commitment. Examples: workout, nutrition, sleep, mobility, meditation, screen_time, journaling, hydration, reading, body_measurement, other."
     )
     cadence: Cadence = Field(
         description="How often the commitment is expected."
@@ -1962,7 +1962,8 @@ class CreateCommitmentInput(BaseModel):
         description="Optional structured schedule details (period, days, target_count, timezone).",
     )
     pressure_style: PressureStyle = Field(
-        default=PressureStyle.low_key, description="How much pressure Hector should apply."
+        default=PressureStyle.low_key,
+        description="How much encouragement/accountability pressure the bot should apply.",
     )
 
     @model_validator(mode="after")
@@ -2040,7 +2041,7 @@ class LogEventInput(BaseModel):
         description="UUID of the related commitment, if this event satisfies/modifies one.",
     )
     metric_key: str = Field(
-        description="What was measured/logged: workout_session, ate_on_plan, takeout_night, body_weight, etc."
+        description="Free-form key naming what was measured/logged. Examples: workout_session, ate_on_plan, meditation_session, screen_free_evening, body_weight, etc."
     )
     adherence_status: AdherenceStatus | None = Field(
         default=None,
