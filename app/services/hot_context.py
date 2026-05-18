@@ -56,6 +56,7 @@ class HotContext:
     cross_topic_peek: list[dict[str, Any]] = field(default_factory=list)
     cross_topic_status: list[dict[str, Any]] = field(default_factory=list)
     partner_shareable_summaries: list[dict[str, Any]] = field(default_factory=list)
+    upcoming_items: list[dict[str, Any]] = field(default_factory=list)
     bot_id: str = MEDIATOR_BOT_ID
 
 
@@ -1046,6 +1047,19 @@ async def build_hot_context(
         now_utc=now_utc,
         current_bot_id=bot_id,
     )
+    try:
+        from app.services.hot_context_solo import _fetch_upcoming_items as _fetch_upcoming
+        upcoming_items = await _fetch_upcoming(
+            pool,
+            user_id=user.id,
+            bot_id=bot_id,
+            topic_id=primary_topic_id,
+            now_utc=now_utc,
+            tz_name=user_timezone,
+        )
+    except Exception:
+        upcoming_items = []
+
     return HotContext(
         current_user=current_user,
         partner_user=partner_user,
@@ -1065,6 +1079,7 @@ async def build_hot_context(
         cross_topic_peek=cross_topic_peek,
         cross_topic_status=cross_topic_status,
         partner_shareable_summaries=partner_shareable_summaries,
+        upcoming_items=upcoming_items,
         bot_id=bot_id,
         time_since_last_message=_duration_since(latest_sent_at),
         trigger_metadata={
@@ -1283,6 +1298,22 @@ def _render_with_counts(
         if body_text:
             lines.append(f"- body: {_clip(body_text, clip_limit)}")
         lines.append(f"- last_updated_at: {_clip(ts_iso, clip_limit)}")
+    if hc.upcoming_items:
+        lines += ["", "## Upcoming reminders"]
+        for item in hc.upcoming_items:
+            day = item.get("local_day_label") or ""
+            t = item.get("local_time") or ""
+            rel = item.get("relative_to_now") or ""
+            job_type = item.get("job_type") or ""
+            brief = item.get("brief") or ""
+            when = f"{day} {t}".strip()
+            if rel:
+                when = f"{when} ({rel})" if when else rel
+            label = f"[{job_type}]"
+            line = f"- {when} {label}".rstrip()
+            if brief:
+                line = f"{line} — {_clip(brief, clip_limit)}"
+            lines.append(line)
     if hc.cross_topic_peek:
         lines += ["", "## Cross-topic activity (peek)"]
         for item in hc.cross_topic_peek:
@@ -1487,6 +1518,7 @@ def render_hot_context(hc: HotContext) -> str:
         topic_status=hc.topic_status,
         cross_topic_peek=list(hc.cross_topic_peek),
         cross_topic_status=list(hc.cross_topic_status),
+        upcoming_items=list(hc.upcoming_items),
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,
         bot_id=hc.bot_id,

@@ -45,6 +45,7 @@ MIGRATIONS = (
     "0044_live_session_latency.sql",
     "0045_live_session_spend.sql",
     "0049_messages_bot_turn_id.sql",
+    "0050_habits_topic.sql",
 )
 
 

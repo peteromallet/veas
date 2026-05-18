@@ -56,6 +56,7 @@ class HotContextSolo:
     pregnancy_state: str | None = None
     partner_pregnancy_state: str | None = None
     fitness_block: str | None = None
+    upcoming_items: list[dict[str, Any]] = field(default_factory=list)
     bot_id: str = "coach"
 
 
@@ -273,6 +274,82 @@ async def _user_profile_solo(pool: Any, user: User) -> dict[str, Any]:
     if resolved is not None:
         profile["phone"] = resolved
     return profile
+
+
+async def _fetch_upcoming_items(
+    pool: Any,
+    *,
+    user_id: UUID,
+    bot_id: str,
+    topic_id: UUID,
+    now_utc: datetime,
+    tz_name: str | None,
+    max_total: int = 5,
+) -> list[dict[str, Any]]:
+    """Return pending scheduled jobs for (user, bot, topic), trimmed.
+
+    Selection rule: include every pending job whose scheduled_for falls on
+    the user's local "today" (so the bot sees the full set of items due
+    today), then pad with the earliest future jobs until total == max_total.
+    """
+    rows = await pool.fetch(
+        """\
+        SELECT id, job_type, scheduled_for, context, topic_id
+        FROM scheduled_jobs
+        WHERE user_id = $1
+          AND bot_id = $2
+          AND topic_id = $3
+          AND status = 'pending'
+          AND scheduled_for >= $4
+        ORDER BY scheduled_for ASC
+        LIMIT 50
+        """,
+        user_id,
+        bot_id,
+        topic_id,
+        now_utc,
+    )
+    if not rows:
+        return []
+
+    tz = timezone_or_utc(tz_name)
+    today_local = now_utc.astimezone(tz).date()
+
+    today_items: list[dict[str, Any]] = []
+    later_items: list[dict[str, Any]] = []
+    for row in rows:
+        sched_utc = row["scheduled_for"]
+        if sched_utc.tzinfo is None:
+            sched_utc = sched_utc.replace(tzinfo=UTC)
+        ref = temporal_reference(sched_utc, tz_name, now=now_utc) or {}
+        context = row.get("context") or {}
+        if isinstance(context, str):
+            try:
+                import json as _json
+                context = _json.loads(context)
+            except Exception:
+                context = {}
+        brief = (
+            (context.get("brief") if isinstance(context, dict) else None)
+            or (context.get("reason") if isinstance(context, dict) else None)
+            or (context.get("kind") if isinstance(context, dict) else None)
+        )
+        item = {
+            "id": str(row["id"]),
+            "job_type": row["job_type"],
+            "scheduled_for_utc": sched_utc.isoformat(),
+            "local_day_label": ref.get("local_day_label"),
+            "local_time": ref.get("local_time"),
+            "relative_to_now": ref.get("relative_to_now"),
+            "brief": brief,
+        }
+        if sched_utc.astimezone(tz).date() == today_local:
+            today_items.append(item)
+        else:
+            later_items.append(item)
+
+    pad_budget = max(0, max_total - len(today_items))
+    return today_items + later_items[:pad_budget]
 
 
 async def _fetch_topic_status_solo(
@@ -833,6 +910,19 @@ async def build_hot_context_solo(
                 today=pregnancy_today,
             )
 
+    # ── Upcoming items (pending scheduled jobs) ────────────────────────
+    try:
+        upcoming_items = await _fetch_upcoming_items(
+            pool,
+            user_id=user.id,
+            bot_id=bot_id,
+            topic_id=primary_topic_id,
+            now_utc=now_utc,
+            tz_name=user_timezone,
+        )
+    except Exception:
+        upcoming_items = []
+
     # ── Fitness adherence (Hector only) ────────────────────────────────
     fitness_block: str | None = None
     if bot_id == "hector":
@@ -869,6 +959,7 @@ async def build_hot_context_solo(
         pregnancy_state=pregnancy_state,
         partner_pregnancy_state=partner_pregnancy_state,
         fitness_block=fitness_block,
+        upcoming_items=upcoming_items,
         bot_id=bot_id,
         time_since_last_message=_duration_since(latest_sent_at),
         trigger_metadata={
@@ -1107,6 +1198,23 @@ def _render_solo_with_counts(
             lines.append(f"- body: {_clip(body_text, clip_limit)}")
         lines.append(f"- last_updated_at: {_clip(ts_iso, clip_limit)}")
 
+    if hc.upcoming_items:
+        lines += ["", "## Upcoming reminders"]
+        for item in hc.upcoming_items:
+            day = item.get("local_day_label") or ""
+            t = item.get("local_time") or ""
+            rel = item.get("relative_to_now") or ""
+            job_type = item.get("job_type") or ""
+            brief = item.get("brief") or ""
+            when = f"{day} {t}".strip()
+            if rel:
+                when = f"{when} ({rel})" if when else rel
+            label = f"[{job_type}]"
+            line = f"- {when} {label}".rstrip()
+            if brief:
+                line = f"{line} — {_clip(brief, clip_limit)}"
+            lines.append(line)
+
     # ── Pregnancy state (Tante Rosi only) ──────────────────────────
     if hc.pregnancy_state is not None:
         lines += ["", "## Pregnancy", hc.pregnancy_state]
@@ -1313,6 +1421,7 @@ def render_hot_context_solo(hc: HotContextSolo) -> str:
         pregnancy_state=hc.pregnancy_state,
         partner_pregnancy_state=hc.partner_pregnancy_state,
         fitness_block=hc.fitness_block,
+        upcoming_items=hc.upcoming_items,
         bot_id=hc.bot_id,
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,
