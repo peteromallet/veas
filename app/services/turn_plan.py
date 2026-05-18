@@ -95,6 +95,23 @@ FITNESS_CONFIRM_RE = re.compile(
     re.IGNORECASE,
 )
 
+# B3: explicit scheduling-intent phrases that need a ``schedule`` step.
+# ``quick_reply`` skeleton is ``["respond","done"]`` which has no schedule
+# step; the tool registry rejects ``schedule_checkin`` during respond.
+# Hector's prompt tells him to call it when users request check-ins, so
+# these phrases must route to ``"standard"`` to unblock that tool.
+CHECKIN_CONFIRM_RE = re.compile(
+    r"\b("
+    r"(?:please\s+)?(?:can\s+you\s+)?check\s+in\s+with\s+me"
+    r"|remind\s+me"
+    r"|schedule\s+(?:a\s+)?(?:check[\s-]?in|reminder|follow[\s-]?up)"
+    r"|set\s+(?:a\s+)?reminder"
+    r"|send\s+me\s+a\s+(?:reminder|nudge|ping)"
+    r"|give\s+me\s+a\s+(?:nudge|ping)"
+    r")\b",
+    re.IGNORECASE,
+)
+
 AUDIT_REQUEST_RE = re.compile(
     r"\b(why did you|what did you|what have you|action log|tool call|tools? did you|did you tell|did you send)\b",
     re.IGNORECASE,
@@ -209,6 +226,16 @@ def pick_default_skeleton(
     if (
         (hot_context_signals or {}).get("bot_id") == "hector"
         and FITNESS_CONFIRM_RE.search(text)
+    ):
+        return "standard"
+
+    # B3: scheduling-intent inbounds need a ``schedule`` step.
+    # ``quick_reply`` has none; the tool registry rejects
+    # ``schedule_checkin`` during ``respond``.  Route to ``standard``
+    # so Hector can fulfil the prompt's explicit scheduling mandate.
+    if (
+        (hot_context_signals or {}).get("bot_id") == "hector"
+        and CHECKIN_CONFIRM_RE.search(text)
     ):
         return "standard"
 

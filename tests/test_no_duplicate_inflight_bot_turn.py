@@ -24,14 +24,14 @@ async def test_no_duplicate_inflight_bot_turn(fake_pool) -> None:
     ARGS = ("v1", "m", "s", "e", "mediator", t, "sv", "hc", "ts")
     async with fp.acquire() as c:
         async with c.transaction():
-            await c.execute("SELECT set_config('app.lifecycle_writer','agentic',true)")
+            await c.execute("SELECT set_config('app.lifecycle_writer','inbound_queue',true)")
             T1 = (await c.fetchrow(INS, m, [m], u, *ARGS))["id"]
             assert [m] == await _claim_messages_for_turn_in_tx(
                 c, [m], bot_id="mediator", topic_id=t, new_bot_turn_id=T1)
     assert fp.messages[m]["bot_turn_id"] == T1
     async with fp.acquire() as c:
         async with c.transaction():
-            await c.execute("SELECT set_config('app.lifecycle_writer','agentic',true)")
+            await c.execute("SELECT set_config('app.lifecycle_writer','inbound_queue',true)")
             T2 = (await c.fetchrow(INS, m, [m], u, *ARGS))["id"]
             assert [] == await _claim_messages_for_turn_in_tx(
                 c, [m], bot_id="mediator", topic_id=t, new_bot_turn_id=T2)

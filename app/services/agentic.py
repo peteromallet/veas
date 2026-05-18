@@ -70,8 +70,12 @@ _TOOL_SCHEMA_VERSION: str = hashlib.sha1(
     open(_tool_schemas_module.__file__, "rb").read()
 ).hexdigest()[:12]
 
+# Must match the value accepted by the trigger installed in
+# migration 0046 (mediator.assert_lifecycle_columns_writer).
+# The trigger only accepts 'inbound_queue' — 'agentic' was a dead
+# string that caused B1 (Hector inbox stall, 2026-05-17).
 _AGENTIC_LIFECYCLE_WRITER_SQL = (
-    "SELECT set_config('app.lifecycle_writer', 'agentic', true)"
+    "SELECT set_config('app.lifecycle_writer', 'inbound_queue', true)"
 )
 
 logger = logging.getLogger(__name__)
@@ -1354,7 +1358,7 @@ async def _finalize_turn_atomically(
     """Complete a bot_turn and mark its inbound messages in one transaction.
 
     Acquires a connection, opens a transaction, sets LIFECYCLE WRITER to
-    'agentic', then calls _complete_turn followed by either
+    'inbound_queue', then calls _complete_turn followed by either
     _complete_messages_in_tx or _fail_messages_in_tx.
 
     outcome='failed' triggers _fail_messages_in_tx (requires failure_class,
@@ -1375,6 +1379,25 @@ async def _finalize_turn_atomically(
                 tool_call_count,
                 reasoning,
             )
+            # Stamp failure_reason on the bot_turn when this is a
+            # pre-send failure path.  _complete_turn already set
+            # completed_at=now(), so the turn is terminal regardless.
+            if failure_reason:
+                await conn.execute(
+                    "UPDATE bot_turns SET failure_reason=$1 WHERE id=$2",
+                    failure_reason,
+                    turn_id,
+                )
+                await record_turn_event(
+                    conn,
+                    turn_id,
+                    "turn.failed",
+                    severity="error",
+                    metadata={
+                        "failure_reason": failure_reason,
+                        "failure_class": failure_class or "infra_bug",
+                    },
+                )
             if message_ids:
                 if outcome == "failed":
                     await inbound_queue._fail_messages_in_tx(
@@ -1420,32 +1443,6 @@ def _failure_class_for(failure_reason: str) -> str:
     fall through to ``"infra_bug"`` (the recovery-v2 safest default).
     """
     return inbound_queue.FAILURE_REASON_TO_CLASS.get(failure_reason, "infra_bug")
-
-
-async def _fail_turn(
-    pool: Any,
-    turn_id: UUID | None,
-    failure_reason: str,
-    metadata: dict | None = None,
-) -> None:
-    if turn_id is None:
-        return
-    await pool.execute(
-        "UPDATE bot_turns SET failure_reason=$1 WHERE id=$2", failure_reason, turn_id
-    )
-    merged_metadata: dict[str, Any] = {
-        "failure_reason": failure_reason,
-        "failure_class": _failure_class_for(failure_reason),
-    }
-    if metadata:
-        merged_metadata.update(metadata)
-    await record_turn_event(
-        pool,
-        turn_id,
-        "turn.failed",
-        severity="error",
-        metadata=merged_metadata,
-    )
 
 
 async def _defer_for_text_cap(
@@ -1613,6 +1610,12 @@ async def _run_agentic(
     turn_id: UUID | None = None
     started_at = datetime.now(UTC)
     responded_to_user = False
+    # Initialized here so the outer except-handler can pass them to
+    # _finalize_turn_atomically even if an exception fires before the
+    # try block re-assigns them mid-turn.
+    final_output_message_id: UUID | None = None
+    tool_call_count = 0
+    reasoning = ""
 
     # ── Hot-context build + atomic claim+open ───────────────────────
     # Hot context and prompt_snapshot are computed before the write
@@ -2359,23 +2362,45 @@ async def _run_agentic(
                         )
                         if (v := cause_result.get(k)) is not None
                     }
-        await _fail_turn(active_pool, turn_id, failure_reason, metadata=fail_metadata)
 
-        # ── Mark claimed inbound messages as failed ────────────────────
         if claimed_message_ids:
+            failure_class = _failure_class_for(failure_reason)
+            retryable = (
+                fail_metadata.get("retryable", True)
+                if fail_metadata
+                else True
+            )
+            exc_name = type(exc).__name__
+            exc_msg = str(exc)
+            if exc_msg:
+                error_detail = (
+                    f"{exc_name}: {exc_msg}"
+                    f" [failure_class={failure_class}, retryable={retryable}]"
+                )
+            else:
+                error_detail = (
+                    f"{exc_name}"
+                    f" [failure_class={failure_class}, retryable={retryable}]"
+                )
+
             if responded_to_user:
-                # A user-visible response already occurred — mark terminal
-                # as 'replied' (not retryable) but still record the turn failure.
-                # bot_turn_id=NULL clear here (terminal message UPDATE).
-                # _fail_turn above stamped failure_reason in a separate tx.
-                # The BEFORE-UPDATE trigger and recovery crash handler bound the split.
-                await inbound_queue.complete_messages(
+                # A user-visible response already occurred — mark messages
+                # terminal as 'replied' but stamp the turn failure so the
+                # audit trail is complete.  _finalize_turn_atomically sets
+                # completed_at + failure_reason on the turn in the same tx.
+                await _finalize_turn_atomically(
                     active_pool,
-                    claimed_message_ids,
-                    handling_result="replied",
-                    handled_by_turn_id=turn_id,
-                    bot_id=scope.bot_id,
-                    topic_id=primary_topic_id,
+                    turn_id,
+                    started_at,
+                    final_output_message_id,
+                    tool_call_count,
+                    reasoning,
+                    message_ids=claimed_message_ids,
+                    outcome="replied",
+                    scope=scope,
+                    primary_topic_id=primary_topic_id,
+                    failure_reason=failure_reason,
+                    failure_class=failure_class,
                 )
                 logger.warning(
                     "agentic turn failed after outbound was sent: %s",
@@ -2384,37 +2409,23 @@ async def _run_agentic(
                 )
                 return
             else:
-                # No user-visible response — mark failed for potential retry.
-                # bot_turn_id=NULL clear here (terminal message UPDATE).
-                # _fail_turn above stamped failure_reason in a separate tx.
-                # The BEFORE-UPDATE trigger and recovery crash handler bound the split.
-                failure_class = _failure_class_for(failure_reason)
-                retryable = (
-                    fail_metadata.get("retryable", True)
-                    if fail_metadata
-                    else True
-                )
-                exc_name = type(exc).__name__
-                exc_msg = str(exc)
-                if exc_msg:
-                    error_detail = (
-                        f"{exc_name}: {exc_msg}"
-                        f" [failure_class={failure_class}, retryable={retryable}]"
-                    )
-                else:
-                    error_detail = (
-                        f"{exc_name}"
-                        f" [failure_class={failure_class}, retryable={retryable}]"
-                    )
-                await inbound_queue.fail_messages(
+                # No user-visible response — mark messages failed for
+                # potential retry.  Turn completed_at + failure_reason
+                # stamped atomically with the message updates.
+                await _finalize_turn_atomically(
                     active_pool,
-                    claimed_message_ids,
-                    processing_error=error_detail[:500],
-                    handled_by_turn_id=turn_id,
-                    bot_id=scope.bot_id,
-                    topic_id=primary_topic_id,
-                    failure_class=failure_class,
+                    turn_id,
+                    started_at,
+                    final_output_message_id,
+                    tool_call_count,
+                    reasoning,
+                    message_ids=claimed_message_ids,
+                    outcome="failed",
+                    scope=scope,
+                    primary_topic_id=primary_topic_id,
                     failure_reason=failure_reason,
+                    failure_class=failure_class,
+                    processing_error=error_detail[:500],
                 )
         raise
 
