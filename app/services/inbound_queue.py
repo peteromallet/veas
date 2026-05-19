@@ -211,6 +211,11 @@ FAILURE_REASON_TO_CLASS: dict[str, str] = {
     # ── live (currently emitted by inbound/turn machinery) ──────────────
     "provider_send_failed": "retryable_pre_send",
     "llm_timeout": "retryable_pre_send",
+    # Catch-all when the LLM phase fails without a more specific reason
+    # (typically: provider chain exhausted with non-retryable upstream
+    # errors). Distinct from `llm_timeout` which is reserved for actual
+    # clock timeouts on the provider call.
+    "llm_phase_failed": "retryable_pre_send",
     "tool_validation_recoverable_exhausted": "retryable_pre_send",
     "crashed": "retryable_pre_send",
     "transcription_failed": "retryable_pre_send",

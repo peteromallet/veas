@@ -396,8 +396,10 @@ async def test_anthropic_400_as_final_hop_raises_llm_phase_error(
         )
     # Length-1 spec falls through to LLMPhaseError, NOT SameProviderFallbackNoop.
     assert not isinstance(excinfo.value, SameProviderFallbackNoop)
-    # The class-level default applies — failure_reason="llm_timeout".
-    assert getattr(excinfo.value, "failure_reason", None) == "llm_timeout"
+    # The class-level default applies — failure_reason="llm_phase_failed"
+    # (catch-all for chain-exhausted without a more specific reason; NOT
+    # a real clock timeout, which would surface as "llm_timeout").
+    assert getattr(excinfo.value, "failure_reason", None) == "llm_phase_failed"
 
 
 async def test_chain_anthropic_anthropic_deduped_to_one_raises_noop(

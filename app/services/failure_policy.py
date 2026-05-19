@@ -140,6 +140,11 @@ _REASON_TO_CLASS: Final[dict[str, FailureClass]] = {
     # ── live reasons (legacy three preserved) ─────────────────────────
     "provider_send_failed": FailureClass.RETRYABLE_PRE_SEND,
     "llm_timeout": FailureClass.MODEL_PROVIDER_TIMEOUT,
+    # Catch-all when the provider chain exhausts without a more specific
+    # reason on the exception instance. Distinct from `llm_timeout` (which
+    # is reserved for actual clock timeouts on the provider call) — same
+    # downstream retry semantics as other transient pre-send failures.
+    "llm_phase_failed": FailureClass.RETRYABLE_PRE_SEND,
     "tool_validation_recoverable_exhausted": FailureClass.TOOL_VALIDATION_RECOVERABLE,
     "crashed": FailureClass.RETRYABLE_PRE_SEND,
     "transcription_failed": FailureClass.RETRYABLE_PRE_SEND,

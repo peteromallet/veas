@@ -96,7 +96,14 @@ class NewerInboundBeforeFinalSend(Exception):
 
 
 class LLMPhaseError(Exception):
-    failure_reason = "llm_timeout"
+    # Class-level default for the catch-all "LLM phase failed and nobody set a
+    # more specific reason" path (most often: provider chain exhausted, every
+    # hop returned a non-retryable error). NOT a real clock timeout — the
+    # actual provider call timeout is ``settings.provider_call_timeout_seconds``
+    # and surfaces as ``"llm_timeout"`` only when the underlying call truly
+    # exceeds that budget. Subclasses below set their own failure_reason on the
+    # instance; the chain-exhausted path at line ~781 inherits this default.
+    failure_reason = "llm_phase_failed"
 
 
 class BoundedLoopExceeded(Exception):
