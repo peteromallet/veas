@@ -18,7 +18,9 @@ SCHEDULING_TOOLS_TO_NAME = [
     "schedule_task",
     "list_scheduled_tasks",
     "list_scheduled_checkins",
+    "list_all_reminders",
     "update_scheduled_task",
+    "update_scheduled_checkin",
     "cancel_scheduled_task",
     "cancel_scheduled_checkin",
 ]

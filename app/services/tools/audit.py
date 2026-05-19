@@ -61,7 +61,7 @@ def _summary_schedule_task(args: dict[str, Any], result: dict[str, Any]) -> str 
 def _summary_schedule_checkin(args: dict[str, Any], result: dict[str, Any]) -> str | None:
     action = result.get("action")
     when = result.get("scheduled_for")
-    brief = _trunc(args.get("brief") or args.get("message"), 60)
+    brief = _trunc(args.get("about_what") or args.get("reason"), 60)
     return f"schedule_checkin action={action} fires={when} brief={brief!r}"
 
 
@@ -87,6 +87,18 @@ def _summary_list_scheduled_checkins(
 ) -> str | None:
     checkins = result.get("checkins") or []
     return f"list_scheduled_checkins count={len(checkins)}"
+
+
+def _summary_list_all_reminders(
+    args: dict[str, Any], result: dict[str, Any]
+) -> str | None:
+    items = result.get("items") or []
+    kinds = {}
+    for item in items:
+        k = item.get("kind", "?")
+        kinds[k] = kinds.get(k, 0) + 1
+    kind_summary = ", ".join(f"{v} {k}" for k, v in sorted(kinds.items()))
+    return f"list_all_reminders count={len(items)} ({kind_summary})"
 
 
 def _summary_send_message_part(
@@ -177,6 +189,7 @@ TOOL_SUMMARIZERS: dict[
     "schedule_checkin": _summary_schedule_checkin,
     "list_scheduled_tasks": _summary_list_scheduled_tasks,
     "list_scheduled_checkins": _summary_list_scheduled_checkins,
+    "list_all_reminders": _summary_list_all_reminders,
     "send_message_part": _summary_send_message_part,
     "search_messages": _summary_search_messages,
     "recent_activity": _summary_recent_activity,

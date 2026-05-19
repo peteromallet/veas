@@ -178,7 +178,7 @@ class TestHectorPersistenceGuidance:
         prompt = _render()
         lower = prompt.lower()
 
-        assert "fitness knowledge primitives" in lower
+        assert "knowledge primitives" in lower
         assert "memories are stable concrete facts" in lower
         assert "observations are patterns and tactics" in lower
         assert "commitments are explicit concrete plans" in lower

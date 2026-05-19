@@ -1783,7 +1783,7 @@ class FakePool:
                     job["status"] = "cancelled"
                     return {"id": job["id"]}
             return None
-        if compact.startswith("UPDATE scheduled_jobs SET scheduled_for=COALESCE"):
+        if compact.startswith("UPDATE scheduled_jobs SET scheduled_for=COALESCE") and "job_type='scheduled_task'" in compact:
             user_id, target_job_id, target_task_id, scheduled_for, context_patch = args
             patch = _coerce_jsonb(context_patch) or {}
             for job in self.scheduled_jobs.values():
@@ -2112,6 +2112,36 @@ class FakePool:
             }
             self.events[row_id] = row
             return row
+        if compact.startswith(
+            "UPDATE scheduled_jobs SET scheduled_for=COALESCE($5, scheduled_for),"
+            " context=COALESCE(context, '{}'::jsonb) || $6::jsonb,"
+            " updated_at=now() WHERE user_id=$1 AND id=$2 AND job_type='checkin'"
+            " AND status='pending' AND bot_id=$3 AND topic_id=$4"
+            " RETURNING id AS job_id, scheduled_for, context"
+        ):
+            user_id_arg, job_id_arg, bot_id_arg, topic_id_arg, scheduled_for, context_patch = args
+            row = self.scheduled_jobs.get(job_id_arg)
+            if (
+                row is None
+                or row.get("user_id") != user_id_arg
+                or row.get("job_type") != "checkin"
+                or row.get("status") != "pending"
+                or row.get("bot_id") != bot_id_arg
+                or row.get("topic_id") != topic_id_arg
+            ):
+                return None
+            if scheduled_for is not None:
+                row["scheduled_for"] = scheduled_for
+            ctx = row.get("context") or {}
+            if isinstance(context_patch, dict) and context_patch:
+                ctx.update(context_patch)
+            row["context"] = ctx
+            row["updated_at"] = datetime.now(UTC)
+            return {
+                "job_id": row["id"],
+                "scheduled_for": row["scheduled_for"],
+                "context": row["context"],
+            }
         raise AssertionError(f"unhandled fetchrow SQL: {compact}")
 
     async def fetchval(self, sql: str, *args):
@@ -3334,6 +3364,30 @@ class FakePool:
             ]
             matches.sort(key=lambda r: r["scheduled_for"])
             return matches[: int(limit)]
+        if compact.startswith(
+            "SELECT id, job_type, scheduled_for, context FROM scheduled_jobs"
+            " WHERE user_id=$1 AND bot_id=$2 AND topic_id=$3"
+            " AND status='pending'"
+            " AND job_type IN ('scheduled_task', 'checkin')"
+            " ORDER BY scheduled_for ASC"
+        ):
+            user_id_arg, bot_id_arg, topic_id_arg = args
+            matches = [
+                {
+                    "id": row["id"],
+                    "job_type": row["job_type"],
+                    "scheduled_for": row["scheduled_for"],
+                    "context": row.get("context") or {},
+                }
+                for row in self.scheduled_jobs.values()
+                if row.get("user_id") == user_id_arg
+                and row.get("bot_id") == bot_id_arg
+                and row.get("topic_id") == topic_id_arg
+                and row.get("status") == "pending"
+                and row.get("job_type") in ("scheduled_task", "checkin")
+            ]
+            matches.sort(key=lambda r: r["scheduled_for"])
+            return matches
         if "FROM scheduled_jobs" in compact:
             return sorted(
                 self.scheduled_jobs.values(),

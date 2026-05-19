@@ -116,6 +116,8 @@ from tool_schemas import (
     UpdateOOBOutput,
     UpdateObservationInput,
     UpdateObservationOutput,
+    UpdateScheduledCheckinInput,
+    UpdateScheduledCheckinOutput,
     UpdateScheduledTaskInput,
     UpdateScheduledTaskOutput,
     UpdateThemeInput,
@@ -2141,6 +2143,72 @@ async def update_scheduled_task(
             recurrence=task.recurrence,
         )
     await _log_tool_call(ctx, "update_scheduled_task", args, started, result)
+    return result
+
+
+async def update_scheduled_checkin(
+    ctx: TurnContext, args: UpdateScheduledCheckinInput
+) -> UpdateScheduledCheckinOutput:
+    """Update a pending user-facing check-in by job_id.
+
+    Mirrors ``update_scheduled_task`` for one-off user-facing reminders.
+    Updates time (when/delay/local_when), ``about_what`` (the user-facing
+    line stored in ``context['about_what']``) and/or ``reason`` (audit-only,
+    stored in ``context['reason']``).
+
+    Returns ``action='noop'`` when no matching row is found — this single
+    check covers other-user rows, scheduled_task rows, cancelled/fired rows,
+    and out-of-scope rows.
+    """
+    started = _start()
+    scheduled_for: datetime | None = None
+    if (
+        args.when is not None
+        or args.delay is not None
+        or args.local_when is not None
+    ):
+        scheduled_for = _scheduled_for_from_schedule_fields(
+            ctx, args.when, args.delay, args.local_when
+        )
+    context_patch: dict[str, Any] = {}
+    if args.about_what is not None:
+        context_patch["about_what"] = args.about_what
+    if args.reason is not None:
+        context_patch["reason"] = args.reason
+    row = await ctx.pool.fetchrow(
+        """
+        UPDATE scheduled_jobs
+        SET scheduled_for=COALESCE($5, scheduled_for),
+            context=COALESCE(context, '{}'::jsonb) || $6::jsonb,
+            updated_at=now()
+        WHERE user_id=$1
+          AND id=$2
+          AND job_type='checkin'
+          AND status='pending'
+          AND bot_id=$3
+          AND topic_id=$4
+        RETURNING id AS job_id, scheduled_for, context
+        """,
+        ctx.user.id,
+        args.job_id,
+        ctx.bot_id,
+        ctx.primary_topic_id,
+        scheduled_for,
+        context_patch,
+    )
+    if row is None:
+        result = UpdateScheduledCheckinOutput(
+            action="noop", job_id=args.job_id
+        )
+    else:
+        updated_context = row["context"] or {}
+        result = UpdateScheduledCheckinOutput(
+            action="updated",
+            job_id=row["job_id"],
+            scheduled_for=row["scheduled_for"],
+            about_what=updated_context.get("about_what"),
+        )
+    await _log_tool_call(ctx, "update_scheduled_checkin", args, started, result)
     return result
 
 

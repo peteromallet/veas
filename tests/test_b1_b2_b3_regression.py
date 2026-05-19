@@ -271,7 +271,8 @@ def test_pick_default_skeleton_checkin_does_not_affect_other_bots():
         charge="routine",
         hot_context_signals=signals,
     )
-    # Mediator does not have the Hector-specific check-in routing.
-    assert result == "quick_reply", (
-        f"Mediator should stay on quick_reply for check-in text, got {result!r}"
+    # As of prompt-registry sprint, check-in routing is broadened to all bots
+    # (not just Hector) so all five bots now route to 'standard' for scheduling.
+    assert result == "standard", (
+        f"Mediator should route to standard for check-in text (all bots now get scheduling routing), got {result!r}"
     )

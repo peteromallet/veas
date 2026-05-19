@@ -331,6 +331,7 @@ async def _fetch_upcoming_items(
                 context = {}
         brief = (
             (context.get("brief") if isinstance(context, dict) else None)
+            or (context.get("about_what") if isinstance(context, dict) else None)
             or (context.get("reason") if isinstance(context, dict) else None)
             or (context.get("kind") if isinstance(context, dict) else None)
         )
@@ -1205,11 +1206,12 @@ def _render_solo_with_counts(
             t = item.get("local_time") or ""
             rel = item.get("relative_to_now") or ""
             job_type = item.get("job_type") or ""
+            item_id = item.get("id") or ""
             brief = item.get("brief") or ""
             when = f"{day} {t}".strip()
             if rel:
                 when = f"{when} ({rel})" if when else rel
-            label = f"[{job_type}]"
+            label = f"[{job_type}] [id={item_id}]"
             line = f"- {when} {label}".rstrip()
             if brief:
                 line = f"{line} — {_clip(brief, clip_limit)}"

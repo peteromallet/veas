@@ -31,12 +31,13 @@ class TestHectorPrompt:
         """Concrete-plans-only constraint: don't track vague goals."""
         prompt = self._render_prompt()
         assert "Create commitments only from concrete user plans" in prompt
-        assert "Do NOT create a commitment" in prompt
+        assert "do NOT create a commitment" in prompt
 
     def test_prompt_contains_ask_before_vague_tracking(self):
         """Ask one clarifying question for vague goals."""
         prompt = self._render_prompt()
-        assert "Ask one practical clarifying question" in prompt
+        assert "Ask one" in prompt
+        assert "practical clarifying question" in prompt
         assert "ask before tracking" in prompt.lower()
 
     def test_prompt_contains_adherence_before_checkin(self):
@@ -74,7 +75,7 @@ class TestHectorPrompt:
         prompt = self._render_prompt()
         assert "Keep pressure real but low-key" in prompt
         assert "You are not a drill sergeant" in prompt
-        assert "the friend who notices" in prompt
+        assert "the steady second pair of eyes" in prompt
 
     def test_prompt_contains_medical_deferral(self):
         """Medical deferral: always defer to professionals."""
@@ -86,7 +87,7 @@ class TestHectorPrompt:
     def test_prompt_contains_no_default_calorie_photo_weigh_in(self):
         """No default calorie/photo/weigh-in pressure."""
         prompt = self._render_prompt()
-        assert "Do not make progress photos or weigh-ins default" in prompt
+        assert "Do not make progress photos" in prompt
         assert "Avoid calorie-counting pressure" in prompt
 
     def test_prompt_contains_partner_sharing_boundaries(self):

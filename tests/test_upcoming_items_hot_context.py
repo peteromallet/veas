@@ -49,10 +49,16 @@ def _job(
     scheduled_for: datetime,
     job_type: str = "checkin",
     brief: str | None = None,
+    about_what: str | None = None,
+    reason: str | None = None,
 ) -> dict:
     context: dict = {}
     if brief is not None:
         context["brief"] = brief
+    if about_what is not None:
+        context["about_what"] = about_what
+    if reason is not None:
+        context["reason"] = reason
     return {
         "id": uuid4(),
         "job_type": job_type,

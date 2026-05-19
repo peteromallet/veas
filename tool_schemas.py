@@ -1434,6 +1434,77 @@ class CancelScheduledTaskOutput(BaseModel):
     job_id: UUID | None = None
 
 
+class UpdateScheduledCheckinInput(BaseModel):
+    job_id: UUID
+    delay: ScheduleDelay | None = Field(
+        default=None,
+        description="Preferred/default replacement time for simple relative duration requests like 'in two hours', 'in 10 hours', or 'in two days'. Relative offset from the current server time. Do not provide together with when or local_when.",
+    )
+    local_when: LocalScheduleTime | None = Field(
+        default=None,
+        description="Replacement local wall-clock time for phrases like '9pm tonight' or 'Monday at 8'. The server converts from the provided timezone, or the current user's timezone if omitted, to UTC.",
+    )
+    when: datetime | None = Field(
+        default=None,
+        description="Replacement exact instant. Do not use for user-local clock phrases; use local_when instead. If the current user is not in UTC, UTC/Z datetimes may be rejected so local-time mistakes can be corrected.",
+    )
+    about_what: str | None = Field(default=None, min_length=1, max_length=2000)
+    reason: str | None = Field(default=None, max_length=1000)
+
+    @field_validator("when")
+    @classmethod
+    def require_timezone(cls, value: datetime | None) -> datetime | None:
+        if value is None:
+            return None
+        return _require_timezone_aware(value, "when")
+
+    @model_validator(mode="after")
+    def validate_update_target_and_payload(self) -> "UpdateScheduledCheckinInput":
+        if (
+            sum(value is not None for value in (self.when, self.delay, self.local_when))
+            > 1
+        ):
+            raise ValueError("provide at most one of when, delay, or local_when")
+        if (
+            self.about_what is None
+            and self.reason is None
+            and self.when is None
+            and self.delay is None
+            and self.local_when is None
+        ):
+            raise ValueError(
+                "provide at least one update: about_what, reason, when, delay, or local_when"
+            )
+        return self
+
+
+class UpdateScheduledCheckinOutput(BaseModel):
+    action: Literal["updated", "noop"]
+    job_id: UUID
+    scheduled_for: datetime | None = None
+    about_what: str | None = None
+
+
+class ListAllRemindersInput(BaseModel):
+    """No input fields — scoped to (user_id, bot_id, topic_id) server-side."""
+
+
+class ReminderItem(BaseModel):
+    id: UUID
+    kind: Literal["task", "checkin"]
+    next_fire_local: str
+    next_fire_utc: datetime
+    recurrence_label: str
+    recurrence_rule: dict | None = None
+    brief: str | None = None
+    about_what: str | None = None
+    reason: str | None = None
+
+
+class ListAllRemindersOutput(BaseModel):
+    items: list[ReminderItem]
+
+
 class ScheduleCheckinInput(BaseModel):
     user_id: UUID
     delay: ScheduleDelay | None = Field(
@@ -2273,6 +2344,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "schedule_task": (ScheduleTaskInput, ScheduleTaskOutput),
     "update_scheduled_task": (UpdateScheduledTaskInput, UpdateScheduledTaskOutput),
     "cancel_scheduled_task": (CancelScheduledTaskInput, CancelScheduledTaskOutput),
+    "update_scheduled_checkin": (UpdateScheduledCheckinInput, UpdateScheduledCheckinOutput),
     "schedule_partner_checkin": (
         SchedulePartnerCheckinInput,
         SchedulePartnerCheckinOutput,
@@ -2282,6 +2354,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
         ListScheduledCheckinsInput,
         ListScheduledCheckinsOutput,
     ),
+    "list_all_reminders": (ListAllRemindersInput, ListAllRemindersOutput),
     "escalate_to_partner": (EscalateToPartnerInput, EscalateToPartnerOutput),
     "edit_outbound_message": (EditOutboundMessageInput, EditOutboundMessageOutput),
     "delete_outbound_message": (

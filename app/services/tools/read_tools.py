@@ -6,7 +6,8 @@ import logging
 import asyncio
 import re
 from datetime import UTC, datetime, timedelta
-from typing import Any
+from typing import Any, Literal
+from zoneinfo import ZoneInfo
 
 from app.services.cross_thread_privacy import raw_message_visibility
 from app.services.cross_thread_privacy import bridge_candidate_visible_to_target
@@ -20,6 +21,7 @@ from app.services.text_safety import (
     looks_like_internal_process_text,
 )
 from app.services.time_context import local_day_bounds_utc, temporal_reference
+from app.services.scheduled_task_recurrence import normalize_recurrence
 from app.services.tools.scope_guard import check_read_scope
 from app.services.tools.common import (
     add_date_range,
@@ -71,6 +73,9 @@ from tool_schemas import (
     SearchMessagesOutput,
     SearchEmojisInput,
     SearchEmojisOutput,
+    ListAllRemindersInput,
+    ListAllRemindersOutput,
+    ReminderItem,
     ScheduledCheckinRow,
     SelfModel,
     SendMessagePartInput,
@@ -1270,6 +1275,168 @@ async def list_scheduled_checkins(
             )
         )
     return ListScheduledCheckinsOutput(checkins=checkins)
+
+
+async def list_all_reminders(
+    ctx: TurnContext, args: ListAllRemindersInput
+) -> ListAllRemindersOutput:
+    """Return a unified list of every pending agent-managed task AND user-facing
+    check-in for the current ``(user_id, bot_id, topic_id)`` scope, ordered
+    ascending by next fire time.
+
+    Each item includes the ``scheduled_jobs.id``, a human-readable
+    ``recurrence_label``, and the canonical ``recurrence_rule`` dict (pass it
+    back verbatim to ``update_scheduled_task`` when changing recurrence).
+
+    **Recurrence rule shape** (source of truth:
+    ``app/services/scheduled_task_recurrence.py:49-87``, ``normalize_recurrence``):
+
+    .. code-block::
+
+        {
+            "version": 1,
+            "type": "daily" | "weekly" | "hourly",
+            "interval": <positive int, default 1>,
+            "weekdays": [<int 0=Mon..6=Sun>],        # weekly only, sorted
+            "until": "<ISO8601 with tz>",             # optional
+            "remaining_occurrences": <non-negative int>,  # optional
+            "cancelled": true,                        # optional
+        }
+
+    One-off tasks (no recurrence rule) and all check-ins return
+    ``recurrence_rule=None`` and ``recurrence_label='one-off'``.
+
+    **Scoping divergence from** ``list_scheduled_checkins``:
+    ``list_scheduled_checkins`` is scoped to ``(user_id, bot_id)``.
+    ``list_all_reminders`` is scoped to ``(user_id, bot_id, topic_id)``.
+
+    **cancel_scheduled_checkin asymmetry:**
+    ``cancel_scheduled_checkin`` does NOT accept a ``job_id`` — it cancels
+    at user scope only (``write_tools.py:1684-1702``).  Bots can see
+    specific check-in IDs via this tool but cannot precision-cancel them.
+
+    **schedule_checkin global supersession:**
+    ``_schedule_once`` in ``app/services/checkins.py:33-41`` supersedes ALL
+    pending check-ins for the user across all bots and topics.  This tool
+    is scoped to ``(user, bot, topic)`` — a bot may see zero check-ins for
+    its scope while ``schedule_checkin`` silently deletes check-ins from
+    other bots.
+    """
+    rows = await ctx.pool.fetch(
+        """
+        SELECT id, job_type, scheduled_for, context
+        FROM scheduled_jobs
+        WHERE user_id=$1
+          AND bot_id=$2
+          AND topic_id=$3
+          AND status='pending'
+          AND job_type IN ('scheduled_task', 'checkin')
+        ORDER BY scheduled_for ASC
+        """,
+        ctx.user.id,
+        ctx.bot_id,
+        ctx.primary_topic_id,
+    )
+    timezone = ctx.user.timezone or "UTC"
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        tz = ZoneInfo("UTC")
+    now = ctx.turn_started_at or datetime.now(UTC)
+    items: list[ReminderItem] = []
+    for row in rows:
+        context = row.get("context") if isinstance(row, dict) else row["context"]
+        context = context or {}
+        scheduled_for = row["scheduled_for"]
+        local_dt = scheduled_for.astimezone(tz) if hasattr(scheduled_for, 'astimezone') else scheduled_for
+        tref = temporal_reference(scheduled_for, timezone, now=now)
+        next_fire_local: str = tref.get("display", scheduled_for.isoformat()) if isinstance(tref, dict) else scheduled_for.isoformat()
+        job_type: str = row["job_type"]
+        kind: Literal["task", "checkin"] = (
+            "task" if job_type == "scheduled_task" else "checkin"
+        )
+        if kind == "task":
+            raw_recurrence = context.get("recurrence")
+            try:
+                recurrence_rule = normalize_recurrence(raw_recurrence)
+            except Exception:
+                # normalize_recurrence raises for unknown types; fall back
+                # to the raw dict so the label generator can pretty-print it.
+                recurrence_rule = dict(raw_recurrence) if isinstance(raw_recurrence, dict) else None
+            recurrence_label = _format_recurrence_label(recurrence_rule, local_dt)
+            items.append(
+                ReminderItem(
+                    id=row["id"],
+                    kind=kind,
+                    next_fire_local=next_fire_local,
+                    next_fire_utc=scheduled_for,
+                    recurrence_label=recurrence_label,
+                    recurrence_rule=recurrence_rule,
+                    brief=context.get("brief"),
+                    about_what=None,
+                    reason=None,
+                )
+            )
+        else:
+            items.append(
+                ReminderItem(
+                    id=row["id"],
+                    kind=kind,
+                    next_fire_local=next_fire_local,
+                    next_fire_utc=scheduled_for,
+                    recurrence_label="one-off",
+                    recurrence_rule=None,
+                    brief=None,
+                    about_what=context.get("about_what"),
+                    reason=context.get("reason"),
+                )
+            )
+    return ListAllRemindersOutput(items=items)
+
+
+def _format_recurrence_label(
+    rule: dict[str, Any] | None, scheduled_for_local: Any
+) -> str:
+    """Derive a human-readable recurrence label from the canonical rule.
+
+    The HH:MM portion comes from *scheduled_for_local* (the row's fire
+    time cast to the user's local timezone), NOT from the rule.
+    """
+    HH_MM = ""
+    if hasattr(scheduled_for_local, "strftime"):
+        HH_MM = scheduled_for_local.strftime("%H:%M")
+
+    if rule is None:
+        return "one-off"
+
+    rtype = rule.get("type", "")
+    interval = rule.get("interval", 1)
+
+    if rtype == "daily":
+        if interval == 1:
+            label = f"daily at {HH_MM} local"
+        else:
+            label = f"every {interval} days at {HH_MM} local"
+        return label
+
+    if rtype == "weekly":
+        weekdays = rule.get("weekdays", [])
+        short_names = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        names = [short_names[d % 7] for d in weekdays] if weekdays else []
+        joined = "+".join(names) if names else "?"
+        if interval == 1:
+            label = f"weekly {joined} {HH_MM} local"
+        else:
+            label = f"every {interval} weeks {joined} {HH_MM} local"
+        return label
+
+    if rtype == "hourly":
+        if interval == 1:
+            return "hourly"
+        return f"every {interval} hours"
+
+    # Fallback: pretty-print the rule with local time
+    return f"{rule!r} at {HH_MM} local"
 
 
 # ── Hector fitness read tools ──────────────────────────────────────────────

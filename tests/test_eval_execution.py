@@ -160,7 +160,7 @@ def test_prompt_closes_low_energy_conversations() -> None:
     assert "unless you want to keep going" in rendered
     assert "Silence is also acceptable" in rendered
     assert "Goodnight" in rendered
-    assert "schedule one in Phase B rather than keeping the live chat open" in rendered
+    assert "schedule one in the schedule step rather than keeping the live chat open" in rendered
 
 
 def test_v3_prompt_uses_adaptive_step_language() -> None:

@@ -232,11 +232,9 @@ def pick_default_skeleton(
     # B3: scheduling-intent inbounds need a ``schedule`` step.
     # ``quick_reply`` has none; the tool registry rejects
     # ``schedule_checkin`` during ``respond``.  Route to ``standard``
-    # so Hector can fulfil the prompt's explicit scheduling mandate.
-    if (
-        (hot_context_signals or {}).get("bot_id") == "hector"
-        and CHECKIN_CONFIRM_RE.search(text)
-    ):
+    # so every bot (hector / habits / coach / tante_rosi / mediator)
+    # can fulfil the prompt's explicit scheduling mandate.
+    if CHECKIN_CONFIRM_RE.search(text):
         return "standard"
 
     if pacing.get("action") in {"react", "silence"} or _is_short_ack(text):
