@@ -326,20 +326,15 @@ async def test_deepseek_failure_falls_back_to_anthropic(app_env, monkeypatch):
     ]
 
 
-def test_peter_uses_deepseek_and_hannah_stays_anthropic(app_env, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_ENABLED_USER_NAMES", "Peter")
+def test_all_users_route_to_deepseek(app_env, monkeypatch):
     monkeypatch.setenv("DEEPSEEK_CONVERSATIONAL_MODEL", "deepseek-chat")
     from app.config import get_settings
 
     get_settings.cache_clear()
-    peter = User(uuid4(), "Peter", "15555550100", "UTC")
-    hannah = User(uuid4(), "Hannah", "15555550101", "UTC")
-
-    _, peter_model, peter_provider = agentic._llm_client_and_model_for_user(peter)
-    _, hannah_model, hannah_provider = agentic._llm_client_and_model_for_user(hannah)
-
-    assert (peter_model, peter_provider) == ("deepseek-chat", "deepseek")
-    assert (hannah_model, hannah_provider) == ("claude-sonnet-4-6", "anthropic")
+    for name in ("Peter", "Hannah"):
+        user = User(uuid4(), name, "15555550100", "UTC")
+        _, model, provider = agentic._llm_client_and_model_for_user(user)
+        assert (model, provider) == ("deepseek-chat", "deepseek")
     get_settings.cache_clear()
 
 

@@ -190,56 +190,31 @@ def test_dedupe_chain_collapses_consecutive_duplicates():
     assert _dedupe_chain(("a", "a", "b", "b", "a")) == ("a", "b", "a")
 
 
-def test_resolve_provider_chain_demotes_deepseek_for_user_not_in_allowlist(
-    app_env, monkeypatch
-):
-    monkeypatch.setenv("DEEPSEEK_ENABLED_USER_NAMES", "Peter")
+def test_resolve_provider_chain_returns_bot_spec_chain(app_env):
     from app.config import get_settings
 
-    get_settings.cache_clear()
     settings = get_settings()
-    user = User(uuid4(), "Hannah", "15555550101", "UTC")
+    user = User(uuid4(), "Anyone", "15555550100", "UTC")
 
     class _Spec:
         provider_chain = ("deepseek", "anthropic")
 
-    chain = _resolve_provider_chain(_Spec(), user, settings)
-    assert chain == ("anthropic",)
-    get_settings.cache_clear()
+    assert _resolve_provider_chain(_Spec(), user, settings) == (
+        "deepseek",
+        "anthropic",
+    )
 
 
-def test_resolve_provider_chain_keeps_deepseek_for_allowed_user(
-    app_env, monkeypatch
-):
-    monkeypatch.setenv("DEEPSEEK_ENABLED_USER_NAMES", "peter")  # case-insensitive
+def test_resolve_provider_chain_anthropic_only_unchanged(app_env):
     from app.config import get_settings
 
-    get_settings.cache_clear()
-    settings = get_settings()
-    user = User(uuid4(), "Peter", "15555550100", "UTC")
-
-    class _Spec:
-        provider_chain = ("deepseek", "anthropic")
-
-    chain = _resolve_provider_chain(_Spec(), user, settings)
-    assert chain == ("deepseek", "anthropic")
-    get_settings.cache_clear()
-
-
-def test_resolve_provider_chain_anthropic_only_unchanged(app_env, monkeypatch):
-    monkeypatch.setenv("DEEPSEEK_ENABLED_USER_NAMES", "")
-    from app.config import get_settings
-
-    get_settings.cache_clear()
     settings = get_settings()
     user = User(uuid4(), "Anyone", "15555550100", "UTC")
 
     class _Spec:
         provider_chain = ("anthropic",)
 
-    chain = _resolve_provider_chain(_Spec(), user, settings)
-    assert chain == ("anthropic",)
-    get_settings.cache_clear()
+    assert _resolve_provider_chain(_Spec(), user, settings) == ("anthropic",)
 
 
 # ── _create_message_with_retry: chain behaviour ─────────────────────────────

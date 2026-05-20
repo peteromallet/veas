@@ -62,10 +62,7 @@ class BotSpec:
     bot_spec_version: str = "1.1.0"
     hot_context_builder_version: str = "1.0.0"
     tool_schema_version: str = "1.0.0"
-    # Project A2: per-bot LLM provider chain (primary, fallbacks...).
-    # The chain resolver in app.services.agentic combines this with the
-    # case-folded deepseek_enabled_user_names allowlist to demote DeepSeek
-    # off the chain for users not in the allowlist.
+    # Per-bot LLM provider chain (primary, fallbacks...).
     provider_chain: tuple[str, ...] = ("deepseek", "anthropic")
 
     def __post_init__(self) -> None:

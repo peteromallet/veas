@@ -26,7 +26,6 @@ def test_config_loads(monkeypatch) -> None:
         "TRANSCRIPTION_DAILY_CAP_USD": "1.5",
         "CONVERSATIONAL_MODEL": "claude-sonnet-test",
         "DEEPSEEK_CONVERSATIONAL_MODEL": "deepseek-test",
-        "DEEPSEEK_ENABLED_USER_NAMES": "Peter",
         "DEEPSEEK_THINKING_ENABLED": "false",
         "DEEPSEEK_REASONING_EFFORT": "medium",
         "CONSULT_MODEL": "claude-consult-test",
@@ -98,7 +97,6 @@ def test_config_loads(monkeypatch) -> None:
     assert settings.transcription_daily_cap_usd == 1.5
     assert settings.conversational_model == env["CONVERSATIONAL_MODEL"]
     assert settings.deepseek_conversational_model == env["DEEPSEEK_CONVERSATIONAL_MODEL"]
-    assert settings.deepseek_enabled_user_names == env["DEEPSEEK_ENABLED_USER_NAMES"]
     assert settings.deepseek_thinking_enabled is False
     assert settings.deepseek_reasoning_effort == env["DEEPSEEK_REASONING_EFFORT"]
     assert settings.consult_model == env["CONSULT_MODEL"]

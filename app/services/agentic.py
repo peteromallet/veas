@@ -375,22 +375,9 @@ async def _record_response_cost(
         await record_llm_cost(pool, "text", dollars)
 
 
-def _deepseek_user_names(settings: Any) -> set[str]:
-    return {
-        name.strip().casefold()
-        for name in settings.deepseek_enabled_user_names.split(",")
-        if name.strip()
-    }
-
-
 def _llm_client_and_model_for_user(user: User) -> tuple[Any, str, str]:
     settings = get_settings()
-    if user.name.strip().casefold() in _deepseek_user_names(settings):
-        return DeepSeekClient(), settings.deepseek_conversational_model, "deepseek"
-    client = anthropic.AsyncAnthropic(
-        api_key=settings.anthropic_api_key.get_secret_value()
-    )
-    return client, settings.conversational_model, "anthropic"
+    return DeepSeekClient(), settings.deepseek_conversational_model, "deepseek"
 
 
 _ProviderErrorClass = Literal[
@@ -583,27 +570,8 @@ def _dedupe_chain(chain: tuple[str, ...]) -> tuple[str, ...]:
 def _resolve_provider_chain(
     bot_spec: Any, user: User, settings: Any
 ) -> tuple[str, ...]:
-    """Resolve the effective provider chain for (bot, user).
-
-    Combines ``bot_spec.provider_chain`` with the case-folded
-    ``deepseek_enabled_user_names`` allowlist: if the user is NOT in the
-    allowlist, ``deepseek`` is dropped from the chain.  Casefold semantics
-    are preserved exactly from the legacy lookup at
-    ``_deepseek_user_names``.
-
-    The returned chain is non-empty; if the dedupe/demotion would leave it
-    empty (no providers configured), falls back to ``("anthropic",)``.
-    """
-    raw_chain = getattr(bot_spec, "provider_chain", None) or ("anthropic",)
-    user_allowed = user.name.strip().casefold() in _deepseek_user_names(settings)
-    filtered = tuple(
-        provider
-        for provider in raw_chain
-        if provider != "deepseek" or user_allowed
-    )
-    if not filtered:
-        return ("anthropic",)
-    return filtered
+    """Resolve the effective provider chain for (bot, user)."""
+    return getattr(bot_spec, "provider_chain", None) or ("anthropic",)
 
 
 async def _attempt_provider_call(

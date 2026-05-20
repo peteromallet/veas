@@ -53,7 +53,6 @@ class Settings(BaseSettings):
     transcription_daily_cap_usd: float = 1.0
     conversational_model: str = "claude-sonnet-4-6"  # Conversational loop model.
     deepseek_conversational_model: str = "deepseek-chat"
-    deepseek_enabled_user_names: str = ""
     deepseek_thinking_enabled: bool = False
     deepseek_reasoning_effort: str | None = None
     consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
