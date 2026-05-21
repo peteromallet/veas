@@ -82,8 +82,13 @@ jobs:
       - name: Prepare local Postgres
         run: |
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN CREATE ROLE anon; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN CREATE ROLE authenticated; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN CREATE ROLE service_role; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS auth;"
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS \$\$ SELECT NULL::uuid \$\$;"
           for file in migrations/*.sql; do
-            if [ "$(basename "$file")" != "teardown.sql" ]; then
+            basename="$(basename "$file")"
+            if [ "$basename" != "teardown.sql" ] && [[ "$basename" != *.down.sql ]]; then
               psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
             fi
           done

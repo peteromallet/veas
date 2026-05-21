@@ -12,24 +12,8 @@
 BEGIN;
 
 -- ── Drop the existing inline CHECK on conversations.status ────────────────
-DO $$
-DECLARE
-    constraint_name text;
-BEGIN
-    SELECT con.conname INTO constraint_name
-    FROM pg_constraint con
-    JOIN pg_class rel ON rel.oid = con.conrelid
-    JOIN pg_namespace nsp ON nsp.oid = rel.relnamespace
-    WHERE nsp.nspname = 'mediator'
-      AND rel.relname = 'conversations'
-      AND con.contype = 'c'
-      AND pg_get_constraintdef(con.oid) ~ 'status.*IN.*prepping';
-
-    IF constraint_name IS NOT NULL THEN
-        EXECUTE format('ALTER TABLE mediator.conversations DROP CONSTRAINT %I',
-                       constraint_name);
-    END IF;
-END $$;
+ALTER TABLE mediator.conversations
+    DROP CONSTRAINT IF EXISTS conversations_status_check;
 
 -- ── Re-add the CHECK with 'prep_failed' in the expanded IN list ────────────
 ALTER TABLE mediator.conversations
@@ -48,7 +32,7 @@ ALTER TABLE mediator.conversations
     ));
 
 -- ── Partial index for prep_failed sessions (retry / orphan-recovery) ───────
-CREATE INDEX idx_conversations_status_prep_failed
+CREATE INDEX IF NOT EXISTS idx_conversations_status_prep_failed
     ON mediator.conversations (status, created_at)
     WHERE status = 'prep_failed';
 
