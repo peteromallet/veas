@@ -86,12 +86,7 @@ jobs:
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "DO \$\$ BEGIN CREATE ROLE service_role; EXCEPTION WHEN duplicate_object THEN NULL; END \$\$;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE SCHEMA IF NOT EXISTS auth;"
           psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -c "CREATE OR REPLACE FUNCTION auth.uid() RETURNS uuid LANGUAGE sql STABLE AS \$\$ SELECT NULL::uuid \$\$;"
-          for file in migrations/*.sql; do
-            basename="$(basename "$file")"
-            if [ "$basename" != "teardown.sql" ] && [[ "$basename" != *.down.sql ]]; then
-              psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f "$file"
-            fi
-          done
+          psql "$DATABASE_URL" -v ON_ERROR_STOP=1 -f migrations/0006_plan7_eval_results.sql
 
       - name: Parser and unit checks
         run: |

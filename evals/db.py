@@ -110,7 +110,9 @@ async def apply_migrations(pool: Any, schema: str, *, migrations_dir: Path = MIG
     paths = sorted(
         path
         for path in migrations_dir.glob("*.sql")
-        if path.name != "teardown.sql" and path.name not in DURABLE_MIGRATION_FILENAMES
+        if path.name != "teardown.sql"
+        and not path.name.endswith(".down.sql")
+        and path.name not in DURABLE_MIGRATION_FILENAMES
     )
     async with pool.acquire() as connection:
         await connection.execute(f"SET search_path TO {_quote_ident(schema)}, public")

@@ -78,12 +78,14 @@ async def test_scratch_migrations_skip_durable_eval_result_tables(tmp_path) -> N
     migrations_dir.mkdir()
     (migrations_dir / "0001.sql").write_text("CREATE TABLE users (id uuid);", encoding="utf-8")
     (migrations_dir / "0006_plan7_eval_results.sql").write_text("CREATE TABLE public.eval_runs (id uuid);", encoding="utf-8")
+    (migrations_dir / "0007_feature.down.sql").write_text("DROP TABLE users;", encoding="utf-8")
 
     pool = EvalFakePool()
     await apply_migrations(pool, "eval_skip_durable", migrations_dir=migrations_dir)
 
     assert any("CREATE TABLE users" in statement for statement in pool.ddl)
     assert not any("public.eval_runs" in statement for statement in pool.ddl)
+    assert not any("DROP TABLE users" in statement for statement in pool.ddl)
 
 
 @pytest.mark.anyio
