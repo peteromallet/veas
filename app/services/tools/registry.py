@@ -2,9 +2,12 @@
 
 from __future__ import annotations
 
+import logging
 from datetime import UTC, datetime
 from collections.abc import Awaitable, Callable
 from typing import Any
+
+logger = logging.getLogger(__name__)
 
 from pydantic import BaseModel, ValidationError
 
@@ -891,6 +894,66 @@ async def call_tool(
                 started_at=started,
             )
             return guard_error
+        # ── Preserve validated evidence for downstream artifact link creation ──
+        # The guard has already validated evidence_refs/derivation_source.
+        # Normalize to Sprint 4 shape and store in ctx.extras so that
+        # post-write link creation can attach provenance evidence.
+        _evidence_refs = raw_args.get("evidence_refs")
+        _derivation_source = raw_args.get("derivation_source")
+        if _evidence_refs is not None or _derivation_source is not None:
+            try:
+                from app.services.live.provenance import normalize_artifact_link_evidence
+
+                _evidence_payload: dict[str, Any] = {}
+                if _evidence_refs is not None:
+                    _evidence_payload["evidence_refs"] = _evidence_refs
+                if _derivation_source is not None:
+                    _evidence_payload["derivation_source"] = _derivation_source
+                _normalized = normalize_artifact_link_evidence(_evidence_payload)
+                if _normalized is not None:
+                    ctx.extras["_pending_link_evidence"] = _normalized
+            except Exception:
+                logger.warning(
+                    "call_tool: evidence normalization failed for tool=%s; "
+                    "proceeding without link evidence",
+                    name, exc_info=True,
+                )
+
+        # ── Ensure provisional provenance artifact exists ──────────────────
+        # Before the first guarded durable write of this turn, create a
+        # provisional live_debrief artifact that all successful writes will
+        # link to.  The artifact ID is cached in ctx.extras —
+        # subsequent guarded writes reuse the same artifact.
+        if name in LIVE_DEBRIEF_GUARDED_WRITE_TOOLS:
+            if not ctx.extras.get("_provisional_artifact_id"):
+                try:
+                    from app.services.live.provenance import (
+                        ensure_live_debrief_provenance_artifact,
+                    )
+
+                    _conv_id = ctx.trigger_metadata.get("conversation_id", "")
+                    _bot_id = ctx.bot_id or ctx.trigger_metadata.get("bot_id", "mediator")
+                    _user_id = str(ctx.user_id) if ctx.user_id else ""
+
+                    async with ctx.pool.acquire() as _pconn:
+                        async with _pconn.transaction():
+                            _provisional = await ensure_live_debrief_provenance_artifact(
+                                _pconn,
+                                conversation_id=_conv_id,
+                                created_by_turn_id=ctx.turn_id,
+                                bot_id=_bot_id,
+                                user_id=_user_id,
+                            )
+                            ctx.extras["_provisional_artifact_id"] = _provisional.id
+                except Exception:
+                    logger.error(
+                        "call_tool: failed to ensure provisional artifact "
+                        "for tool=%s turn_id=%s — durable writes will not "
+                        "be provenance-linked",
+                        name, ctx.turn_id, exc_info=True,
+                    )
+                    ctx.extras["_provisional_artifact_error"] = True
+
         # Strip guard-only fields from raw_args before model_validate so
         # Pydantic doesn't reject them on schemas without ConfigDict(extra='allow').
         raw_args = {
@@ -1043,6 +1106,41 @@ async def call_tool(
         )
         return result
     result_dict = validated.model_dump(mode="json")
+
+    # ── Debrief provenance: create artifact link for successful guarded writes ──
+    if name in LIVE_DEBRIEF_GUARDED_WRITE_TOOLS:
+        _artifact_id = ctx.extras.get("_provisional_artifact_id")
+        _artifact_error = ctx.extras.get("_provisional_artifact_error", False)
+        if _artifact_id and not _artifact_error:
+            _link_error = await _create_debrief_artifact_link(
+                ctx, name, result_dict, _artifact_id
+            )
+            if _link_error is not None:
+                # Link creation failed — surface as tool error so the
+                # debrief job can decide to fail.  ctx.extras still
+                # carries the target ID for failure-path discovery.
+                await record_turn_event(
+                    ctx.pool,
+                    ctx.turn_id,
+                    "tool.failed",
+                    step=phase,
+                    severity="error",
+                    actor="tool",
+                    metadata={
+                        "tool_name": name,
+                        "reason": "artifact_link_failed",
+                        "error": _link_error.get("error", "unknown"),
+                    },
+                )
+                _record_visible_tool_call(
+                    tool_name=name,
+                    args=args.model_dump(mode="json"),
+                    result=_link_error,
+                    phase=phase,
+                    started_at=started,
+                )
+                return _link_error
+
     await record_turn_event(
         ctx.pool,
         ctx.turn_id,
@@ -1076,3 +1174,100 @@ async def call_tool(
                 # Audit logging must never break tool execution.
                 pass
     return result_dict
+
+
+# ── Debrief provenance link creation helper ──────────────────────────────────
+
+
+async def _create_debrief_artifact_link(
+    ctx: TurnContext,
+    tool_name: str,
+    result_dict: dict[str, Any],
+    artifact_id: str,
+) -> dict[str, Any] | None:
+    """Create an artifact_links row for a successful guarded durable write.
+
+    Returns ``None`` on success (link created or intentionally skipped).
+    Returns a ``_tool_error`` dict when link insertion fails.
+    Does NOT link rejected/error/no-op outputs.
+    """
+    from app.services.live import artifacts as live_artifacts
+    from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+    mapping = LIVE_DEBRIEF_TOOL_OUTPUT_MAP.get(tool_name)
+    if mapping is None:
+        logger.warning(
+            "_create_debrief_artifact_link: tool=%s not in output map",
+            tool_name,
+        )
+        return None
+
+    # ── Check success predicate ──────────────────────────────────────────
+    if not mapping.success_predicate(result_dict):
+        logger.debug(
+            "_create_debrief_artifact_link: tool=%s did not pass "
+            "success predicate — skipping link",
+            tool_name,
+        )
+        return None
+
+    # ── Extract target ID ────────────────────────────────────────────────
+    target_id = result_dict.get(mapping.output_id_field)
+    if not target_id:
+        logger.warning(
+            "_create_debrief_artifact_link: tool=%s missing output_id_field=%s",
+            tool_name, mapping.output_id_field,
+        )
+        return None
+
+    target_id_str = str(target_id)
+
+    # ── Record to ctx.extras FIRST (before add_artifact_link) ────────────
+    # This is the failure-path safety net — if add_artifact_link fails,
+    # ctx.extras still carries the target ID for discovery.
+    durable_writes: list[dict[str, Any]] = ctx.extras.setdefault(
+        "live_debrief_durable_writes", []
+    )
+    durable_writes.append({
+        "tool_name": tool_name,
+        "target_table": mapping.target_table,
+        "target_id": target_id_str,
+        "relation": mapping.relation,
+    })
+
+    # ── Retrieve pending evidence (set by evidence preservation above) ───
+    evidence = ctx.extras.pop("_pending_link_evidence", None)
+
+    # ── Create the artifact link ─────────────────────────────────────────
+    try:
+        async with ctx.pool.acquire() as _conn:
+            async with _conn.transaction():
+                await live_artifacts.add_artifact_link(
+                    _conn,
+                    artifact_id=artifact_id,
+                    target_table=mapping.target_table,
+                    target_id=target_id_str,
+                    relation=mapping.relation,
+                    evidence=evidence,
+                    idempotent=False,
+                )
+    except Exception as exc:
+        logger.error(
+            "_create_debrief_artifact_link: add_artifact_link failed "
+            "tool=%s target_table=%s target_id=%s relation=%s error=%s",
+            tool_name, mapping.target_table, target_id_str,
+            mapping.relation, exc,
+        )
+        return _tool_error(
+            f"artifact_link_failed: could not record provenance link "
+            f"for {tool_name} → {mapping.target_table}/{target_id_str}",
+            error_code="artifact_link_failed",
+            retryable=False,
+        )
+
+    logger.debug(
+        "_create_debrief_artifact_link: linked tool=%s → "
+        "%s/%s (%s)",
+        tool_name, mapping.target_table, target_id_str, mapping.relation,
+    )
+    return None

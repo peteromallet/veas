@@ -509,6 +509,8 @@ async def _persist_prep_success(
             )
 
             # Link each item to the artifact with relation=planned_item.
+            # Live prep is idempotent: re-running prep for the same
+            # conversation must not create duplicate links.
             for item in agenda.items:
                 item_uuid = item_uuid_by_id[item.id]
                 await live_artifacts.add_artifact_link(
@@ -517,6 +519,7 @@ async def _persist_prep_success(
                     target_table="conversation_items",
                     target_id=str(item_uuid),
                     relation="planned_item",
+                    idempotent=True,
                 )
 
             # Update conversation status to ready.

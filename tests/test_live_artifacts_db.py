@@ -331,11 +331,11 @@ class TestCheckViolationRelation:
 
 
 class TestDuplicateLinkAndIdempotency:
-    async def test_duplicate_raw_sql_raises_unique_violation(
+    async def test_duplicate_raw_sql_allowed_after_0054(
         self, scratch_conn: Any, seed_conversation: tuple[str, str],
     ) -> None:
-        """Raw INSERT of a duplicate (artifact_id, target_table, target_id,
-        relation) must raise UniqueViolationError."""
+        """After migration 0054 drops the UNIQUE constraint, duplicate raw
+        INSERTs on artifact_links MUST succeed (insert-distinct by design)."""
         conversation_id, user_id = seed_conversation
         artifact = await create_artifact(
             scratch_conn,
@@ -356,22 +356,35 @@ class TestDuplicateLinkAndIdempotency:
             artifact.id,
             target_id,
         )
-        # Second insert with same key must fail.
-        with pytest.raises(asyncpg.exceptions.UniqueViolationError):
-            await scratch_conn.execute(
-                """
-                INSERT INTO mediator.artifact_links
-                    (artifact_id, target_table, target_id, relation)
-                VALUES ($1, 'memories', $2, 'extracted_memory')
-                """,
-                artifact.id,
-                target_id,
-            )
+        # Second insert with same key must ALSO succeed (no unique constraint).
+        await scratch_conn.execute(
+            """
+            INSERT INTO mediator.artifact_links
+                (artifact_id, target_table, target_id, relation)
+            VALUES ($1, 'memories', $2, 'extracted_memory')
+            """,
+            artifact.id,
+            target_id,
+        )
+        # Verify two rows exist.
+        rows = await scratch_conn.fetch(
+            """
+            SELECT id FROM mediator.artifact_links
+            WHERE artifact_id = $1 AND target_table = 'memories'
+              AND target_id = $2 AND relation = 'extracted_memory'
+              AND deleted_at IS NULL
+            """,
+            artifact.id,
+            target_id,
+        )
+        assert len(rows) == 2, (
+            f"Expected 2 rows after duplicate insert, got {len(rows)}"
+        )
 
     async def test_add_artifact_link_idempotent_returns_same_row(
         self, scratch_conn: Any, seed_conversation: tuple[str, str],
     ) -> None:
-        """Calling add_artifact_link twice with the same key returns the same row."""
+        """Calling add_artifact_link twice with idempotent=True returns the same row."""
         conversation_id, user_id = seed_conversation
         artifact = await create_artifact(
             scratch_conn,
@@ -388,6 +401,7 @@ class TestDuplicateLinkAndIdempotency:
             target_table="memories",
             target_id=target_id,
             relation="extracted_memory",
+            idempotent=True,
         )
         link2 = await add_artifact_link(
             scratch_conn,
@@ -395,6 +409,7 @@ class TestDuplicateLinkAndIdempotency:
             target_table="memories",
             target_id=target_id,
             relation="extracted_memory",
+            idempotent=True,
         )
         assert link1.id == link2.id, (
             f"Idempotent calls returned different rows: {link1.id} vs {link2.id}"

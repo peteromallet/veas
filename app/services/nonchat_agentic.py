@@ -105,6 +105,7 @@ class NonchatJobResult:
     failure_reason: str | None
     turn_id: UUID | None
     tool_call_count: int
+    extras: dict[str, Any] = field(default_factory=dict)
 
     @property
     def submitted_payload(self) -> dict[str, Any] | None:
@@ -197,6 +198,7 @@ async def run_agentic_nonchat_job(
             failure_reason=f"{fp}_submit_missing",
             turn_id=None,
             tool_call_count=0,
+            extras={},
         )
 
     # ── 3. Build TurnContext ────────────────────────────────────────────
@@ -287,6 +289,7 @@ async def run_agentic_nonchat_job(
                 failure_reason=None,
                 turn_id=turn_id,
                 tool_call_count=tool_call_count,
+                extras=dict(ctx.extras),
             )
 
         if final_text and final_text.strip():
@@ -320,6 +323,7 @@ async def run_agentic_nonchat_job(
                 failure_reason=failure_reason,
                 turn_id=turn_id,
                 tool_call_count=tool_call_count,
+                extras=dict(ctx.extras),
             )
 
         # Neither text nor submit — model stopped with no output
@@ -350,6 +354,7 @@ async def run_agentic_nonchat_job(
             failure_reason=failure_reason,
             turn_id=turn_id,
             tool_call_count=tool_call_count,
+            extras=dict(ctx.extras),
         )
 
     except MaxToolCallsExceeded as exc:
@@ -386,6 +391,7 @@ async def run_agentic_nonchat_job(
             failure_reason=failure_reason,
             turn_id=turn_id,
             tool_call_count=exc.tool_call_count,
+            extras=dict(ctx.extras),
         )
 
     except BoundedLoopExceeded:
@@ -423,6 +429,7 @@ async def run_agentic_nonchat_job(
             failure_reason=failure_reason,
             turn_id=turn_id,
             tool_call_count=tool_call_count,
+            extras=dict(ctx.extras),
         )
 
     except Exception:
@@ -461,4 +468,5 @@ async def run_agentic_nonchat_job(
             failure_reason=f"{fp}_submit_missing",
             turn_id=turn_id,
             tool_call_count=tool_call_count,
+            extras=dict(ctx.extras),
         )

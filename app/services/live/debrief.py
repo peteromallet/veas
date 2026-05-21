@@ -619,7 +619,12 @@ async def run_live_debrief_agentic_job(
         config=debrief_config,
     )
 
-    # ── 15. Persist outcome ─────────────────────────────────────────────
+    # ── 15. Resolve provisional artifact ID for failure-path cleanup ────
+    _provisional_artifact_id: str | None = None
+    if hasattr(result, "extras") and isinstance(result.extras, dict):
+        _provisional_artifact_id = result.extras.get("_provisional_artifact_id")
+
+    # ── 16. Persist outcome ─────────────────────────────────────────────
     if result.success and result.brief:
         try:
             await _persist_debrief_success(
@@ -641,6 +646,7 @@ async def run_live_debrief_agentic_job(
                 turn_id=result.turn_id,
                 tool_call_count=result.tool_call_count,
                 error=str(exc),
+                artifact_id=_provisional_artifact_id,
             )
             # Return a failed result so the caller knows persistence broke.
             return NonchatJobResult(
@@ -659,6 +665,7 @@ async def run_live_debrief_agentic_job(
                 failure_reason,
                 turn_id=result.turn_id,
                 tool_call_count=result.tool_call_count,
+                artifact_id=_provisional_artifact_id,
             )
         except Exception:
             logger.exception(
@@ -726,26 +733,66 @@ async def _persist_debrief_success(
     bot_id: str,
     result: Any,
 ) -> None:
-    """Persist the submitted debrief payload as conversation_artifacts rows."""
+    """Persist the submitted debrief payload by finalizing the provisional artifact.
+
+    Sprint 4: Instead of creating a new post-hoc artifact (which would be
+    disconnected from the provenance links accumulated during the debrief
+    turn), this helper **finalizes** the provisional artifact that was
+    created before the first guarded durable write.  All artifact_links
+    rows already point to this artifact revision — finalizing it keeps
+    that relationship intact.
+
+    Falls back to creating a new artifact when no provisional artifact
+    exists (backward compatibility with pre-Sprint-4 or error paths).
+    """
     from app.services.live import artifacts as live_artifacts
+    from app.services.live.provenance import finalize_live_debrief_artifact
 
     brief = result.brief or {}
     conv_id_str = str(conversation_id)
     turn_id_str = str(result.turn_id) if result.turn_id else None
 
+    # ── Resolve the provisional artifact ID from the job result ──────
+    provisional_artifact_id: str | None = None
+    if hasattr(result, "extras") and isinstance(result.extras, dict):
+        provisional_artifact_id = result.extras.get("_provisional_artifact_id")
+
     async with pool.acquire() as conn:
         async with conn.transaction():
-            # Create live_debrief artifact
-            await live_artifacts.create_artifact(
-                conn,
-                conversation_id=conv_id_str,
-                bot_id=bot_id,
-                user_id=str(user_id),
-                artifact_type="live_debrief",
-                payload=brief,
-                payload_version=1,
-                created_by_turn_id=turn_id_str,
-            )
+            if provisional_artifact_id:
+                # ── Sprint 4: finalize the provisional artifact ──────
+                # This updates the same artifact row that all durable-write
+                # links reference — no disconnected post-hoc artifact.
+                finalized = await finalize_live_debrief_artifact(
+                    conn,
+                    artifact_id=provisional_artifact_id,
+                    content=brief,
+                    created_by_turn_id=turn_id_str or "",
+                )
+                logger.info(
+                    "live_debrief: finalized provisional artifact_id=%s "
+                    "conversation_id=%s",
+                    finalized.id,
+                    conversation_id,
+                )
+            else:
+                # ── Fallback: no provisional artifact (pre-Sprint-4 or error) ──
+                logger.warning(
+                    "live_debrief: no provisional artifact in result.extras — "
+                    "creating post-hoc artifact (links will be disconnected) "
+                    "conversation_id=%s",
+                    conversation_id,
+                )
+                await live_artifacts.create_artifact(
+                    conn,
+                    conversation_id=conv_id_str,
+                    bot_id=bot_id,
+                    user_id=str(user_id),
+                    artifact_type="live_debrief",
+                    payload=brief,
+                    payload_version=1,
+                    created_by_turn_id=turn_id_str,
+                )
 
             # If review_summary is present, create a separate artifact
             review_summary = brief.get("review_summary")
@@ -787,15 +834,49 @@ async def _set_debrief_failed(
     turn_id: UUID | None = None,
     tool_call_count: int = 0,
     error: str | None = None,
+    artifact_id: str | None = None,
 ) -> None:
     """Mark a conversation as debrief_failed and store failure details.
+
+    Sprint 4: When *artifact_id* is provided (the provisional provenance
+    artifact), soft-deletes the artifact and its links via
+    :func:`mark_live_debrief_artifact_failed` so reverse provenance
+    remains inspectable even after failure.
 
     Parameters
     ----------
     error:
         Optional exception / traceback string for the ``debrief_error``
         field.  Set when a persistence operation itself raises.
+    artifact_id:
+        Optional UUID string of the provisional live_debrief artifact.
+        When set, soft-deletes the artifact and all of its artifact_links
+        rows, keeping the rows discoverable via ``include_deleted=True``
+        on reverse-provenance queries.
     """
+    # ── Sprint 4: soft-delete provisional artifact + links ──────────────
+    if artifact_id:
+        try:
+            from app.services.live.provenance import (
+                mark_live_debrief_artifact_failed,
+            )
+
+            async with pool.acquire() as conn:
+                async with conn.transaction():
+                    await mark_live_debrief_artifact_failed(
+                        conn,
+                        artifact_id=artifact_id,
+                        reason=failure_reason,
+                    )
+        except Exception:
+            logger.exception(
+                "live_debrief: mark_live_debrief_artifact_failed itself "
+                "raised conversation_id=%s artifact_id=%s — "
+                "continuing to set conversation status",
+                conversation_id,
+                artifact_id,
+            )
+
     failure_details = {
         "debrief_failure_reason": failure_reason,
         "debrief_error": error,

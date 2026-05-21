@@ -22,15 +22,25 @@
 -- Allowed artifact_type values (stable format for parity test regex extraction):
 --   live_prep_brief, live_debrief, review_summary, agenda_revision, transcript_reflection
 --
--- Allowed relation values (stable format for parity test regex extraction):
+-- Allowed relation values (original 0051 set; widened by 0054):
 --   planned_item, summarized_from, evidence_quote, extracted_memory,
 --   extracted_observation, extracted_distillation, created_commitment,
 --   logged_event, created_follow_up, updated_topic_status
+--   (+10 relations added in 0054: extracted_theme, updated_commitment,
+--    closed_commitment, updated_follow_up, created_watch_item,
+--    updated_watch_item, addressed_watch_item, created_oob, updated_oob,
+--    lifted_oob)
 --
--- Allowed target_table values (unqualified canonical strings, stable for regex):
+-- Allowed target_table values (original 0051 set; widened by 0054):
 --   conversations, conversation_items, transcript_turns, conversation_notes,
 --   messages, memories, observations, distillations, commitments, events,
 --   scheduled_jobs, topic_status
+--   (+3 tables added in 0054: themes, watch_items, out_of_bounds)
+--
+-- UNIQUE constraint on (artifact_id, target_table, target_id, relation):
+--   Created in this migration; dropped by 0054_artifact_links_widen_checks
+--   to allow multiple evidence rows per artifact-target-relation tuple
+--   (Sprint 4 insert-distinct semantics).
 --
 -- bot_turns is deliberately excluded from artifact_links.target_table:
 --   provenance for the producing turn is stored via created_by_turn_id FK.

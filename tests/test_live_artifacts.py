@@ -318,7 +318,7 @@ class TestAddArtifactLink:
     async def test_idempotency_same_return(
         self, scratch_conn: Any, seed_conversation: tuple[str, str]
     ) -> None:
-        """Two calls with same key return the same link row."""
+        """Two calls with same key return the same link row (idempotent=True)."""
         conversation_id, user_id = seed_conversation
         artifact = await create_artifact(
             scratch_conn,
@@ -335,6 +335,7 @@ class TestAddArtifactLink:
             target_table="memories",
             target_id=target_id,
             relation="extracted_memory",
+            idempotent=True,
         )
         link2 = await add_artifact_link(
             scratch_conn,
@@ -342,6 +343,7 @@ class TestAddArtifactLink:
             target_table="memories",
             target_id=target_id,
             relation="extracted_memory",
+            idempotent=True,
         )
         assert link1.id == link2.id
         assert link1.artifact_id == link2.artifact_id
@@ -463,8 +465,12 @@ def _extract_check_literals(check_kind: str, sql: str) -> set[str]:
     return set(literals)
 
 
-def _read_migration_up() -> str:
-    return (MIGRATIONS_DIR / "0051_conversation_artifacts.sql").read_text()
+def _read_migration_up(migration: str = "0051_conversation_artifacts") -> str:
+    return (MIGRATIONS_DIR / f"{migration}.sql").read_text()
+
+
+def _read_migration_0054_up() -> str:
+    return (MIGRATIONS_DIR / "0054_artifact_links_widen_checks.sql").read_text()
 
 
 class TestConstantSqlParity:
@@ -478,8 +484,8 @@ class TestConstantSqlParity:
         )
 
     def test_relation_parity(self) -> None:
-        """RELATIONS frozenset must match the SQL CHECK literals exactly."""
-        sql = _read_migration_up()
+        """RELATIONS frozenset must match the SQL CHECK literals from 0054 (widened)."""
+        sql = _read_migration_0054_up()
         sql_relations = _extract_check_literals("relation", sql)
         assert sql_relations == set(RELATIONS), (
             f"SQL relation: {sorted(sql_relations)}\n"
@@ -487,8 +493,8 @@ class TestConstantSqlParity:
         )
 
     def test_target_table_parity(self) -> None:
-        """ALLOWED_TARGET_TABLES frozenset must match the SQL CHECK literals exactly."""
-        sql = _read_migration_up()
+        """ALLOWED_TARGET_TABLES frozenset must match the SQL CHECK literals from 0054 (widened)."""
+        sql = _read_migration_0054_up()
         sql_targets = _extract_check_literals("target_table", sql)
         assert sql_targets == set(ALLOWED_TARGET_TABLES), (
             f"SQL target_table: {sorted(sql_targets)}\n"
@@ -624,3 +630,935 @@ class TestLiveDebriefArtifact:
     def test_create_artifact_live_debrief_supported(self) -> None:
         """create_artifact function handles artifact_type='live_debrief'."""
         assert callable(create_artifact)
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 provenance helpers — DB-gated
+# ---------------------------------------------------------------------------
+
+
+class TestEnsureLiveDebriefProvenanceArtifact:
+    async def test_creates_fresh_for_new_conversation(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """ensure_live_debrief_provenance_artifact creates a new artifact."""
+        from app.services.live.provenance import ensure_live_debrief_provenance_artifact
+
+        conversation_id, user_id = seed_conversation
+        turn_id = str(uuid4())
+        artifact = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=turn_id,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert artifact is not None
+        assert artifact.artifact_type == "live_debrief"
+        assert artifact.conversation_id == conversation_id
+        assert artifact.created_by_turn_id == turn_id
+        assert artifact.payload.get("status") == "provisional"
+        assert artifact.deleted_at is None
+
+    async def test_reuses_existing_for_same_turn(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """Second call with same turn_id returns the same artifact (idempotent)."""
+        from app.services.live.provenance import ensure_live_debrief_provenance_artifact
+
+        conversation_id, user_id = seed_conversation
+        turn_id = str(uuid4())
+        a1 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=turn_id,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        a2 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=turn_id,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert a1.id == a2.id
+        assert a1.revision_number == a2.revision_number
+
+    async def test_distinct_artifact_for_different_turn(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """Different turn_id on same conversation → distinct artifact."""
+        from app.services.live.provenance import ensure_live_debrief_provenance_artifact
+
+        conversation_id, user_id = seed_conversation
+        t1 = str(uuid4())
+        t2 = str(uuid4())
+        a1 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=t1,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        a2 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=t2,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert a1.id != a2.id
+
+    async def test_tombstones_stale_before_creating_new(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """A stale provisional from a prior turn gets tombstoned."""
+        from app.services.live.provenance import ensure_live_debrief_provenance_artifact
+
+        conversation_id, user_id = seed_conversation
+        old_turn = str(uuid4())
+
+        # Create a "stale" provisional with old turn
+        stale = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=old_turn,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert stale.deleted_at is None
+
+        # Now create a fresh one with a new turn — should tombstone stale
+        new_turn = str(uuid4())
+        fresh = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=new_turn,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert fresh.id != stale.id
+        assert fresh.deleted_at is None
+
+        # Verify stale was tombstoned
+        stale_check = await scratch_conn.fetchrow(
+            "SELECT deleted_at FROM mediator.conversation_artifacts WHERE id = $1",
+            stale.id,
+        )
+        assert stale_check is not None
+        assert stale_check["deleted_at"] is not None
+
+    async def test_finalized_artifact_not_tombstoned(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """A finalized artifact is NOT tombstoned when a new provisional is created."""
+        from app.services.live.provenance import (
+            ensure_live_debrief_provenance_artifact,
+            finalize_live_debrief_artifact,
+        )
+
+        conversation_id, user_id = seed_conversation
+        old_turn = str(uuid4())
+
+        # Create and finalize an artifact
+        a1 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=old_turn,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        await finalize_live_debrief_artifact(
+            scratch_conn,
+            artifact_id=a1.id,
+            content={"review_summary": "done"},
+            created_by_turn_id=old_turn,
+        )
+
+        # New turn creates a fresh provisional
+        new_turn = str(uuid4())
+        a2 = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=new_turn,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        assert a2.id != a1.id
+
+        # The finalized artifact should NOT be tombstoned
+        final_check = await scratch_conn.fetchrow(
+            "SELECT deleted_at, payload FROM mediator.conversation_artifacts WHERE id = $1",
+            a1.id,
+        )
+        assert final_check is not None
+        assert final_check["deleted_at"] is None
+        assert final_check["payload"].get("status") == "finalized"
+
+
+class TestFinalizeLiveDebriefArtifact:
+    async def test_updates_payload_to_finalized(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """finalize_live_debrief_artifact updates payload with content."""
+        from app.services.live.provenance import (
+            ensure_live_debrief_provenance_artifact,
+            finalize_live_debrief_artifact,
+        )
+
+        conversation_id, user_id = seed_conversation
+        turn_id = str(uuid4())
+        provisional = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=turn_id,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        finalized = await finalize_live_debrief_artifact(
+            scratch_conn,
+            artifact_id=provisional.id,
+            content={"review_summary": "all good", "what_heard": ["stuff"]},
+            created_by_turn_id=turn_id,
+        )
+        assert finalized.payload.get("status") == "finalized"
+        assert finalized.payload.get("review_summary") == "all good"
+        assert finalized.payload.get("what_heard") == ["stuff"]
+
+    async def test_raises_on_nonexistent_artifact(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """finalize_live_debrief_artifact raises ValueError for missing artifact."""
+        from app.services.live.provenance import finalize_live_debrief_artifact
+
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="no active artifact found"):
+            await finalize_live_debrief_artifact(
+                scratch_conn,
+                artifact_id=str(uuid4()),
+                content={},
+                created_by_turn_id=str(uuid4()),
+            )
+
+
+class TestMarkLiveDebriefArtifactFailed:
+    async def test_soft_deletes_artifact_and_links(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """mark_live_debrief_artifact_failed soft-deletes artifact and links."""
+        from app.services.live.provenance import (
+            ensure_live_debrief_provenance_artifact,
+            mark_live_debrief_artifact_failed,
+        )
+
+        conversation_id, user_id = seed_conversation
+        turn_id = str(uuid4())
+        provisional = await ensure_live_debrief_provenance_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            created_by_turn_id=turn_id,
+            bot_id="mediator",
+            user_id=user_id,
+        )
+        # Add a link
+        await add_artifact_link(
+            scratch_conn,
+            artifact_id=provisional.id,
+            target_table="memories",
+            target_id=str(uuid4()),
+            relation="extracted_memory",
+        )
+        await mark_live_debrief_artifact_failed(
+            scratch_conn,
+            artifact_id=provisional.id,
+            reason="test failure",
+        )
+        # Artifact should be soft-deleted
+        art = await scratch_conn.fetchrow(
+            "SELECT deleted_at, payload FROM mediator.conversation_artifacts WHERE id = $1",
+            provisional.id,
+        )
+        assert art["deleted_at"] is not None
+        assert art["payload"].get("failure_reason") == "test failure"
+
+        # Links should be soft-deleted
+        links = await scratch_conn.fetch(
+            "SELECT deleted_at FROM mediator.artifact_links WHERE artifact_id = $1",
+            provisional.id,
+        )
+        for link in links:
+            assert link["deleted_at"] is not None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 evidence validation — no DB required
+# ---------------------------------------------------------------------------
+
+
+class TestValidateArtifactLinkEvidence:
+    def test_accepts_valid_sprint4_shape(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {
+            "transcript_turn_ids": ["00000000-0000-0000-0000-000000000001"],
+            "quotes": ["hello world"],
+            "confidence": 0.9,
+            "reason": "direct quote",
+        }
+        result = validate_artifact_link_evidence(ev)
+        assert result == ev
+
+    def test_accepts_none(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        assert validate_artifact_link_evidence(None) is None
+
+    def test_rejects_unknown_fields(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"transcript_turn_ids": [], "unknown_field": "x"}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="unknown evidence fields"):
+            validate_artifact_link_evidence(ev)
+
+    def test_rejects_invalid_turn_id_format(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"transcript_turn_ids": ["not-a-uuid"]}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="not a valid UUID"):
+            validate_artifact_link_evidence(ev)
+
+    def test_rejects_non_list_turn_ids(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"transcript_turn_ids": "not-a-list"}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="must be a list"):
+            validate_artifact_link_evidence(ev)
+
+    def test_rejects_confidence_out_of_range(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"confidence": 1.5}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="confidence must be in"):
+            validate_artifact_link_evidence(ev)
+
+    def test_accepts_confidence_zero_and_one(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        assert validate_artifact_link_evidence({"confidence": 0.0})["confidence"] == 0.0
+        assert validate_artifact_link_evidence({"confidence": 1.0})["confidence"] == 1.0
+
+    def test_accepts_confidence_none(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        result = validate_artifact_link_evidence({"confidence": None})
+        assert result["confidence"] is None
+
+    def test_rejects_non_string_quotes(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"quotes": [123]}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="must be a string"):
+            validate_artifact_link_evidence(ev)
+
+    def test_rejects_non_dict_evidence(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="must be a dict"):
+            validate_artifact_link_evidence([])
+
+    def test_rejects_non_string_reason(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        ev = {"reason": 42}
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="reason must be a string or None"):
+            validate_artifact_link_evidence(ev)
+
+    def test_accepts_reason_none(self) -> None:
+        from app.services.live.provenance import validate_artifact_link_evidence
+
+        result = validate_artifact_link_evidence({"reason": None})
+        assert result["reason"] is None
+
+
+class TestNormalizeArtifactLinkEvidence:
+    def test_normalize_guard_high_to_0_9(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        ev = {
+            "evidence_refs": [
+                {"transcript_turn_id": "00000000-0000-0000-0000-000000000001",
+                 "quote": "abc", "confidence": "high"}
+            ]
+        }
+        result = normalize_artifact_link_evidence(ev)
+        assert result["transcript_turn_ids"] == ["00000000-0000-0000-0000-000000000001"]
+        assert result["quotes"] == ["abc"]
+        assert result["confidence"] == 0.9
+
+    def test_normalize_guard_medium_to_0_6(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+        ev = {"evidence_refs": [{"transcript_turn_id": "00000000-0000-0000-0000-000000000002",
+                                  "quote": "x", "confidence": "medium"}]}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["confidence"] == 0.6
+
+    def test_normalize_guard_low_to_0_3(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+        ev = {"evidence_refs": [{"transcript_turn_id": "00000000-0000-0000-0000-000000000003",
+                                  "quote": "y", "confidence": "low"}]}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["confidence"] == 0.3
+
+    def test_normalize_numeric_confidence_through(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+        ev = {"evidence_refs": [{"transcript_turn_id": "00000000-0000-0000-0000-000000000004",
+                                  "quote": "z", "confidence": 0.75}]}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["confidence"] == 0.75
+
+    def test_normalize_derivation_source(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        ev = {"derivation_source": "hot_context"}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["transcript_turn_ids"] == []
+        assert result["quotes"] == []
+        assert result["confidence"] is None
+        assert result["reason"] == "derived_from:hot_context"
+
+    def test_normalize_derivation_source_bot_notes(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        ev = {"derivation_source": "bot_notes"}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["reason"] == "derived_from:bot_notes"
+
+    def test_normalize_derivation_source_prep_artifact(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        ev = {"derivation_source": "prep_artifact"}
+        result = normalize_artifact_link_evidence(ev)
+        assert result["reason"] == "derived_from:prep_artifact"
+
+    def test_normalize_already_sprint4_shape_passes_through(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        ev = {
+            "transcript_turn_ids": ["00000000-0000-0000-0000-000000000001"],
+            "quotes": ["test"],
+            "confidence": 0.8,
+        }
+        result = normalize_artifact_link_evidence(ev)
+        assert result == ev
+
+    def test_normalize_unknown_format_raises(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        import pytest as _pytest
+        with _pytest.raises(ValueError, match="must contain"):
+            normalize_artifact_link_evidence({})
+
+    def test_normalize_none_returns_none(self) -> None:
+        from app.services.live.provenance import normalize_artifact_link_evidence
+
+        assert normalize_artifact_link_evidence(None) is None
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 provenance mapping tests — no DB required
+# ---------------------------------------------------------------------------
+
+
+class TestDebriefToolOutputMapping:
+    def test_all_guarded_tools_covered(self) -> None:
+        """LIVE_DEBRIEF_TOOL_OUTPUT_MAP covers every guarded write tool."""
+        from app.services.tools.registry import LIVE_DEBRIEF_GUARDED_WRITE_TOOLS
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        mapped = set(LIVE_DEBRIEF_TOOL_OUTPUT_MAP.keys())
+        missing = LIVE_DEBRIEF_GUARDED_WRITE_TOOLS - mapped
+        extra = mapped - LIVE_DEBRIEF_GUARDED_WRITE_TOOLS
+        assert not missing, f"Missing tools: {sorted(missing)}"
+        assert not extra, f"Extra tools: {sorted(extra)}"
+
+    def test_all_target_tables_allowed(self) -> None:
+        """Every target_table in the mapping is in ALLOWED_TARGET_TABLES."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        for name, m in LIVE_DEBRIEF_TOOL_OUTPUT_MAP.items():
+            assert m.target_table in ALLOWED_TARGET_TABLES, (
+                f"Tool '{name}' target_table='{m.target_table}' "
+                f"not in ALLOWED_TARGET_TABLES"
+            )
+
+    def test_all_relations_allowed(self) -> None:
+        """Every relation in the mapping is in RELATIONS."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        for name, m in LIVE_DEBRIEF_TOOL_OUTPUT_MAP.items():
+            assert m.relation in RELATIONS, (
+                f"Tool '{name}' relation='{m.relation}' not in RELATIONS"
+            )
+
+    def test_supersede_revise_capture_new_id(self) -> None:
+        """supersede_memory and revise_distillation capture new_id, not id."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        sm = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["supersede_memory"]
+        assert sm.output_id_field == "new_id", (
+            f"supersede_memory must link to new_id, got {sm.output_id_field}"
+        )
+        rd = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["revise_distillation"]
+        assert rd.output_id_field == "new_id", (
+            f"revise_distillation must link to new_id, got {rd.output_id_field}"
+        )
+
+    def test_commitment_tools_use_commitment_id(self) -> None:
+        """Commitment tools link via commitment_id."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        for tool in ("create_commitment", "update_commitment", "close_commitment"):
+            m = LIVE_DEBRIEF_TOOL_OUTPUT_MAP[tool]
+            assert m.output_id_field == "commitment_id", (
+                f"{tool} must link to commitment_id, got {m.output_id_field}"
+            )
+
+    def test_schedule_tools_use_job_id(self) -> None:
+        """Schedule tools (checkin, task) link via job_id to scheduled_jobs table."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        for tool in ("schedule_checkin", "schedule_task",
+                      "update_scheduled_task", "update_scheduled_checkin"):
+            m = LIVE_DEBRIEF_TOOL_OUTPUT_MAP[tool]
+            assert m.target_table == "scheduled_jobs", (
+                f"{tool} must target scheduled_jobs, got {m.target_table}"
+            )
+            assert m.output_id_field == "job_id", (
+                f"{tool} must link to job_id, got {m.output_id_field}"
+            )
+
+    def test_noop_scheduled_updates_not_success(self) -> None:
+        """update_scheduled_task and update_scheduled_checkin treat 'noop' as non-success."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        ut = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["update_scheduled_task"]
+        # action='updated' with job_id → success
+        assert ut.success_predicate({
+            "action": "updated", "job_id": "00000000-0000-0000-0000-000000000001"
+        }) is True
+        # action='noop' even with job_id → no success
+        assert ut.success_predicate({
+            "action": "noop", "job_id": "00000000-0000-0000-0000-000000000001"
+        }) is False
+        # action='updated' but no job_id → no success
+        assert ut.success_predicate({"action": "updated"}) is False
+
+        uc = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["update_scheduled_checkin"]
+        assert uc.success_predicate({
+            "action": "updated", "job_id": "00000000-0000-0000-0000-000000000002"
+        }) is True
+        assert uc.success_predicate({
+            "action": "noop", "job_id": "00000000-0000-0000-0000-000000000002"
+        }) is False
+        assert uc.success_predicate({"action": "updated"}) is False
+
+    def test_commitment_tools_error_is_not_success(self) -> None:
+        """Commitment tools treat is_error=True or missing fields as non-success."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        # All three commitment tools reject is_error=True
+        for tool in ("create_commitment", "update_commitment", "close_commitment"):
+            m = LIVE_DEBRIEF_TOOL_OUTPUT_MAP[tool]
+            assert m.success_predicate({"is_error": True}) is False
+
+        # create_commitment: needs commitment_id
+        cm = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["create_commitment"]
+        assert cm.success_predicate({"commitment_id": "00000000-0000-0000-0000-000000000010"}) is True
+        assert cm.success_predicate({"is_error": False}) is False  # missing commitment_id
+        assert cm.success_predicate({"is_error": False, "commitment_id": None}) is False
+
+        # update_commitment: needs commitment_id + updated_at
+        um = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["update_commitment"]
+        assert um.success_predicate({
+            "commitment_id": "00000000-0000-0000-0000-000000000011",
+            "updated_at": "2026-01-01T00:00:00Z",
+        }) is True
+        assert um.success_predicate({
+            "commitment_id": "00000000-0000-0000-0000-000000000011",
+        }) is False  # missing updated_at
+        assert um.success_predicate({"is_error": False}) is False
+
+        # close_commitment: needs status + closed_at
+        cl = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["close_commitment"]
+        assert cl.success_predicate({
+            "commitment_id": "00000000-0000-0000-0000-000000000012",
+            "status": "completed",
+            "closed_at": "2026-01-01T00:00:00Z",
+        }) is True
+        assert cl.success_predicate({
+            "commitment_id": "00000000-0000-0000-0000-000000000012",
+            "status": "completed",
+        }) is False  # missing closed_at
+        assert cl.success_predicate({"is_error": False}) is False
+
+    def test_noop_outputs_rejected_by_action_predicates(self) -> None:
+        """Tools using _action_is() reject non-matching action values."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        # add_memory only succeeds on action='created'
+        am = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["add_memory"]
+        assert am.success_predicate({"action": "created", "id": "00000000-0000-0000-0000-000000000001"}) is True
+        assert am.success_predicate({"action": "updated", "id": "00000000-0000-0000-0000-000000000001"}) is False
+        assert am.success_predicate({"action": "noop", "id": "00000000-0000-0000-0000-000000000001"}) is False
+        assert am.success_predicate({}) is False
+
+    def test_error_outputs_with_partial_data_not_success(self) -> None:
+        """Outputs with is_error=True must never pass success predicates."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        # Test a representative sample across families
+        err_out = {"is_error": True, "error": "something went wrong"}
+
+        for tool_name in (
+            "add_memory", "supersede_memory", "log_observation",
+            "create_theme", "add_watch_item", "address_watch_item",
+            "add_oob", "lift_oob", "schedule_checkin",
+            "update_scheduled_task", "create_commitment", "close_commitment",
+            "log_event", "revise_distillation",
+        ):
+            m = LIVE_DEBRIEF_TOOL_OUTPUT_MAP[tool_name]
+            assert m.success_predicate(err_out) is False, (
+                f"{tool_name} should reject is_error=True"
+            )
+
+    def test_missing_target_id_rejected(self) -> None:
+        """Outputs missing their stable ID field must not pass success predicates."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        # Each tool has an output_id_field that must be present and truthy
+        # for the predicate to pass (where applicable).
+        # _action_is predicates don't check ID, so they need a separate
+        # validation layer (T8 responsibility).
+
+        # For _scheduled_update_success, job_id must be truthy
+        ut = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["update_scheduled_task"]
+        assert ut.success_predicate({"action": "updated", "job_id": None}) is False
+        assert ut.success_predicate({"action": "updated", "job_id": ""}) is False
+
+        # For _no_error_and_has, fields must be truthy
+        cm = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["create_commitment"]
+        assert cm.success_predicate({"commitment_id": None}) is False
+        assert cm.success_predicate({"commitment_id": ""}) is False
+
+    def test_log_event_predicate(self) -> None:
+        """log_event uses _no_error — any non-error output is success."""
+        from app.services.live.provenance import LIVE_DEBRIEF_TOOL_OUTPUT_MAP
+
+        le = LIVE_DEBRIEF_TOOL_OUTPUT_MAP["log_event"]
+        assert le.success_predicate({}) is True
+        assert le.success_predicate({"is_error": False}) is True
+        assert le.success_predicate({"is_error": True}) is False
+        assert le.success_predicate({"event_id": "00000000-0000-0000-0000-000000000001"}) is True
+
+    def test_new_tables_in_allowed_target_tables(self) -> None:
+        """themes, watch_items, out_of_bounds are in ALLOWED_TARGET_TABLES."""
+        for table in ("themes", "watch_items", "out_of_bounds"):
+            assert table in ALLOWED_TARGET_TABLES, (
+                f"'{table}' must be in ALLOWED_TARGET_TABLES"
+            )
+
+
+# ---------------------------------------------------------------------------
+# Sprint 4 T14: DB-gated reverse lookup tests
+# ---------------------------------------------------------------------------
+
+
+class TestReverseLookupDB:
+    """Verify get_source_conversations_for_durable_record and
+    list_durable_writes_for_conversation with a real database.
+
+    Requires DATABASE_URL / EVAL_DATABASE_URL — skipped otherwise.
+    """
+
+    async def _seed_linked_record(
+        self, scratch_conn: Any,
+        conversation_id: str, user_id: str,
+        target_table: str, target_id: str, relation: str,
+        artifact_type: str = "live_debrief",
+    ) -> dict[str, str]:
+        """Create an artifact + link and return {artifact_id, link_id}."""
+        from app.services.live.artifacts import (
+            add_artifact_link, create_artifact,
+        )
+
+        artifact = await create_artifact(
+            scratch_conn,
+            conversation_id=conversation_id,
+            bot_id="mediator",
+            user_id=user_id,
+            artifact_type=artifact_type,
+            payload={"status": "finalized"},
+            payload_version=1,
+            created_by_turn_id=str(uuid4()),
+        )
+        link = await add_artifact_link(
+            scratch_conn,
+            artifact_id=artifact.id,
+            target_table=target_table,
+            target_id=target_id,
+            relation=relation,
+            idempotent=False,
+        )
+        return {"artifact_id": artifact.id, "link_id": link.id}
+
+    @pytest.mark.parametrize("target_table, relation", [
+        ("memories", "extracted_memory"),
+        ("observations", "extracted_observation"),
+        ("distillations", "extracted_distillation"),
+        ("commitments", "created_commitment"),
+        ("events", "logged_event"),
+        ("scheduled_jobs", "created_follow_up"),
+        ("themes", "extracted_theme"),
+        ("watch_items", "created_watch_item"),
+        ("out_of_bounds", "created_oob"),
+    ])
+    async def test_reverse_lookup_returns_source_conversation(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str],
+        target_table: str, relation: str,
+    ) -> None:
+        """get_source_conversations_for_durable_record returns the
+        conversation that produced a link to a durable record."""
+        from app.services.live.provenance import (
+            get_source_conversations_for_durable_record,
+        )
+
+        conversation_id, user_id = seed_conversation
+        target_id = str(uuid4())
+        await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            target_table, target_id, relation,
+        )
+
+        results = await get_source_conversations_for_durable_record(
+            scratch_conn,
+            target_table=target_table,
+            target_id=target_id,
+            include_deleted=False,
+        )
+
+        assert len(results) >= 1, (
+            f"Expected at least 1 source conversation for "
+            f"target_table={target_table} target_id={target_id}, "
+            f"got {len(results)}"
+        )
+        result = results[0]
+        assert result["target_table"] is None or "conversation_id" in result, (
+            f"Result should have conversation_id: {result}"
+        )
+        assert result["relation"] == relation, (
+            f"Expected relation={relation}, got {result['relation']}"
+        )
+        assert result["artifact_type"] == "live_debrief"
+        assert result["link_deleted"] is False
+        assert result["artifact_deleted"] is False
+
+    async def test_reverse_lookup_respects_include_deleted(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """include_deleted=False hides soft-deleted artifacts/links;
+        include_deleted=True shows them."""
+        from app.services.live.provenance import (
+            get_source_conversations_for_durable_record,
+            mark_live_debrief_artifact_failed,
+        )
+
+        conversation_id, user_id = seed_conversation
+        target_id = str(uuid4())
+        ids = await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            "memories", target_id, "extracted_memory",
+        )
+
+        # Soft-delete the artifact.
+        await mark_live_debrief_artifact_failed(
+            scratch_conn,
+            artifact_id=ids["artifact_id"],
+            reason="test cleanup",
+        )
+
+        # include_deleted=False — should return nothing.
+        active = await get_source_conversations_for_durable_record(
+            scratch_conn,
+            target_table="memories",
+            target_id=target_id,
+            include_deleted=False,
+        )
+        assert len(active) == 0, (
+            f"Expected 0 results with include_deleted=False after soft-delete, "
+            f"got {len(active)}"
+        )
+
+        # include_deleted=True — should return the deleted row.
+        deleted = await get_source_conversations_for_durable_record(
+            scratch_conn,
+            target_table="memories",
+            target_id=target_id,
+            include_deleted=True,
+        )
+        assert len(deleted) >= 1, (
+            f"Expected at least 1 result with include_deleted=True, "
+            f"got {len(deleted)}"
+        )
+        assert deleted[0]["link_deleted"] is True or deleted[0]["artifact_deleted"] is True, (
+            "At least one of link_deleted/artifact_deleted should be True"
+        )
+
+    async def test_list_durable_writes_for_conversation_empty(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """list_durable_writes_for_conversation returns empty list when
+        no links exist."""
+        from app.services.live.provenance import (
+            list_durable_writes_for_conversation,
+        )
+
+        conversation_id, _ = seed_conversation
+        results = await list_durable_writes_for_conversation(
+            scratch_conn,
+            conversation_id=conversation_id,
+        )
+        assert results == [], (
+            f"Expected empty list for conversation with no links, got {results}"
+        )
+
+    async def test_list_durable_writes_for_conversation_with_links(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """list_durable_writes_for_conversation returns all linked records
+        grouped by target_table/relation."""
+        from app.services.live.provenance import (
+            list_durable_writes_for_conversation,
+        )
+
+        conversation_id, user_id = seed_conversation
+
+        # Create links across multiple tables.
+        mem_id = str(uuid4())
+        obs_id = str(uuid4())
+        await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            "memories", mem_id, "extracted_memory",
+        )
+        await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            "observations", obs_id, "extracted_observation",
+        )
+
+        results = await list_durable_writes_for_conversation(
+            scratch_conn,
+            conversation_id=conversation_id,
+            include_deleted=False,
+        )
+
+        assert len(results) >= 2, (
+            f"Expected at least 2 durable writes, got {len(results)}: {results}"
+        )
+
+        tables = {r["target_table"] for r in results}
+        assert "memories" in tables
+        assert "observations" in tables
+
+        # Verify each result has the expected fields.
+        for r in results:
+            for key in (
+                "link_id", "artifact_id", "artifact_type",
+                "revision_number", "target_table", "target_id",
+                "relation", "link_deleted", "artifact_deleted",
+            ):
+                assert key in r, (
+                    f"Result missing key '{key}': {r}"
+                )
+
+    async def test_list_durable_writes_respects_include_deleted(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """list_durable_writes_for_conversation with include_deleted=False
+        excludes soft-deleted links."""
+        from app.services.live.provenance import (
+            list_durable_writes_for_conversation,
+            mark_live_debrief_artifact_failed,
+        )
+
+        conversation_id, user_id = seed_conversation
+        target_id = str(uuid4())
+        ids = await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            "commitments", target_id, "created_commitment",
+        )
+
+        # Soft-delete the artifact.
+        await mark_live_debrief_artifact_failed(
+            scratch_conn,
+            artifact_id=ids["artifact_id"],
+            reason="test cleanup",
+        )
+
+        # include_deleted=False — should return nothing.
+        active = await list_durable_writes_for_conversation(
+            scratch_conn,
+            conversation_id=conversation_id,
+            include_deleted=False,
+        )
+        assert len(active) == 0, (
+            f"Expected 0 results after soft-delete with include_deleted=False, "
+            f"got {len(active)}"
+        )
+
+        # include_deleted=True — should return the deleted row.
+        all_results = await list_durable_writes_for_conversation(
+            scratch_conn,
+            conversation_id=conversation_id,
+            include_deleted=True,
+        )
+        assert len(all_results) >= 1, (
+            f"Expected at least 1 result with include_deleted=True, "
+            f"got {len(all_results)}"
+        )
+
+    async def test_find_artifact_links_for_target_returns_links(
+        self, scratch_conn: Any, seed_conversation: tuple[str, str]
+    ) -> None:
+        """find_artifact_links_for_target returns links for a specific
+        durable record."""
+        from app.services.live.provenance import (
+            find_artifact_links_for_target,
+        )
+
+        conversation_id, user_id = seed_conversation
+        target_id = str(uuid4())
+        ids = await self._seed_linked_record(
+            scratch_conn, conversation_id, user_id,
+            "events", target_id, "logged_event",
+        )
+
+        links = await find_artifact_links_for_target(
+            scratch_conn,
+            target_table="events",
+            target_id=target_id,
+        )
+
+        assert len(links) >= 1, (
+            f"Expected at least 1 link for events/{target_id}, "
+            f"got {len(links)}"
+        )
+        link = links[0]
+        assert link["artifact_id"] == ids["artifact_id"]
+        assert link["relation"] == "logged_event"

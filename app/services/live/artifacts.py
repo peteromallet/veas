@@ -41,8 +41,12 @@ ARTIFACT_TYPES: frozenset[str] = frozenset({
 RELATIONS: frozenset[str] = frozenset({
     "planned_item", "summarized_from", "evidence_quote",
     "extracted_memory", "extracted_observation", "extracted_distillation",
-    "created_commitment", "logged_event", "created_follow_up",
+    "extracted_theme",
+    "created_commitment", "updated_commitment", "closed_commitment",
+    "logged_event", "created_follow_up", "updated_follow_up",
     "updated_topic_status",
+    "created_watch_item", "updated_watch_item", "addressed_watch_item",
+    "created_oob", "updated_oob", "lifted_oob",
 })
 
 ALLOWED_TARGET_TABLES: frozenset[str] = frozenset({
@@ -50,6 +54,7 @@ ALLOWED_TARGET_TABLES: frozenset[str] = frozenset({
     "conversation_notes", "messages", "memories", "observations",
     "distillations", "commitments", "events", "scheduled_jobs",
     "topic_status",
+    "themes", "watch_items", "out_of_bounds",
 })
 
 _MAX_REVISION_RETRIES = 5
@@ -228,11 +233,20 @@ async def add_artifact_link(
     target_id: str,
     relation: str,
     evidence: dict[str, Any] | None = None,
+    idempotent: bool = False,
 ) -> ArtifactLinkRow:
-    """Create or return the existing active provenance link.
+    """Insert a provenance link (insert-distinct by default).
 
-    Idempotent for non-tombstoned links.  If the only existing row is
-    soft-deleted a fresh row is inserted — never returns a tombstoned row.
+    Default behaviour (``idempotent=False``): plain INSERT — each call
+    creates a distinct row.  This is required for Sprint 4 debrief
+    provenance where multiple evidence rows may point to the same
+    (artifact, target_table, target_id, relation) tuple.
+
+    When ``idempotent=True``: attempts INSERT ... ON CONFLICT DO NOTHING
+    and returns the existing non-tombstoned row when a conflict matches.
+    If the only existing row is soft-deleted a fresh row is inserted —
+    never returns a tombstoned row.
+
     *target_table* and *relation* validated in-process (ValueError) before SQL.
     """
     if target_table not in ALLOWED_TARGET_TABLES:
@@ -246,21 +260,28 @@ async def add_artifact_link(
             f"Allowed: {sorted(RELATIONS)}"
         )
 
-    inserted = await conn.fetchrow(
-        """
-        INSERT INTO mediator.artifact_links
-            (artifact_id, target_table, target_id, relation, evidence)
-        VALUES ($1, $2, $3, $4, $5)
-        ON CONFLICT (artifact_id, target_table, target_id, relation)
-            DO NOTHING
-        RETURNING *
-        """,
-        artifact_id, target_table, target_id, relation, evidence,
-    )
-    if inserted is not None:
-        return ArtifactLinkRow.from_record(inserted)
+    if not idempotent:
+        # Insert-distinct: plain INSERT, every call creates a new row.
+        row = await conn.fetchrow(
+            """
+            INSERT INTO mediator.artifact_links
+                (artifact_id, target_table, target_id, relation, evidence)
+            VALUES ($1, $2, $3, $4, $5)
+            RETURNING *
+            """,
+            artifact_id, target_table, target_id, relation, evidence,
+        )
+        if row is None:
+            raise RuntimeError(
+                f"add_artifact_link: insert returned nothing for "
+                f"artifact={artifact_id} target=({target_table},{target_id})"
+                f" relation={relation}"
+            )
+        return ArtifactLinkRow.from_record(row)
 
-    # Conflict matched an existing row — fetch the active (non-tombstoned) one.
+    # Idempotent: SELECT-first pattern — returns existing non-tombstoned row
+    # or inserts a fresh one.  Uses SELECT-then-INSERT instead of ON CONFLICT
+    # because migration 0054 drops the UNIQUE constraint on artifact_links.
     existing = await conn.fetchrow(
         """
         SELECT * FROM mediator.artifact_links
@@ -273,8 +294,7 @@ async def add_artifact_link(
     if existing is not None:
         return ArtifactLinkRow.from_record(existing)
 
-    # Existing row is tombstoned — insert a fresh row (UNIQUE doesn't cover
-    # deleted_at, so a new row with different id is clean).
+    # No active row — insert a fresh one (even if a tombstoned row exists).
     fresh = await conn.fetchrow(
         """
         INSERT INTO mediator.artifact_links
