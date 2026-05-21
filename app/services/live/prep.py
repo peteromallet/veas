@@ -190,7 +190,7 @@ async def run_live_prep_agentic_job(
     topic_id: UUID | None,
     pool: Any,
 ) -> Any:
-    """Run the agentic live-prep turn for a conversation in status='prepping'.
+    """Run the agentic live-prep turn for a conversation in status='preparing'.
 
     Loads the conversations row, gathers context, calls the non-chat agentic
     runner, and persists artifacts + items on success or marks the session as
@@ -200,9 +200,13 @@ async def run_live_prep_agentic_job(
     need a ``PrepResult`` should call ``produce_agenda`` through the legacy
     sync path instead.
     """
+    import time as _time
+
     from app.services.live import artifacts as live_artifacts
     from app.services.nonchat_agentic import run_agentic_nonchat_job
+    from app.services.live.status import canonicalize_status
 
+    _start = _time.monotonic()
     settings = get_settings()
 
     # ── 1. Load the conversations row ───────────────────────────────────
@@ -219,14 +223,22 @@ async def run_live_prep_agentic_job(
         raise ValueError(
             f"conversation_id={conversation_id} not found in mediator.conversations"
         )
-    if row["status"] != "prepping":
+    if canonicalize_status(row["status"]) != "preparing":
         raise ValueError(
             f"conversation_id={conversation_id} has status={row['status']!r}, "
-            f"expected 'prepping'"
+            f"expected 'preparing' or 'prepping'"
         )
 
     steering = steering_text or row["steering_text"] or ""
     resolved_topic_id = topic_id or row["topic_id"]
+
+    # ── Structured log: prep start (via centralized metrics) ────────────
+    from app.services.live.metrics import log_prep_start
+    log_prep_start(
+        str(conversation_id), bot_id, str(user_id),
+        status_transition="preparing->(pending)", retry_count=0,
+        logger=logger,
+    )
 
     # ── 2. Load partner user if present ─────────────────────────────────
     partner: User | None = None
@@ -306,16 +318,37 @@ async def run_live_prep_agentic_job(
 
     # ── 10. Persist outcome ─────────────────────────────────────────────
     if result.success and result.brief:
-        await _persist_prep_success(
+        artifact_id = await _persist_prep_success(
             pool,
             conversation_id,
             user_id,
             bot_id,
             result,
         )
+        _elapsed = _time.monotonic() - _start
+        from app.services.live.metrics import log_prep_success
+        log_prep_success(
+            str(conversation_id), bot_id,
+            duration_s=_elapsed,
+            tool_count=result.tool_call_count,
+            status_transition="preparing->ready",
+            artifact_revision="latest",
+            logger=logger,
+        )
     else:
         failure_reason = result.failure_reason or "live_prep_submit_missing"
         await _set_prep_failed(pool, conversation_id, failure_reason)
+        _elapsed = _time.monotonic() - _start
+        from app.services.live.metrics import log_prep_failure
+        log_prep_failure(
+            str(conversation_id), bot_id,
+            duration_s=_elapsed,
+            tool_count=result.tool_call_count,
+            failure_reason=failure_reason,
+            failure_class="prep_failed",
+            status_transition="preparing->prep_failed",
+            logger=logger,
+        )
 
     return result
 
@@ -326,30 +359,67 @@ async def retry_live_prep(
 ) -> Any:
     """Retry a failed live prep session.
 
-    Checks that the conversation is in ``prep_failed`` status, resets it to
-    ``prepping``, and re-runs ``run_live_prep_agentic_job``.
+    Checks that the conversation is in ``prep_failed`` status (accepting
+    both canonical ``prep_failed`` and any legacy equivalent), resets it
+    to ``preparing`` (the canonical value), and re-runs
+    ``run_live_prep_agentic_job``.
+
+    **Retry owns the status transition.**  Callers MUST NOT pre-set the
+    conversation status before calling this function — doing so creates a
+    race where the pre-set value (e.g. ``'preparing'``) will fail the
+    ``prep_failed`` gate inside this function.
     """
+    import time as _time
+    from app.services.live.status import canonicalize_status
+
+    _start = _time.monotonic()
+
     row = await pool.fetchrow(
-        "SELECT id, user_id, bot_id, steering_text, topic_id, status "
-        "FROM mediator.conversations WHERE id = $1",
+        "SELECT id, user_id, bot_id, steering_text, topic_id, status, "
+        "session_fields FROM mediator.conversations WHERE id = $1",
         conversation_id,
     )
     if row is None:
         raise ValueError(
             f"retry_live_prep: conversation_id={conversation_id} not found"
         )
-    if row["status"] != "prep_failed":
+
+    current_status = canonicalize_status(row["status"])
+    if current_status != "prep_failed":
         raise ValueError(
             f"retry_live_prep: conversation_id={conversation_id} "
-            f"has status={row['status']!r}, expected 'prep_failed'"
+            f"has status={row['status']!r} (canonical={current_status!r}), "
+            f"expected 'prep_failed'"
         )
 
+    # Count previous attempts from session_fields.retry_count.
+    sf = row["session_fields"] or {}
+    if isinstance(sf, dict):
+        prev_retries = sf.get("retry_count", 0)
+    else:
+        prev_retries = 0
+    retry_number = prev_retries + 1
+
+    # ── Own the status transition ────────────────────────────────────
     await pool.execute(
-        "UPDATE mediator.conversations SET status = 'prepping' WHERE id = $1",
+        "UPDATE mediator.conversations "
+        "SET status = 'preparing', "
+        "    session_fields = session_fields "
+        "        || jsonb_build_object('retry_count', $2::int) "
+        "WHERE id = $1",
         conversation_id,
+        retry_number,
     )
 
-    return await run_live_prep_agentic_job(
+    from app.services.live.metrics import log_prep_start as _metrics_prep_start
+    _metrics_prep_start(
+        str(conversation_id), row["bot_id"], str(row["user_id"]),
+        status_transition="prep_failed->preparing",
+        retry_count=retry_number,
+        logger=logger,
+    )
+
+    result = await run_live_prep_agentic_job(
         conversation_id=conversation_id,
         user_id=UUID(row["user_id"]),
         bot_id=row["bot_id"],
@@ -357,6 +427,20 @@ async def retry_live_prep(
         topic_id=UUID(row["topic_id"]) if row["topic_id"] else None,
         pool=pool,
     )
+
+    _elapsed = _time.monotonic() - _start
+    from app.services.live.metrics import log_prep_retry_result
+    log_prep_retry_result(
+        str(conversation_id), row["bot_id"],
+        retry_number=retry_number,
+        success=result.success,
+        duration_s=_elapsed,
+        tool_count=result.tool_call_count,
+        failure_reason=result.failure_reason if not result.success else None,
+        logger=logger,
+    )
+
+    return result
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────
@@ -433,8 +517,11 @@ async def _persist_prep_success(
     user_id: UUID,
     bot_id: str,
     result: Any,
-) -> None:
-    """Persist the submitted brief to conversations_items, artifacts, and links."""
+) -> str:
+    """Persist the submitted brief to conversations_items, artifacts, and links.
+
+    Returns the artifact id string for logging.
+    """
     from app.services.live import artifacts as live_artifacts
 
     brief = result.brief or {}
@@ -544,6 +631,7 @@ async def _persist_prep_success(
         artifact.id,
         conversation_id,
     )
+    return artifact.id
 
 
 async def _set_prep_failed(
@@ -575,6 +663,7 @@ async def produce_agenda(
     request: PrepRequest,
     *,
     producer: AgendaProducer,
+    session_id: UUID | None = None,
 ) -> PrepResult:
     """End-to-end prep: gather context, call producer, persist atomically.
 
@@ -582,6 +671,11 @@ async def produce_agenda(
     in a single transaction so a partial agenda never lands. Sets
     ``current_item_id`` on the conversation row to the UUID of the row
     matching ``agenda.first_item_id``.
+
+    When *session_id* is provided, the caller has already pre-inserted a
+    conversation row (e.g. in status='preparing') and this function updates
+    it in-place instead of inserting a second row.  When *session_id* is
+    ``None`` (backward-compatible path), a new row is inserted.
     """
     user_uuid = UUID(request.user_id)
     context = await gather_prep_context(pool, user_uuid, request.bot_id)
@@ -603,26 +697,42 @@ async def produce_agenda(
         except Exception:
             logger.warning("prep: theme lookup failed; theme_id=NULL on every item", exc_info=True)
 
-    session_id = uuid4()
+    resolved_session_id = session_id or uuid4()
     item_uuid_by_id: dict[str, UUID] = {item.id: uuid4() for item in agenda.items}
     current_item_uuid = item_uuid_by_id[agenda.first_item_id]
     mode = "steered" if (request.steering_text or "").strip() else "open"
 
     async with pool.acquire() as conn:
         async with conn.transaction():
-            await conn.execute(
-                """
-                INSERT INTO mediator.conversations
-                    (id, user_id, bot_id, mode, steering_text, status, prep_summary, current_item_id)
-                VALUES ($1, $2, $3, $4, $5, 'ready', $6, NULL)
-                """,
-                session_id,
-                user_uuid,
-                request.bot_id,
-                mode,
-                request.steering_text,
-                agenda.prep_summary,
-            )
+            if session_id is not None:
+                # Caller pre-inserted the row — update it in-place.
+                await conn.execute(
+                    """
+                    UPDATE mediator.conversations
+                    SET status = 'ready',
+                        prep_summary = $2,
+                        mode = $3
+                    WHERE id = $1
+                    """,
+                    resolved_session_id,
+                    agenda.prep_summary,
+                    mode,
+                )
+            else:
+                # Backward-compatible path: insert a fresh row.
+                await conn.execute(
+                    """
+                    INSERT INTO mediator.conversations
+                        (id, user_id, bot_id, mode, steering_text, status, prep_summary, current_item_id)
+                    VALUES ($1, $2, $3, $4, $5, 'ready', $6, NULL)
+                    """,
+                    resolved_session_id,
+                    user_uuid,
+                    request.bot_id,
+                    mode,
+                    request.steering_text,
+                    agenda.prep_summary,
+                )
             for order_hint, item in enumerate(agenda.items):
                 await conn.execute(
                     """
@@ -634,7 +744,7 @@ async def produce_agenda(
                     VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9::uuid[], $10, $11, $12, $13)
                     """,
                     item_uuid_by_id[item.id],
-                    session_id,
+                    resolved_session_id,
                     theme_id_by_slug.get(item.theme_slug) if item.theme_slug else None,
                     item.kind,
                     item.title,
@@ -651,11 +761,11 @@ async def produce_agenda(
             await conn.execute(
                 "UPDATE mediator.conversations SET current_item_id = $1 WHERE id = $2",
                 current_item_uuid,
-                session_id,
+                resolved_session_id,
             )
 
     return PrepResult(
-        session_id=str(session_id),
+        session_id=str(resolved_session_id),
         agenda=agenda,
         items_persisted=len(agenda.items),
         current_item_id=str(current_item_uuid),

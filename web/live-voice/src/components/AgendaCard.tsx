@@ -1,7 +1,8 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import {
   LiveApiError,
   fetchSessionCard,
+  retryPrep,
   type AgendaItemCard,
   type Persona,
   type SessionCardPayload,
@@ -65,29 +66,95 @@ function ItemRow({ item }: { item: AgendaItemCard }) {
   );
 }
 
+/** Statuses that indicate prep is still in progress — poll until ready/failed. */
+const PREP_PENDING_STATUSES = new Set(["preparing", "prepping"]);
+
 export function AgendaCard({ persona, sessionId, onConfirm, onCancel }: Props) {
   const [card, setCard] = useState<SessionCardPayload | null>(null);
   const [error, setError] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const cancelledRef = useRef(false);
 
-  useEffect(() => {
-    let cancelled = false;
+  const loadCard = () => {
     fetchSessionCard(sessionId)
       .then((c) => {
-        if (!cancelled) setCard(c);
+        if (cancelledRef.current) return;
+        setCard(c);
+        setError(null);
+        // Stop polling when prep is no longer pending
+        if (!PREP_PENDING_STATUSES.has(c.status)) {
+          if (pollRef.current) {
+            clearInterval(pollRef.current);
+            pollRef.current = null;
+          }
+        }
       })
       .catch((err: unknown) => {
-        if (cancelled) return;
+        if (cancelledRef.current) return;
         setError(
           err instanceof LiveApiError
             ? err.message
             : "Could not load the session card.",
         );
       });
+  };
+
+  useEffect(() => {
+    cancelledRef.current = false;
+    // Initial load
+    loadCard();
+    // Poll every 2 seconds while prep is pending
+    pollRef.current = setInterval(() => {
+      fetchSessionCard(sessionId)
+        .then((c) => {
+          if (cancelledRef.current) return;
+          setCard(c);
+          setError(null);
+          if (!PREP_PENDING_STATUSES.has(c.status)) {
+            if (pollRef.current) {
+              clearInterval(pollRef.current);
+              pollRef.current = null;
+            }
+          }
+        })
+        .catch(() => {
+          // Silently ignore poll errors — the initial load error is surfaced
+        });
+    }, 2000);
+
     return () => {
-      cancelled = true;
+      cancelledRef.current = true;
+      if (pollRef.current) {
+        clearInterval(pollRef.current);
+        pollRef.current = null;
+      }
     };
   }, [sessionId]);
 
+  const handleRetry = async () => {
+    setRetrying(true);
+    setError(null);
+    try {
+      await retryPrep(sessionId);
+      // Retry succeeded — the session is now in 'preparing' state.
+      // Restart polling.
+      setCard(null);
+      // Poll will resume automatically via the interval (still running).
+      // But we need an immediate load to show the preparing state.
+      loadCard();
+    } catch (err: unknown) {
+      setError(
+        err instanceof LiveApiError
+          ? err.message
+          : "Retry failed. Please try again.",
+      );
+    } finally {
+      setRetrying(false);
+    }
+  };
+
+  // ── Error state ──────────────────────────────────────────────────────
   if (error) {
     return (
       <section className="mx-auto max-w-2xl px-6 py-10">
@@ -105,15 +172,62 @@ export function AgendaCard({ persona, sessionId, onConfirm, onCancel }: Props) {
     );
   }
 
-  if (!card) {
+  // ── Loading (preparing / no card yet) ────────────────────────────────
+  if (!card || PREP_PENDING_STATUSES.has(card.status)) {
     return (
       <section className="mx-auto max-w-2xl px-6 py-10">
-        <p className="text-sm text-veas-muted">Catching up on where you are…</p>
+        <div className="flex flex-col items-center gap-4">
+          <div className="h-8 w-8 animate-spin rounded-full border-2 border-veas-accent border-t-transparent" />
+          <p className="text-sm text-veas-muted">
+            {card?.status === "preparing" || card?.status === "prepping"
+              ? "Preparing your session agenda…"
+              : "Catching up on where you are…"}
+          </p>
+          <p className="text-xs text-veas-muted/60">
+            This may take up to 30 seconds
+          </p>
+        </div>
+      </section>
+    );
+  }
+
+  // ── Prep failed ──────────────────────────────────────────────────────
+  if (card.status === "prep_failed") {
+    return (
+      <section className="mx-auto max-w-2xl px-6 py-10">
+        <div className="rounded-lg border border-red-500/30 bg-red-500/10 p-6">
+          <h3 className="text-sm font-medium text-red-300">
+            Session preparation failed
+          </h3>
+          {card.failure_reason && (
+            <p className="mt-2 text-sm text-red-200/80">
+              {card.failure_reason}
+            </p>
+          )}
+          <div className="mt-4 flex items-center gap-3">
+            <button
+              type="button"
+              onClick={onCancel}
+              className="rounded-md px-4 py-2 text-sm text-veas-muted hover:text-white"
+            >
+              Back
+            </button>
+            <button
+              type="button"
+              onClick={handleRetry}
+              disabled={retrying}
+              className="rounded-md bg-veas-accent px-5 py-2 text-sm font-medium text-veas-bg transition hover:bg-veas-accent/90 disabled:opacity-50"
+            >
+              {retrying ? "Retrying…" : "Retry"}
+            </button>
+          </div>
+        </div>
       </section>
     );
   }
 
   const { themed, orphans } = groupByTheme(card.items);
+  const canStart = card.status === "ready" && card.items.length > 0;
 
   return (
     <section className="mx-auto max-w-2xl px-6 py-10">
@@ -170,7 +284,8 @@ export function AgendaCard({ persona, sessionId, onConfirm, onCancel }: Props) {
         <button
           type="button"
           onClick={onConfirm}
-          className="rounded-md bg-veas-accent px-5 py-2 text-sm font-medium text-veas-bg transition hover:bg-veas-accent/90"
+          disabled={!canStart}
+          className="rounded-md bg-veas-accent px-5 py-2 text-sm font-medium text-veas-bg transition hover:bg-veas-accent/90 disabled:opacity-50 disabled:cursor-not-allowed"
         >
           Start the conversation
         </button>

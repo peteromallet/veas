@@ -97,6 +97,39 @@ class LiveVoiceFakePool:
             if conv is None:
                 return None
             return {"id": conv["id"], "status": conv["status"]}
+        # SELECT with user_id, bot_id, steering_text, topic_id, status,
+        # session_fields (used by retry_live_prep).
+        if compact.startswith("SELECT id, user_id, bot_id, steering_text, topic_id, status, session_fields"):
+            conv = self._conversations.get(args[0])
+            if conv is None:
+                return None
+            return {
+                "id": conv["id"],
+                "user_id": conv.get("user_id", str(uuid4())),
+                "bot_id": conv.get("bot_id", "unknown"),
+                "steering_text": conv.get("steering_text", ""),
+                "topic_id": conv.get("topic_id"),
+                "status": conv["status"],
+                "session_fields": conv.get("session_fields", {}),
+            }
+        # gather_prep_context: SELECT from users
+        if compact.startswith("SELECT id, name, phone, timezone, style_notes, onboarding_state"):
+            return {
+                "id": args[0],
+                "name": "Test User",
+                "timezone": "America/New_York",
+                "style_notes": None,
+                "onboarding_state": "done",
+                "pacing_preferences": None,
+                "pregnancy_edd": None,
+                "pregnancy_dating_basis": None,
+                "pregnancy_lmp_date": None,
+                "pregnancy_scan_date": None,
+                "pregnancy_scan_corrected_at": None,
+                "pregnancy_started_at": None,
+                "pregnancy_ended_at": None,
+                "pregnancy_outcome": None,
+            }
         raise AssertionError(f"unexpected fetchrow: {compact}")
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
@@ -104,6 +137,15 @@ class LiveVoiceFakePool:
         if "FROM mediator.conversation_items" in compact:
             conv_id = args[0] if args else None
             return self._items.get(conv_id, [])
+        # gather_prep_context: SELECT from themes (id, slug, label)
+        if "FROM themes" in compact and "slug = ANY" not in compact:
+            return []
+        # produce_agenda theme lookup: SELECT id, slug FROM themes WHERE ...
+        if "FROM themes" in compact and "slug = ANY" in compact:
+            return []
+        # gather_prep_context: SELECT from distillations
+        if "FROM distillations" in compact:
+            return []
         raise AssertionError(f"unexpected fetch: {compact}")
 
     async def execute(self, sql: str, *args: Any) -> str:
@@ -112,13 +154,13 @@ class LiveVoiceFakePool:
 
         # INSERT INTO mediator.conversations
         # The current INSERT embeds literals for status/prep_summary/current_item_id:
-        #   VALUES ($1, $2, $3, $4, $5, 'prepping', NULL, NULL, $6)
+        #   VALUES ($1, $2, $3, $4, $5, 'preparing', NULL, NULL, $6)
         # So args = [id, user_id, bot_id, mode, steering_text, topic_id]
         if compact.startswith("INSERT INTO mediator.conversations"):
             row_id = args[0] if args else uuid4()
             row: dict[str, Any] = {
                 "id": row_id,
-                "status": "prepping",       # always literal in INSERT
+                "status": "preparing",       # canonical default
                 "prep_summary": None,        # always literal NULL
                 "current_item_id": None,     # always literal NULL
                 "session_fields": {},
@@ -140,11 +182,13 @@ class LiveVoiceFakePool:
 
         # UPDATE mediator.conversations SET status = ...
         if compact.startswith(
+            "UPDATE mediator.conversations SET status = 'preparing' WHERE"
+        ) or compact.startswith(
             "UPDATE mediator.conversations SET status = 'prepping' WHERE"
         ):
             conv_id = args[0]
             if conv_id in self._conversations:
-                self._conversations[conv_id]["status"] = "prepping"
+                self._conversations[conv_id]["status"] = "preparing"
             return "UPDATE 1"
 
         if compact.startswith("UPDATE mediator.conversations SET status = 'ready'"):
@@ -174,7 +218,10 @@ class LiveVoiceFakePool:
                                 self._conversations[conv_id]["status"] = m.group(1)
                         if "session_fields" in compact and "jsonb_build_object" in compact:
                             self._conversations[conv_id].setdefault("session_fields", {})
-                            self._conversations[conv_id]["session_fields"]["prep_error"] = "orphaned"
+                            if "retry_count" in compact:
+                                self._conversations[conv_id]["session_fields"]["retry_count"] = args[1] if len(args) > 1 else 1
+                            else:
+                                self._conversations[conv_id]["session_fields"]["prep_error"] = "orphaned"
                     return "UPDATE 1"
             return "UPDATE 1"
 
@@ -281,10 +328,10 @@ def _client(monkeypatch, pool: LiveVoiceFakePool) -> TestClient:
 
 
 class TestSessionCreation:
-    """POST /api/live/sessions returns immediately with status='prepping'."""
+    """POST /api/live/sessions returns immediately with status='preparing'."""
 
     def test_create_session_returns_prepping_immediately(self, monkeypatch) -> None:
-        """(a) POST returns status='prepping' and prep_pending=true."""
+        """(a) POST returns status='preparing' and prep_pending=true."""
         pool = LiveVoiceFakePool()
         # Patch primary_topic_id_for to return a known topic id.
         monkeypatch.setattr(
@@ -304,17 +351,17 @@ class TestSessionCreation:
         )
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["status"] == "prepping", data
+        assert data["status"] == "preparing", data
         assert data["prep_pending"] is True, data
         assert "session_id" in data
 
-        # Verify the conversation row was inserted in prepping status.
+        # Verify the conversation row was inserted in preparing status.
         session_id = UUID(data["session_id"])
         assert session_id in pool._conversations
-        # The noop prep leaves the conversation in prepping (it's a no-op).
+        # The noop prep leaves the conversation in preparing (it's a no-op).
         # The background task may have run, but since we patched it, status
-        # should remain as originally set ("prepping").
-        assert pool._conversations[session_id]["status"] == "prepping"
+        # should remain as originally set ("preparing").
+        assert pool._conversations[session_id]["status"] == "preparing"
 
     def test_create_session_stub_path_returns_ready(self, monkeypatch) -> None:
         """With LIVE_VOICE_PREP_PROVIDER=stub, legacy sync path returns ready."""
@@ -342,7 +389,7 @@ class TestCardEndpoint:
     """GET /api/live/sessions/{id}/card returns correct states."""
 
     def test_card_while_prepping_returns_pending(self, monkeypatch) -> None:
-        """(b) /card while prepping returns empty items with prep_pending=true."""
+        """(b) /card while preparing returns empty items with prep_pending=true."""
         pool = LiveVoiceFakePool()
         monkeypatch.setattr(
             "app.routers.live_voice.primary_topic_id_for",
@@ -355,18 +402,18 @@ class TestCardEndpoint:
         )
         client = _client(monkeypatch, pool)
 
-        # Create a session (async path — returns prepping).
+        # Create a session (async path — returns preparing).
         resp = client.post(
             "/api/live/sessions",
             json={"bot_id": "tante_rosi"},
         )
         session_id = resp.json()["session_id"]
 
-        # Hit /card — should be prepping.
+        # Hit /card — should be preparing.
         card = client.get(f"/api/live/sessions/{session_id}/card")
         assert card.status_code == 200, card.text
         card_data = card.json()
-        assert card_data["status"] == "prepping", card_data
+        assert card_data["status"] == "preparing", card_data
         assert card_data["prep_pending"] is True, card_data
         assert card_data["items"] == [], card_data
         assert card_data["failure_reason"] is None, card_data
@@ -434,7 +481,7 @@ class TestCardEndpoint:
         async with AsyncClient(
             transport=transport, base_url="http://testserver"
         ) as client:
-            # Create session — should return prepping.
+            # Create session — should return preparing.
             resp = await client.post(
                 "/api/live/sessions",
                 json={"bot_id": "tante_rosi", "steering_text": "test"},
@@ -442,7 +489,7 @@ class TestCardEndpoint:
             assert resp.status_code == 200, resp.text
             data = resp.json()
             session_id = data["session_id"]
-            assert data["status"] == "prepping"
+            assert data["status"] == "preparing"
 
             # The background task was created via asyncio.create_task.
             # Give the event loop a tick to process pending tasks.
@@ -551,7 +598,7 @@ class TestRetryEndpoint:
         assert resp.status_code == 409, resp.text
 
     def test_retry_succeeds_for_prep_failed(self, monkeypatch) -> None:
-        """Retry on a prep_failed session returns 200 with status='prepping'."""
+        """Retry on a prep_failed session returns 200 with status='preparing'."""
         pool = LiveVoiceFakePool()
         monkeypatch.setattr(
             "app.routers.live_voice.primary_topic_id_for",
@@ -576,7 +623,7 @@ class TestRetryEndpoint:
         resp = client.post(f"/api/live/sessions/{failed_id}/prep/retry")
         assert resp.status_code == 200, resp.text
         data = resp.json()
-        assert data["status"] == "prepping", data
+        assert data["status"] == "preparing", data
         assert data["prep_pending"] is True, data
 
 
@@ -619,6 +666,100 @@ class TestNotFoundAndErrors:
             json={"bot_id": "tante_rosi"},
         )
         assert resp.status_code == 503, resp.text
+
+
+class TestSingleRowCreation:
+    """T3: Both async and producer/stub prep paths create exactly one
+    conversation row — no orphan rows."""
+
+    def test_stub_path_creates_exactly_one_row(self, monkeypatch) -> None:
+        """LIVE_VOICE_PREP_PROVIDER=stub creates exactly one conversation row.
+
+        The router pre-inserts a row in 'preparing' status, then passes
+        the session_id to produce_agenda which updates it in-place to
+        'ready'.  No second row is inserted.
+        """
+        monkeypatch.setenv("LIVE_VOICE_PREP_PROVIDER", "stub")
+        get_settings.cache_clear()
+
+        pool = LiveVoiceFakePool()
+        monkeypatch.setattr(
+            "app.routers.live_voice.primary_topic_id_for",
+            _fake_primary_topic_id_for,
+        )
+        client = _client(monkeypatch, pool)
+
+        resp = client.post(
+            "/api/live/sessions",
+            json={"bot_id": "tante_rosi", "steering_text": "test"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ready"
+        assert data["prep_pending"] is False
+
+        # Exactly one conversation row must exist.
+        assert len(pool._conversations) == 1, (
+            f"Expected exactly 1 conversation row, "
+            f"found {len(pool._conversations)}: {list(pool._conversations.keys())}"
+        )
+
+    def test_async_path_creates_exactly_one_row(self, monkeypatch) -> None:
+        """Default async path creates exactly one conversation row.
+
+        The router inserts one row in 'preparing' status and schedules
+        background prep.  No second row should ever be inserted.
+        """
+        pool = LiveVoiceFakePool()
+        monkeypatch.setattr(
+            "app.routers.live_voice.primary_topic_id_for",
+            _fake_primary_topic_id_for,
+        )
+        monkeypatch.setattr(
+            "app.routers.live_voice.run_live_prep_agentic_job",
+            _noop_prep_job,
+        )
+        client = _client(monkeypatch, pool)
+
+        resp = client.post(
+            "/api/live/sessions",
+            json={"bot_id": "tante_rosi"},
+        )
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["session_id"]
+
+        # Exactly one conversation row must exist.
+        assert len(pool._conversations) == 1, (
+            f"Expected exactly 1 conversation row, "
+            f"found {len(pool._conversations)}: {list(pool._conversations.keys())}"
+        )
+
+    def test_router_returns_preinserted_session_id(self, monkeypatch) -> None:
+        """The router returns the same session_id it pre-inserted, not a new one."""
+        monkeypatch.setenv("LIVE_VOICE_PREP_PROVIDER", "stub")
+        get_settings.cache_clear()
+
+        pool = LiveVoiceFakePool()
+        monkeypatch.setattr(
+            "app.routers.live_voice.primary_topic_id_for",
+            _fake_primary_topic_id_for,
+        )
+        client = _client(monkeypatch, pool)
+
+        resp = client.post(
+            "/api/live/sessions",
+            json={"bot_id": "tante_rosi", "steering_text": "test"},
+        )
+        assert resp.status_code == 200
+        data = resp.json()
+        session_id_from_response = UUID(data["session_id"])
+
+        # The only row in the pool should have this ID.
+        assert session_id_from_response in pool._conversations, (
+            f"Response session_id={session_id_from_response} not found in "
+            f"pool conversations: {list(pool._conversations.keys())}"
+        )
 
 
 # --------------------------------------------------------------------------- #

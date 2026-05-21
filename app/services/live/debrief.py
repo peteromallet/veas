@@ -335,6 +335,10 @@ async def run_live_debrief_agentic_job(
 
     Returns :class:`NonchatJobResult`.
     """
+    import time as _time
+
+    _start = _time.monotonic()
+
     # ── Function-scoped imports to avoid circular deps ──────────────────
     from app.bots.registry import get_bot_spec
     from app.services.live import artifacts as live_artifacts
@@ -380,6 +384,9 @@ async def run_live_debrief_agentic_job(
         )
 
     bot_id: str = row["bot_id"]
+
+    from app.services.live.metrics import log_debrief_start as _m_debrief_start
+    _m_debrief_start(str(conversation_id), bot_id, logger=logger)
     user_id: UUID = row["user_id"]
     partner_user_id: UUID | None = row["partner_user_id"]
     resolved_topic_id: UUID | None = row["topic_id"]
@@ -634,7 +641,29 @@ async def run_live_debrief_agentic_job(
                 bot_id,
                 result,
             )
+            _elapsed = _time.monotonic() - _start
+            _durable_writes = len(
+                result.extras.get("live_debrief_durable_writes", [])
+                if hasattr(result, "extras") and isinstance(result.extras, dict)
+                else []
+            )
+            _artifact_revision = (
+                result.extras.get("_provisional_artifact_id", "latest")
+                if hasattr(result, "extras") and isinstance(result.extras, dict)
+                else "latest"
+            )
+            from app.services.live.metrics import log_debrief_success
+            log_debrief_success(
+                str(conversation_id), bot_id,
+                duration_s=_elapsed,
+                tool_count=result.tool_call_count,
+                durable_write_count=_durable_writes,
+                status_transition="debriefing->review_pending",
+                artifact_revision=str(_artifact_revision)[:8],
+                logger=logger,
+            )
         except Exception as exc:
+            _elapsed = _time.monotonic() - _start
             logger.exception(
                 "live_debrief: artifact persistence failed conversation_id=%s",
                 conversation_id,
@@ -657,6 +686,7 @@ async def run_live_debrief_agentic_job(
                 tool_call_count=result.tool_call_count,
             )
     else:
+        _elapsed = _time.monotonic() - _start
         failure_reason = result.failure_reason or "live_debrief_submit_missing"
         try:
             await _set_debrief_failed(
@@ -666,6 +696,25 @@ async def run_live_debrief_agentic_job(
                 turn_id=result.turn_id,
                 tool_call_count=result.tool_call_count,
                 artifact_id=_provisional_artifact_id,
+            )
+            _submit_missing = "submit_missing" in failure_reason
+            _failure_class = "submit_missing" if _submit_missing else "infra_bug"
+            _durable_writes = len(
+                result.extras.get("live_debrief_durable_writes", [])
+                if hasattr(result, "extras") and isinstance(result.extras, dict)
+                else []
+            )
+            from app.services.live.metrics import log_debrief_failure
+            log_debrief_failure(
+                str(conversation_id), bot_id,
+                duration_s=_elapsed,
+                tool_count=result.tool_call_count,
+                failure_reason=failure_reason,
+                submit_missing=_submit_missing,
+                failure_class=_failure_class,
+                durable_write_count=_durable_writes,
+                status_transition="debriefing->debrief_failed",
+                logger=logger,
             )
         except Exception:
             logger.exception(
@@ -685,8 +734,12 @@ async def retry_live_debrief(
     Checks that the conversation is in ``debrief_failed`` status, resets it
     to ``debriefing``, and re-runs ``run_live_debrief_agentic_job``.
     """
+    import time as _time
+
+    _retry_start = _time.monotonic()
+
     row = await pool.fetchrow(
-        "SELECT id, user_id, bot_id, topic_id, status "
+        "SELECT id, user_id, bot_id, topic_id, status, session_fields "
         "FROM mediator.conversations WHERE id = $1",
         conversation_id,
     )
@@ -700,10 +753,30 @@ async def retry_live_debrief(
             f"has status={row['status']!r}, expected 'debrief_failed'"
         )
 
-    # Reset to debriefing
+    # Count previous retries
+    sf = row["session_fields"] or {}
+    if isinstance(sf, dict):
+        prev_retries = sf.get("retry_count", 0)
+    else:
+        prev_retries = 0
+    retry_number = prev_retries + 1
+
+    from app.services.live.metrics import log_prep_start as _m_retry_start
+    _m_retry_start(
+        str(conversation_id), row["bot_id"], str(row["user_id"]),
+        status_transition="debrief_failed->debriefing",
+        retry_count=retry_number,
+        logger=logger,
+    )
+
+    # Reset to debriefing and increment retry count
     await pool.execute(
-        "UPDATE mediator.conversations SET status = 'debriefing' WHERE id = $1",
+        "UPDATE mediator.conversations SET status = 'debriefing', "
+        "session_fields = session_fields "
+        "    || jsonb_build_object('retry_count', $2::int) "
+        "WHERE id = $1",
         conversation_id,
+        retry_number,
     )
 
     # Load user record
@@ -716,11 +789,29 @@ async def retry_live_debrief(
     from app.services.live.bot_profile import user_from_live_row
     user = user_from_live_row(row["user_id"], user_row)
 
-    return await run_live_debrief_agentic_job(
+    result = await run_live_debrief_agentic_job(
         conversation_id=conversation_id,
         user=user,
         pool=pool,
     )
+
+    _retry_elapsed = _time.monotonic() - _retry_start
+    _durable_writes = 0
+    if not result.success and hasattr(result, "extras") and isinstance(result.extras, dict):
+        _durable_writes = len(result.extras.get("live_debrief_durable_writes", []))
+    from app.services.live.metrics import log_debrief_retry_result
+    log_debrief_retry_result(
+        str(conversation_id), row["bot_id"],
+        retry_number=retry_number,
+        success=result.success,
+        duration_s=_retry_elapsed,
+        tool_count=result.tool_call_count,
+        failure_reason=result.failure_reason if not result.success else None,
+        durable_write_count=_durable_writes,
+        logger=logger,
+    )
+
+    return result
 
 
 # ── Internal helpers ────────────────────────────────────────────────────────

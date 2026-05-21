@@ -177,7 +177,7 @@ async def _recover_legacy_invariants(pool: Any, *, now: datetime | None = None) 
 async def sweep_orphaned_prepping(
     pool: Any, *, now: datetime | None = None
 ) -> None:
-    """Mark conversations stuck in ``prepping`` as ``prep_failed``.
+    """Mark conversations stuck in ``prepping`` / ``preparing`` as ``prep_failed``.
 
     The background task's broad ``except`` is the primary defense against
     orphaned prepping sessions.  This sweep is the backstop — it catches
@@ -193,7 +193,7 @@ async def sweep_orphaned_prepping(
         SET status = 'prep_failed',
             session_fields = COALESCE(session_fields, '{}'::jsonb)
                              || jsonb_build_object('prep_error', 'orphaned')
-        WHERE status = 'prepping'
+        WHERE status IN ('prepping', 'preparing')
           AND created_at < $1
         """,
         cutoff,

@@ -1,12 +1,20 @@
 import { useEffect, useRef, useState } from "react";
-import { liveSocketUrl, postConsent, type Persona } from "../api";
+import {
+  liveSocketUrl,
+  postConsent,
+  endSession,
+  fetchReview,
+  type Persona,
+  type SessionReview,
+} from "../api";
 import { ConsentGate, type ConsentSelection } from "./ConsentGate";
 import { openMic, type MicSession, type VoiceState } from "../mic";
 
 interface Props {
   persona: Persona;
   sessionId: string;
-  onEnd: () => void;
+  onEnd: (review?: SessionReview) => void;
+  onRetryDebrief: (sessionId: string) => Promise<void>;
 }
 
 interface PhaseEvent {
@@ -100,7 +108,7 @@ function TextInputFallback({
   );
 }
 
-export function LiveScreen({ persona, sessionId, onEnd }: Props) {
+export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props) {
   const [events, setEvents] = useState<PhaseEvent[]>([]);
   const [status, setStatus] = useState<Status>("consent");
   const [consent, setConsent] = useState<ConsentSelection | null>(null);
@@ -115,6 +123,15 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [spend, setSpend] = useState<{ cents: number; cap: number } | null>(null);
   const [showActivity, setShowActivity] = useState(false);
+
+  // ── Debrief lifecycle state ──────────────────────────────────────────
+  type DebriefState = "idle" | "waiting" | "failed" | "done";
+  const [debriefState, setDebriefState] = useState<DebriefState>("idle");
+  const [debriefError, setDebriefError] = useState<string | null>(null);
+  const [debriefReview, setDebriefReview] = useState<SessionReview | null>(null);
+  const debriefPollRef = useRef<number | null>(null);
+  const debriefCancelledRef = useRef(false);
+
   const wsRef = useRef<WebSocket | null>(null);
   const micRef = useRef<MicSession | null>(null);
   const botSpeakingRef = useRef(false);
@@ -405,7 +422,68 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
     }
   }
 
+  // ── Debrief polling effect ────────────────────────────────────────────
+  useEffect(() => {
+    if (debriefState !== "waiting") return;
+    debriefCancelledRef.current = false;
+
+    async function poll() {
+      if (debriefCancelledRef.current) return;
+      try {
+        const review = await fetchReview(sessionId);
+        if (debriefCancelledRef.current) return;
+
+        // Check for debrief_failed
+        if (review.debrief_failed) {
+          setDebriefState("failed");
+          setDebriefError(
+            review.debrief_failed.reason ||
+              review.debrief_failed.error ||
+              "Debrief failed",
+          );
+          // Keep the review accessible (fallback synthesis).
+          setDebriefReview(review);
+          return;
+        }
+
+        // Check if debrief is still pending
+        if (review.debrief_pending) {
+          // Continue polling
+          debriefPollRef.current = window.setTimeout(poll, 2000);
+          return;
+        }
+
+        // Debrief completed successfully
+        setDebriefReview(review);
+        setDebriefState("done");
+        // Navigate to review screen after a brief delay so the user
+        // can see the "complete" state.
+        window.setTimeout(() => {
+          if (!debriefCancelledRef.current) {
+            onEnd(review);
+          }
+        }, 600);
+      } catch {
+        if (!debriefCancelledRef.current) {
+          // Polling error — keep trying.
+          debriefPollRef.current = window.setTimeout(poll, 2000);
+        }
+      }
+    }
+
+    debriefPollRef.current = window.setTimeout(poll, 1500);
+
+    return () => {
+      debriefCancelledRef.current = true;
+      if (debriefPollRef.current !== null) {
+        clearTimeout(debriefPollRef.current);
+        debriefPollRef.current = null;
+      }
+    };
+  }, [debriefState, sessionId, onEnd]);
+
   function handleEnd() {
+    // Close mic and WS immediately so the user sees a responsive stop.
     try {
       micRef.current?.stop();
     } catch {
@@ -418,7 +496,56 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
     } catch {
       // ignore
     }
-    onEnd();
+    wsRef.current = null;
+
+    // Call endSession to trigger debrief on the backend and get the
+    // initial review + debrief_pending flag.
+    void (async () => {
+      try {
+        const review = await endSession(sessionId);
+        const reviewStatus = review.status || "";
+
+        // If debrief is pending or status is 'debriefing', enter waiting state.
+        if (review.debrief_pending || reviewStatus === "debriefing") {
+          setDebriefState("waiting");
+          setDebriefReview(review); // Keep the deterministic synthesis visible.
+          return;
+        }
+
+        // If debrief already failed (edge case), show failure.
+        if (review.debrief_failed) {
+          setDebriefState("failed");
+          setDebriefError(
+            review.debrief_failed.reason ||
+              review.debrief_failed.error ||
+              "Debrief failed",
+          );
+          setDebriefReview(review);
+          return;
+        }
+
+        // No debrief needed — go straight to review.
+        onEnd(review);
+      } catch {
+        // endSession failed entirely — go back to picker.
+        onEnd(undefined);
+      }
+    })();
+  }
+
+  /** Retry a failed debrief on the same session. */
+  async function handleRetryDebrief() {
+    setDebriefState("waiting");
+    setDebriefError(null);
+    try {
+      await onRetryDebrief(sessionId);
+      // The backend schedules the retry; polling picks up the new attempt.
+    } catch (err: unknown) {
+      setDebriefState("failed");
+      setDebriefError(
+        err instanceof Error ? err.message : "Retry debrief failed",
+      );
+    }
   }
 
   if (status === "consent") {
@@ -593,6 +720,79 @@ export function LiveScreen({ persona, sessionId, onEnd }: Props) {
             Stop for everyone
           </button>
         </div>
+
+        {/* ── Debrief overlay ────────────────────────────────────────── */}
+        {debriefState !== "idle" && (
+          <div className="mt-6 rounded-md border border-amber-500/30 bg-amber-500/10 p-4">
+            {debriefState === "waiting" && (
+              <div className="flex items-center gap-3">
+                <div className="h-5 w-5 animate-spin rounded-full border-2 border-amber-400 border-t-transparent" />
+                <div>
+                  <p className="text-sm font-medium text-amber-200">
+                    Putting together your review…
+                  </p>
+                  <p className="mt-0.5 text-xs text-amber-300/70">
+                    The session is being analyzed. This usually takes 15–60 seconds.
+                  </p>
+                </div>
+              </div>
+            )}
+
+            {debriefState === "failed" && (
+              <div>
+                <p className="text-sm font-medium text-rose-300">
+                  Review generation failed
+                </p>
+                {debriefError && (
+                  <p className="mt-1 text-xs text-rose-300/70">{debriefError}</p>
+                )}
+                <p className="mt-2 text-xs text-amber-200/80">
+                  Your conversation transcript is still preserved. You can retry
+                  the review generation or proceed with the basic summary.
+                </p>
+                <div className="mt-3 flex items-center gap-3">
+                  <button
+                    type="button"
+                    onClick={handleRetryDebrief}
+                    className="rounded-md bg-veas-accent px-4 py-1.5 text-xs font-medium text-veas-bg hover:bg-veas-accent/90"
+                  >
+                    Retry Debrief
+                  </button>
+                  {debriefReview && (
+                    <button
+                      type="button"
+                      onClick={() => onEnd(debriefReview)}
+                      className="rounded-md border border-white/10 px-4 py-1.5 text-xs text-white hover:border-white/30"
+                    >
+                      View Basic Summary
+                    </button>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {debriefState === "done" && (
+              <div className="flex items-center gap-3">
+                <svg
+                  className="h-5 w-5 text-emerald-400"
+                  fill="none"
+                  viewBox="0 0 24 24"
+                  stroke="currentColor"
+                  strokeWidth={2}
+                >
+                  <path
+                    strokeLinecap="round"
+                    strokeLinejoin="round"
+                    d="M5 13l4 4L19 7"
+                  />
+                </svg>
+                <p className="text-sm font-medium text-emerald-200">
+                  Review ready — loading…
+                </p>
+              </div>
+            )}
+          </div>
+        )}
 
         <div className="mt-6">
           <h3 className="text-xs uppercase tracking-widest text-veas-muted">

@@ -1,0 +1,391 @@
+{
+  "tasks": [
+    {
+      "id": "T1",
+      "description": "Step 1: Create canonical live status helpers module (app/services/live/status.py) with canonical constants (preparing, ready, active, debriefing, review_pending, completed, prep_failed, debrief_failed), compatibility mapping for legacy reads (prepping→preparing, live→active, synthesized→completed, ended→completed, synthesizing→debriefing), canonicalize_status() helper, compatibility predicate groups, and response normalization for row dicts. Update all live endpoints that return status — /api/live/sessions/{id}/card, /end, /review, /review/save, raw GET /api/live/sessions/{session_id} — to use canonicalize_status() before returning to clients. Update /api/live/ops/metrics to count canonical and legacy values together by normalizing grouped status counts in Python. Update service code paths that write prepping/live/synthesized to write canonical statuses where the DB migration allows.",
+      "depends_on": [],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 3,
+      "watch_items": [
+        "Every live endpoint that exposes status must route through canonicalize_status() — missing even one (e.g. raw GET session) leaks legacy values",
+        "Canonical mappings for ended→completed and synthesizing→debriefing must be included in the compatibility map per gate warnings",
+        "Ops metrics aggregation must not double-count rows that match both canonical and legacy predicates",
+        "Service code that writes statuses must use canonical names for new rows while preserving backward-compatible reads"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC1",
+          "task_id": "T1",
+          "question": "Does every live endpoint that returns status (card, end, review, review/save, raw GET session) normalize through canonicalize_status(), and does the compatibility map include ended→completed and synthesizing→debriefing?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T2",
+      "description": "Step 2: Add additive status migration 0055_live_product_statuses (up + down SQL) extending mediator.conversations.status CHECK to include canonical statuses (preparing, ready, active, debriefing, review_pending, completed, prep_failed, debrief_failed) without removing legacy statuses. ALTER COLUMN status SET DEFAULT 'preparing'. Update partial active-session indexes WHERE predicates to include canonical statuses (preparing, ready, active, review_pending) while retaining legacy prepping/live/synthesizing. Add migration tests in tests/test_live_migrations.py asserting canonical statuses exist, legacy statuses remain accepted, and current artifact selection still uses highest revision_number. Do NOT rewrite old rows.",
+      "depends_on": ["T1"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 3,
+      "watch_items": [
+        "CHECK constraint extension must be additive — do not delete legacy statuses from the constraint",
+        "Partial index WHERE predicates must extend with OR conditions, not replace existing values",
+        "DEFAULT must be changed to 'preparing' per gate warning",
+        "Old rows must not be rewritten — backward compatibility handled in application layer"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC2",
+          "task_id": "T2",
+          "question": "Does the migration extend CHECK/DEFAULT/partial indexes additively, do tests confirm both canonical and legacy statuses are accepted, and does artifact selection still use revision_number?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T3",
+      "description": "Step 3: Normalize session creation and prep retry. Reconcile dual prep creation paths so each user action creates exactly one conversation row. Prefer passing optional session_id into produce_agenda so it populates the router-pre-created row; if too invasive, skip router pre-insert for producer path and let produce_agenda own row creation. Change new async prep sessions from prepping to preparing. Update run_live_prep_agentic_job, produce_agenda, and retry_live_prep to accept both preparing and legacy prepping while writing preparing on new attempts. Fix retry race: let retry_live_prep own the status transition instead of caller pre-setting status. Ensure retry prep creates new bot turn and new live_prep_brief artifact revision while preserving old artifacts. Add structured logs for prep start/success/failure/retry with duration, tool count, failure class, retry count, status transition, artifact revision. Add tests for producer/stub single-row behavior, no orphan rows, and retry artifact revisioning.",
+      "depends_on": ["T1", "T2"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 5,
+      "watch_items": [
+        "Exactly one conversation row must exist after both async and producer/stub prep paths — test this explicitly",
+        "The produce_agenda(session_id=...) approach is preferred; if infeasible, skip router pre-insert instead — do NOT leave both paths active",
+        "retry_live_prep must own the status transition; caller must not pre-set status before calling it",
+        "Retry must create a NEW bot turn and NEW artifact revision; old artifacts remain auditable",
+        "Structured logs must include all required fields: duration, tool_count, failure_class, retry_count, status_transition, artifact_revision"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC3",
+          "task_id": "T3",
+          "question": "Do both async and producer/stub prep paths create exactly one conversation row with no orphan rows, does retry create new bot turn and artifact revision, and are structured logs emitted with all required fields?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T4",
+      "description": "Step 4: Normalize active/end/review transitions. Update consent/WebSocket start to set status to active (not live). Make non-agentic end transition to review_pending and final save transition to completed (not synthesized). Update debrief success to leave conversation in review_pending; saving review sets completed. Keep /end, /review, /review/save, /card, and raw GET accepting historical rows in live/ended/synthesizing/synthesized. Add structured logs for debrief start/success/failure/retry with duration, submit-missing, failure class, tool count, durable write count, retry count, status transition, artifact revision.",
+      "depends_on": ["T1", "T3"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 4,
+      "watch_items": [
+        "Consent/WebSocket start must set active, not live",
+        "Non-agentic end → review_pending; save → completed",
+        "All read paths must accept historical legacy status rows",
+        "Debrief structured logs must include submit_missing/failure_class and durable_write_count"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC4",
+          "task_id": "T4",
+          "question": "Do active/end/review transitions use canonical statuses (active, review_pending, completed), do all read paths accept historical legacy rows, and are structured debrief logs emitted with all required fields?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T5",
+      "description": "Step 5: Prefer debrief artifact in review responses. Add explicit adapter _debrief_artifact_to_session_review(payload) that converts live_debrief artifact payload into SessionReview shape. Pin string-to-review coercion: what_heard/what_decided/still_open/what_to_remember are strings in submit payload — trim whitespace, omit empty strings, wrap scalar text in one UI-compatible item, include source: 'live_debrief' metadata. Accept structured arrays/objects only after validation/coercion to same contract. In GET /review, prefer highest-revision non-deleted live_debrief artifact when present; fall back to synthesize_review for old conversations or missing/invalid artifacts. Keep additive fields (debrief_pending, debrief_failed, live_debrief, review_summary) compatible. Add tests for artifact-preferred review, fallback, highest revision_number selection, scalar-string coercion for all four fields, empty-string omission, and UI-compatible array/object types.",
+      "depends_on": ["T1", "T4"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 4,
+      "watch_items": [
+        "Adapter must convert strings to arrays/objects — never pass raw artifact payload strings directly to the UI",
+        "Scalar coercion for all four fields: trim, omit empty, wrap in UI-compatible item with source metadata",
+        "Revision selection by revision_number, not created_at",
+        "Fallback to synthesize_review on missing/invalid artifacts, not 500 or blank"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC5",
+          "task_id": "T5",
+          "question": "Does GET /review prefer highest-revision live_debrief artifact with proper scalar-to-SessionReview coercion for all four fields (what_heard, what_decided, still_open, what_to_remember), and fall back correctly on missing/invalid artifacts?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T6",
+      "description": "Step 6: Add operator debug endpoint GET /api/live/sessions/{session_id}/debug (or /api/live/ops/sessions/{session_id}). Return conversation id/status/bot_id/user_id/mode/timestamps/session_fields with status normalized. Return bot_turns found by conversation_id including kind, turn id, model/provider, failure reason, completion state, tool call counts. Return transcript_turns under a separate key per gate SD3. Return artifacts grouped by type/version/revision with current marker, deleted marker, created_by_turn_id, artifact links. Return provenance links with target table/id/relation/evidence plus aggregate durable write counts. Return failure classes from session_fields, bot_turns, and non-chat result metadata. Keep internal in naming/docs; no auth changes. Add tests in tests/test_live_router_debug.py.",
+      "depends_on": ["T1", "T5"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 4,
+      "watch_items": [
+        "transcript_turns must be returned under separate key alongside bot_turns per gate SD3",
+        "Artifacts must be grouped by type with revision and current/deleted markers",
+        "Failure classes must be extracted from session_fields, bot_turns, and non-chat result metadata",
+        "Status must be normalized through canonicalize_status()"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC6",
+          "task_id": "T6",
+          "question": "Does the debug endpoint return conversation metadata, bot_turns, transcript_turns (separate key), artifacts grouped by type/revision, provenance links with durable write counts, and failure classes?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T7",
+      "description": "Step 7: Expand frontend API types and retry calls in web/live-voice/src/api.ts. Add canonical status union types and optional fields for prep_pending, debrief_pending, failure_reason, debrief_failed, review_summary, live_debrief. Add retryPrep(sessionId), retryDebrief(sessionId), and fetchReview(sessionId) helpers. Keep existing response shapes compatible. Add type guards/coercion to handle both canonical and legacy status values during migration rollout.",
+      "depends_on": ["T1"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 2,
+      "watch_items": [
+        "TypeScript union types must cover all canonical statuses plus legacy compatibility",
+        "Type guards must handle both canonical and legacy status strings",
+        "Response shapes must remain backward-compatible with older backend versions"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC7",
+          "task_id": "T7",
+          "question": "Do API types cover all canonical and legacy statuses with proper type guards, and are retryPrep/retryDebrief/fetchReview helpers added?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T8",
+      "description": "Step 8: Productize prep card loading and failure UX. In AgendaCard.tsx, poll /card while status is preparing or legacy prepping with long-latency loading state. Render prep_failed with failure reason, Retry button (calls retryPrep), and Back action. Disable 'Start the conversation' until status is ready and agenda items available. After retry, continue polling same session (no replacement row). In App.tsx, wire polling interval and retry handler. Keep current component structure and styling.",
+      "depends_on": ["T3", "T7"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 3,
+      "watch_items": [
+        "Polling must stop or slow after status leaves preparing/prepping — avoid hammering /card indefinitely",
+        "prep_failed state must show failure_reason from the API response",
+        "Retry must call retryPrep on the same session ID, not create a new session",
+        "Start button must be disabled when agenda items array is empty or missing"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC8",
+          "task_id": "T8",
+          "question": "Does AgendaCard poll while preparing/prepping with loading state, show failure reason with Retry, disable Start until ready with agenda items, and retry the same session?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T9",
+      "description": "Step 9: Productize debrief and review UX. In LiveScreen.tsx, after /end, if debrief_pending or status debriefing is returned, show review/debrief waiting state and poll /review. If debrief_failed, keep transcript/review fallback accessible and show Retry Debrief button. When debrief completes, update review screen from latest /review payload. In ReviewScreen.tsx, gracefully render debrief-artifact-derived data and fallback deterministic synthesis without separate component paths. In App.tsx, wire debrief polling and retryDebrief handler. Handle long debrief latency without blocking navigation or blanking screens.",
+      "depends_on": ["T4", "T5", "T7"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 4,
+      "watch_items": [
+        "Long debrief latency must not block UI — polling must continue with visible waiting state",
+        "debrief_failed must keep transcript fallback accessible; user must be able to see their conversation",
+        "ReviewScreen must render both artifact-derived data (arrays/objects from adapter) and fallback synthesis data",
+        "retryDebrief must call the backend retry endpoint on the same session"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC9",
+          "task_id": "T9",
+          "question": "Does LiveScreen show debrief waiting/polling after end, handle debrief_failed with transcript fallback and retry, and does ReviewScreen render both artifact-derived and fallback review data without blank screens?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T10",
+      "description": "Step 10: Centralize live metrics logging. Add structured-log helper in app/services/live/metrics.py for live lifecycle events. Emit prep/debrief duration, tool counts, submit missing/failure class, durable write counts, artifact revision, retry count, and status transition from prep.py, debrief.py, and live_voice.py. Extend /api/live/ops/metrics to include counters from recent conversation statuses using canonical+legacy groups (no new metrics backend). Add unit tests with caplog for required fields on success, failure, and retry paths.",
+      "depends_on": ["T3", "T4"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "code",
+      "complexity": 3,
+      "watch_items": [
+        "Structured logs must be parseable and include all required fields",
+        "Ops metrics must aggregate canonical and legacy statuses consistently",
+        "caplog tests must verify log emission on success, failure, AND retry paths"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC10",
+          "task_id": "T10",
+          "question": "Are structured logs emitted for prep/debrief lifecycle with duration, tool_counts, failure_class, durable_write_count, artifact_revision, retry_count, and status_transition on success/failure/retry paths?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T11",
+      "description": "Step 11: Update docs and runbook. In docs/live-conversation-mode.md, document canonical status lifecycle (persona pick → preparing → ready → consent → active → debriefing → review_pending → completed), compatibility behavior for legacy statuses and old conversations, retry semantics (new bot turns, new artifact revisions, old artifacts preserved), single-row prep creation invariant, debrief artifact adapter contract (scalar submit fields coerced to SessionReview arrays/objects). In docs/live-voice-deployment-runbook.md, document debug endpoint and key questions it answers, operator triage for prep failure/debrief failure/long debrief latency/missing submit.",
+      "depends_on": ["T1", "T2", "T3", "T4", "T5", "T6", "T10"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "docs",
+      "complexity": 2,
+      "watch_items": [
+        "Docs must include the single-row prep creation invariant so future work does not reintroduce orphan rows",
+        "Adapter contract must document scalar coercion rules for each debrief field",
+        "Runbook must include operator triage for all failure modes"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC11",
+          "task_id": "T11",
+          "question": "Do docs cover canonical status lifecycle, compatibility, retry semantics, single-row invariant, adapter contract, debug endpoint, and operator triage for all failure modes?",
+          "verdict": ""
+        }
+      ]
+    },
+    {
+      "id": "T12",
+      "description": "Step 12: Verification pass. Run focused backend tests: pytest tests/test_live_router_prep.py tests/test_live_prep_agentic.py tests/test_live_router_debrief.py tests/test_live_debrief_agentic.py tests/test_live_synthesis.py tests/test_live_migrations.py. Run artifact/provenance tests: pytest tests/test_live_artifacts.py tests/test_live_artifacts_db.py tests/test_live_artifacts_migration.py tests/test_live_artifacts_migration_0054.py. Ensure tests cover producer/stub single-row prep creation, raw session status normalization, ops metrics canonical/legacy counting, and debrief artifact scalar coercion. Run frontend build/test from web/live-voice/package.json. Fix any failures and re-run until clean. Run broader relevant suite if focused checks pass.",
+      "depends_on": ["T1", "T2", "T3", "T4", "T5", "T6", "T7", "T8", "T9", "T10", "T11"],
+      "status": "pending",
+      "executor_notes": "",
+      "reviewer_verdict": "",
+      "kind": "test",
+      "complexity": 3,
+      "watch_items": [
+        "Migration tests must run first — CHECK constraint mistakes will break every flow",
+        "Prep creation and retry/status tests before debrief tests",
+        "Review fallback/adapter tests before frontend work validation",
+        "Raw session and ops metrics tests to confirm no legacy status leakage",
+        "Frontend build must succeed after all API type and component changes"
+      ],
+      "sense_checks": [
+        {
+          "id": "SC12",
+          "task_id": "T12",
+          "question": "Do all focused backend tests pass, does the frontend build succeed, and are the new test cases (single-row prep, status normalization, ops metrics, scalar coercion) covered?",
+          "verdict": ""
+        }
+      ]
+    }
+  ],
+  "watch_items": [
+    "Status regression: Every live endpoint must normalize status through canonicalize_status() — legacy values must not leak in user-facing responses",
+    "Orphan rows: Dual prep creation paths must be reconciled — test that exactly one conversation row exists per session",
+    "Scalar coercion: Debrief submit fields are strings; adapter must wrap them in arrays/objects — never pass raw strings to ReviewScreen",
+    "Partial indexes: WHERE predicates must extend with OR conditions, not replace existing legacy statuses",
+    "Migration DEFAULT: ALTER COLUMN status SET DEFAULT 'preparing' must be included",
+    "Transcript turns: Debug endpoint must return transcript_turns under separate key alongside bot_turns",
+    "Canonical mappings: ended→completed and synthesizing→debriefing must be in canonicalize_status()",
+    "Frontend polling: Long prep/debrief latency must not produce blank screens or infinite spinners",
+    "Retry idempotency: Retries must reuse existing session ID, not create replacement rows",
+    "Artifact revisioning: Retries create new revisions; highest revision_number wins for review display"
+  ],
+  "sense_checks": [
+    {
+      "id": "SC1",
+      "task_id": "T1",
+      "question": "Does every live endpoint that returns status (card, end, review, review/save, raw GET session) normalize through canonicalize_status(), and does the compatibility map include ended→completed and synthesizing→debriefing?",
+      "verdict": ""
+    },
+    {
+      "id": "SC2",
+      "task_id": "T2",
+      "question": "Does the migration extend CHECK/DEFAULT/partial indexes additively, do tests confirm both canonical and legacy statuses are accepted, and does artifact selection still use revision_number?",
+      "verdict": ""
+    },
+    {
+      "id": "SC3",
+      "task_id": "T3",
+      "question": "Do both async and producer/stub prep paths create exactly one conversation row with no orphan rows, does retry create new bot turn and artifact revision, and are structured logs emitted with all required fields?",
+      "verdict": ""
+    },
+    {
+      "id": "SC4",
+      "task_id": "T4",
+      "question": "Do active/end/review transitions use canonical statuses (active, review_pending, completed), do all read paths accept historical legacy rows, and are structured debrief logs emitted with all required fields?",
+      "verdict": ""
+    },
+    {
+      "id": "SC5",
+      "task_id": "T5",
+      "question": "Does GET /review prefer highest-revision live_debrief artifact with proper scalar-to-SessionReview coercion for all four fields (what_heard, what_decided, still_open, what_to_remember), and fall back correctly on missing/invalid artifacts?",
+      "verdict": ""
+    },
+    {
+      "id": "SC6",
+      "task_id": "T6",
+      "question": "Does the debug endpoint return conversation metadata, bot_turns, transcript_turns (separate key), artifacts grouped by type/revision, provenance links with durable write counts, and failure classes?",
+      "verdict": ""
+    },
+    {
+      "id": "SC7",
+      "task_id": "T7",
+      "question": "Do API types cover all canonical and legacy statuses with proper type guards, and are retryPrep/retryDebrief/fetchReview helpers added?",
+      "verdict": ""
+    },
+    {
+      "id": "SC8",
+      "task_id": "T8",
+      "question": "Does AgendaCard poll while preparing/prepping with loading state, show failure reason with Retry, disable Start until ready with agenda items, and retry the same session?",
+      "verdict": ""
+    },
+    {
+      "id": "SC9",
+      "task_id": "T9",
+      "question": "Does LiveScreen show debrief waiting/polling after end, handle debrief_failed with transcript fallback and retry, and does ReviewScreen render both artifact-derived and fallback review data without blank screens?",
+      "verdict": ""
+    },
+    {
+      "id": "SC10",
+      "task_id": "T10",
+      "question": "Are structured logs emitted for prep/debrief lifecycle with duration, tool_counts, failure_class, durable_write_count, artifact_revision, retry_count, and status_transition on success/failure/retry paths?",
+      "verdict": ""
+    },
+    {
+      "id": "SC11",
+      "task_id": "T11",
+      "question": "Do docs cover canonical status lifecycle, compatibility, retry semantics, single-row invariant, adapter contract, debug endpoint, and operator triage for all failure modes?",
+      "verdict": ""
+    },
+    {
+      "id": "SC12",
+      "task_id": "T12",
+      "question": "Do all focused backend tests pass, does the frontend build succeed, and are the new test cases (single-row prep, status normalization, ops metrics, scalar coercion) covered?",
+      "verdict": ""
+    }
+  ],
+  "user_actions": [
+    {
+      "id": "U1",
+      "description": "Manual smoke test the live voice flow end-to-end in browser: persona pick → preparing → ready agenda → consent → active call → debriefing → review → save completed. Verify no blank screens, polling states appear during prep/debrief latency, retry buttons work on failure, and review screen renders both artifact-derived and fallback data correctly.",
+      "phase": "after_execute",
+      "blocks_task_ids": [],
+      "rationale": "Automated tests can verify backend contracts and component rendering, but the full UX flow with real WebSocket audio, long-latency prep/debrief polling, and visual states requires human judgment per success criterion 11."
+    }
+  ],
+  "meta_commentary": "Execution order within batches: T1 (status helpers) must land first — it is the single source of truth for canonicalization. T2 (migration) and T3 (prep creation) can proceed after T1, but T2 should be finalized before T3 code that depends on the new CHECK/DEFAULT. T7 (frontend API types) can run in parallel with backend work after T1 since it only needs canonical status names. T4-T6 form a dependency chain and must execute serially after T3. T8-T9 depend on backend stability (T3-T5) plus frontend types (T7). T10 (metrics) can be implemented alongside T4-T5 since it hooks into prep/debrief code paths. T11 (docs) should be the last code task before T12 (verification). Critical gotcha: the dual prep creation paths are the highest-risk item — inspect both produce_agenda and the router pre-insert path before choosing the fix approach. If produce_agenda(session_id=...) is feasible, prefer it; if inspection shows it's too invasive, delete the router pre-insert for producer path instead. NEVER leave both paths creating rows.",
+  "validation": {},
+  "baseline_test_failures": "",
+  "baseline_test_command": "pytest tests/test_live_router_prep.py tests/test_live_prep_agentic.py tests/test_live_router_debrief.py tests/test_live_debrief_agentic.py tests/test_live_synthesis.py tests/test_live_migrations.py tests/test_live_artifacts.py tests/test_live_artifacts_db.py tests/test_live_artifacts_migration.py tests/test_live_artifacts_migration_0054.py -v",
+  "baseline_test_note": "Run the focused backend test suite from the project root to establish baseline before any changes. Frontend build baseline should also be captured: cd web/live-voice && npm run build (or whatever build script is in package.json). Document any pre-existing failures so they are not attributed to this sprint."
+}

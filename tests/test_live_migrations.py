@@ -257,3 +257,170 @@ class TestMigrationDatabase:
                     assert check == 1, "conversations_partner_xor CHECK constraint not found"
         finally:
             await pool.close()
+
+
+# --------------------------------------------------------------------------- #
+# Migration 0055 checks — product statuses
+# --------------------------------------------------------------------------- #
+
+
+def _read_0055_up() -> str:
+    return (MIGRATIONS_DIR / "0055_live_product_statuses.sql").read_text()
+
+
+def _read_0055_down() -> str:
+    return (MIGRATIONS_DIR / "0055_live_product_statuses.down.sql").read_text()
+
+
+class TestMigration0055:
+    """Static text checks for the 0055 additive product-status migration."""
+
+    def test_up_and_down_files_exist(self) -> None:
+        assert (MIGRATIONS_DIR / "0055_live_product_statuses.sql").exists()
+        assert (MIGRATIONS_DIR / "0055_live_product_statuses.down.sql").exists()
+
+    def test_up_adds_canonical_statuses(self) -> None:
+        """Canonical statuses preparing, active, completed must appear in the
+        CHECK constraint."""
+        sql = _read_0055_up()
+        for canonical in ("'preparing'", "'active'", "'completed'"):
+            assert canonical in sql, (
+                f"up migration must include canonical status {canonical}"
+            )
+
+    def test_up_retains_all_legacy_statuses(self) -> None:
+        """Legacy statuses must NOT be removed from the CHECK constraint."""
+        sql = _read_0055_up()
+        # Extract the ADD CONSTRAINT block so we don't match comments/docs.
+        add_idx = sql.find("ADD CONSTRAINT conversations_status_check")
+        assert add_idx != -1, "up migration must have ADD CONSTRAINT"
+        constraint_block = sql[add_idx:]
+        semicolon_idx = constraint_block.find(";")
+        if semicolon_idx != -1:
+            constraint_block = constraint_block[:semicolon_idx + 1]
+        for legacy in (
+            "'prepping'", "'live'", "'ended'", "'synthesizing'",
+            "'synthesized'", "'discarded'", "'failed'",
+        ):
+            assert legacy in constraint_block, (
+                f"legacy status {legacy} must be retained in CHECK"
+            )
+
+    def test_up_sets_default_to_preparing(self) -> None:
+        sql = _read_0055_up()
+        assert "SET DEFAULT 'preparing'" in sql, (
+            "up migration must change DEFAULT to 'preparing'"
+        )
+
+    def test_up_updates_active_session_index_with_canonical(self) -> None:
+        """idx_conversations_status_active must include canonical statuses
+        while retaining legacy ones."""
+        sql = _read_0055_up()
+        # Find "CREATE INDEX ... idx_conversations_status_active".
+        needle = "CREATE INDEX idx_conversations_status_active"
+        idx_pos = sql.find(needle)
+        assert idx_pos != -1, (
+            f"must recreate active-session index; needle={needle!r} not found"
+        )
+        block = sql[idx_pos:]
+        semicolon_idx = block.find(";")
+        if semicolon_idx != -1:
+            block = block[:semicolon_idx + 1]
+        # Canonical statuses must be present
+        for canonical in ("'preparing'", "'active'"):
+            assert canonical in block, (
+                f"active-session index must include {canonical}"
+            )
+        # Legacy statuses must be retained
+        for legacy in ("'prepping'", "'live'", "'synthesizing'"):
+            assert legacy in block, (
+                f"active-session index must retain legacy {legacy}"
+            )
+
+    def test_up_updates_spend_active_index_with_canonical(self) -> None:
+        """idx_conversations_spend_active must include canonical while
+        retaining legacy."""
+        sql = _read_0055_up()
+        needle = "CREATE INDEX idx_conversations_spend_active"
+        idx_pos = sql.find(needle)
+        assert idx_pos != -1, (
+            f"must recreate spend-active index; needle={needle!r} not found"
+        )
+        block = sql[idx_pos:]
+        semicolon_idx = block.find(";")
+        if semicolon_idx != -1:
+            block = block[:semicolon_idx + 1]
+        for canonical in ("'preparing'", "'active'"):
+            assert canonical in block, (
+                f"spend-active index must include {canonical}"
+            )
+        for legacy in ("'prepping'", "'live'"):
+            assert legacy in block, (
+                f"spend-active index must retain legacy {legacy}"
+            )
+
+    def test_down_removes_canonical_from_check(self) -> None:
+        """Down migration CHECK must NOT include preparing/active/completed."""
+        sql = _read_0055_down()
+        add_idx = sql.find("ADD CONSTRAINT conversations_status_check")
+        assert add_idx != -1, "down migration must have ADD CONSTRAINT"
+        constraint_block = sql[add_idx:]
+        semicolon_idx = constraint_block.find(";")
+        if semicolon_idx != -1:
+            constraint_block = constraint_block[:semicolon_idx + 1]
+        for canonical in ("'preparing'", "'active'", "'completed'"):
+            assert canonical not in constraint_block, (
+                f"down CHECK must not include {canonical}"
+            )
+
+    def test_down_restores_default_prepping(self) -> None:
+        sql = _read_0055_down()
+        assert "SET DEFAULT 'prepping'" in sql, (
+            "down migration must restore DEFAULT 'prepping'"
+        )
+
+    def test_down_restores_legacy_active_index(self) -> None:
+        """Down migration must restore idx_conversations_status_active to
+        the pre-0055 predicate."""
+        sql = _read_0055_down()
+        needle = "CREATE INDEX idx_conversations_status_active"
+        idx_pos = sql.find(needle)
+        assert idx_pos != -1, (
+            f"down must recreate active-session index; needle={needle!r} not found"
+        )
+        block = sql[idx_pos:]
+        semicolon_idx = block.find(";")
+        if semicolon_idx != -1:
+            block = block[:semicolon_idx + 1]
+        # Canonical should NOT be in the down version of this index
+        for canonical in ("'preparing'", "'active'"):
+            assert canonical not in block, (
+                f"down active-session index must not include {canonical}"
+            )
+        # Legacy must be present
+        for legacy in ("'prepping'", "'live'", "'synthesizing'"):
+            assert legacy in block, (
+                f"down active-session index must include legacy {legacy}"
+            )
+
+    def test_down_restores_legacy_spend_index(self) -> None:
+        """Down migration must restore idx_conversations_spend_active to the
+        pre-0055 predicate."""
+        sql = _read_0055_down()
+        needle = "CREATE INDEX idx_conversations_spend_active"
+        idx_pos = sql.find(needle)
+        assert idx_pos != -1, (
+            f"down must recreate spend-active index; needle={needle!r} not found"
+        )
+        block = sql[idx_pos:]
+        semicolon_idx = block.find(";")
+        if semicolon_idx != -1:
+            block = block[:semicolon_idx + 1]
+        for canonical in ("'preparing'", "'active'"):
+            assert canonical not in block, (
+                f"down spend-active index must not include {canonical}"
+            )
+        for legacy in ("'prepping'", "'live'"):
+            assert legacy in block, (
+                f"down spend-active index must include legacy {legacy}"
+            )

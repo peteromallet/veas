@@ -5,7 +5,7 @@ import { SessionCard } from "./components/SessionCard";
 import { AgendaCard } from "./components/AgendaCard";
 import { LiveScreen } from "./components/LiveScreen";
 import { ReviewScreen } from "./components/ReviewScreen";
-import { endSession, type Persona, type SessionReview } from "./api";
+import { endSession, retryDebrief, type Persona, type SessionReview } from "./api";
 
 type View =
   | { kind: "picker" }
@@ -16,6 +16,38 @@ type View =
 
 export default function App() {
   const [view, setView] = useState<View>({ kind: "picker" });
+
+  /** Called by LiveScreen when the user chooses to end the session.
+   *  When LiveScreen has already resolved the final review (debrief
+   *  completed or not needed) it passes the review directly; otherwise
+   *  LiveScreen manages the debrief lifecycle internally and calls
+   *  this with the resolved review when ready. */
+  function handleLiveEnd(review?: SessionReview) {
+    if (review) {
+      setView({
+        kind: "review",
+        persona: (view as { kind: "live"; persona: Persona }).persona,
+        review,
+      });
+      return;
+    }
+    // Fallback: call endSession directly (LiveScreen didn't pre-resolve).
+    const sessionId = (view as { kind: "live"; sessionId: string }).sessionId;
+    const persona = (view as { kind: "live"; persona: Persona }).persona;
+    void (async () => {
+      try {
+        const r = await endSession(sessionId);
+        setView({ kind: "review", persona, review: r });
+      } catch {
+        setView({ kind: "picker" });
+      }
+    })();
+  }
+
+  /** Called by LiveScreen to retry a failed debrief. */
+  async function handleRetryDebrief(sessionId: string): Promise<void> {
+    await retryDebrief(sessionId);
+  }
 
   return (
     <div className="min-h-screen bg-veas-bg text-slate-100">
@@ -49,14 +81,8 @@ export default function App() {
           <LiveScreen
             persona={view.persona}
             sessionId={view.sessionId}
-            onEnd={async () => {
-              try {
-                const review = await endSession(view.sessionId);
-                setView({ kind: "review", persona: view.persona, review });
-              } catch {
-                setView({ kind: "picker" });
-              }
-            }}
+            onEnd={handleLiveEnd}
+            onRetryDebrief={handleRetryDebrief}
           />
         )}
         {view.kind === "review" && (

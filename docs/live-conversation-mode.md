@@ -500,8 +500,192 @@ Don't build it all at once. Each stage is independently shippable and de-risks t
 
 Each stage adds one new dependency category, so failures are isolated to that stage's surface.
 
+## Canonical session status lifecycle (Sprint 5)
+
+Every live conversation row has a `status` column that moves through a
+well-defined lifecycle.  The **canonical** status values (the public API
+contract) are:
+
+```
+persona_pick  →  preparing  →  ready  →  consent  →  active
+                                                        │
+                                                        ▼
+                                                 debriefing
+                                                        │
+                                                        ▼
+                                                review_pending
+                                                        │
+                                                        ▼
+                                                   completed
+```
+
+| Step | Canonical status | Meaning |
+|------|------------------|---------|
+| User lands on persona picker | *(no session yet)* | `createSession` has not been called. |
+| Prep running | `preparing` | The agentic prep job is building the agenda (30–60s). |
+| Agenda ready | `ready` | Prep succeeded; agenda items persisted. Waiting for user consent / mic start. |
+| Consent / WS start | `active` | Conversation is live. Transcript turns streaming. Haiku emitting turns. |
+| Session ended | `debriefing` | The agentic debrief job is running. Review data is being produced. |
+| Review available | `review_pending` | Debrief succeeded; the user can inspect / edit / save the review. |
+| Review saved | `completed` | The user saved (or discarded) the review. Terminal state. |
+
+Two failure branches exist:
+
+- `prep_failed` — Prep could not produce an agenda (e.g. model exhausted
+  without calling `submit_live_brief`).  The user can retry via the
+  same session ID.
+- `debrief_failed` — Debrief could not finish (e.g. model crashed,
+  `submit_live_debrief` missing).  The user's transcript is still
+  accessible.  Retry is available.
+
+### Single source of truth
+
+All status canonicalization routes through the helpers in
+`app/services/live/status.py`.  Every endpoint that returns a status
+— `/card`, `/end`, `/review`, `/review/save`, raw `GET /api/live/sessions/{id}`,
+and `/api/live/ops/metrics` — must call `canonicalize_status()` before
+returning to clients.  Writers use only canonical statuses.
+
+### Compatibility with legacy statuses and old conversations
+
+The additive migration `0055_live_product_statuses` extends the
+`CHECK` constraint on `mediator.conversations.status` to accept both
+canonical and legacy values.  The `DEFAULT` was changed to `'preparing'`.
+Old rows are **never rewritten** — backward compatibility is handled
+entirely at read time via the canonicalization layer.
+
+Legacy → canonical mapping (read-side only):
+
+| Legacy value | Canonical equivalent |
+|-------------|---------------------|
+| `prepping` | `preparing` |
+| `live` | `active` |
+| `synthesizing` | `debriefing` |
+| `synthesized` | `completed` |
+| `ended` | `completed` |
+
+All read paths (`/card`, `/end`, `/review`, `/review/save`, raw GET,
+`/api/live/ops/metrics`) accept both canonical and legacy statuses.
+Ops metrics aggregation folds legacy counts into canonical buckets
+via `grouped_status_metric()` so operators see a single view
+regardless of which migration epoch each row came from.
+
+Partial indexes (`idx_conversations_status_active`,
+`idx_conversations_spend_active`) were extended with `OR` conditions
+to include canonical statuses while retaining legacy values, so
+existing query plans do not regress.
+
+## Retry semantics (Sprint 5)
+
+Both prep and debrief support retry on failure.  Key invariants:
+
+### Prep retry (`retry_live_prep`)
+
+- **Called on the same session ID.**  No replacement row is created.
+- **Prep retry owns the status transition.**  Callers MUST NOT pre-set
+  the status before invoking `retry_live_prep`.  The function checks
+  that the conversation is in `prep_failed` (canonicalized), resets it
+  to `preparing`, then re-runs `run_live_prep_agentic_job`.
+- **New bot turn.**  Every retry attempt creates a fresh
+  `mediator.bot_turns` row (kind=`live_prep`).  Old bot turns are preserved
+  for audit.
+- **New artifact revision.**  Retry creates a new revision of the
+  `live_prep_brief` artifact (higher `revision_number`).  The old
+  artifact revision is NOT deleted — it remains auditable with
+  `deleted_at` left null.
+- **Structured logs** are emitted for every retry attempt
+  (start → success/failure) with `duration_s`, `tool_count`,
+  `failure_reason`, `failure_class`, `retry_count`, and
+  `status_transition`.
+
+### Debrief retry (`retry_live_debrief`)
+
+- **Called on the same session ID.**  No replacement row.
+- **Status transition:** `debrief_failed` → `debriefing` → (on success)
+  `review_pending` or (on failure) `debrief_failed`.
+- **New bot turn** (kind=`live_debrief`) and **new artifact revision**
+  (type=`live_debrief`) on every attempt.
+- **Structured logs** include `submit_missing` (boolean, whether
+  `submit_live_debrief` was never called), `durable_write_count`
+  (how many durable writes were attempted before the failure), and all
+  standard fields.
+
+## Single-row prep creation invariant (Sprint 5)
+
+Users create a session by calling `POST /api/live/sessions`.  The
+router **pre-inserts exactly one** `mediator.conversations` row in
+`preparing` status.  That row's UUID is returned to the client and
+passed into `produce_agenda(session_id=…)` so the producer updates it
+in-place rather than inserting a second row.
+
+Two prep paths exist:
+
+1. **Agentic path** (default): The router pre-inserts the row and
+   schedules `run_live_prep_agentic_job` via `asyncio.create_task`.
+   The job accepts the `conversation_id` as a parameter and updates
+   the existing row.
+2. **Legacy synchronous path** (stub / explicit provider override):
+   The router passes the pre-inserted `session_id` to
+   `produce_agenda(session_id=…)`, which updates the row in-place via
+   `UPDATE … SET status='ready', prep_summary=$2, mode=$3 WHERE id=$1`.
+
+**In both paths exactly one conversation row is created.**  The
+`session_id` plumbing eliminates the dual-creation hazard where the
+router and producer each inserted their own row, potentially leaving
+an orphan.
+
+An internal sweep (`sweep_orphaned_prepping`) covers any pre-existing
+orphan rows that may exist from before this reconciliation, but new
+sessions guarantee the single-row invariant at creation time.
+
+## Debrief artifact adapter contract (Sprint 5)
+
+`GET /api/live/sessions/{id}/review` prefers the highest-revision
+non-deleted `live_debrief` artifact when one exists.  If no such
+artifact exists (old conversations, missing artifacts), it falls back
+to deterministic synthesis via `synthesize_review()`.
+
+The adapter `_debrief_artifact_to_session_review()` in
+`app/services/live/adapters.py` converts the raw `live_debrief` artifact
+payload (produced by the LLM via `submit_live_debrief`) into the
+`SessionReview` shape the frontend expects.
+
+**Scalar coercion rules for the four content fields:**
+
+| Field | LLM output | Adapter output |
+|-------|-----------|---------------|
+| `what_heard` | scalar string `"user talked about Berlin"` | `[{text: "user talked about Berlin", source: "live_debrief"}]` |
+| `what_decided` | null | `[]` |
+| `still_open` | whitespace-only string `"  "` | `[]` (empty strings omitted after trim) |
+| `what_to_remember` | list of strings `["fact A", "fact B"]` | `[{text: "fact A", source: "live_debrief"}, {text: "fact B", source: "live_debrief"}]` |
+| (any field) | list of dicts `[{text: "x", item_id: "y"}]` | Same list with `source: "live_debrief"` added to each entry if missing |
+| (any field) | single dict `{key: val}` | `[{key: val, source: "live_debrief"}]` |
+| (any field) | integer / bool / unknown type | `[]` (defensive empty list) |
+
+**Key contract rules:**
+
+1. Every scalar string is trimmed.  Whitespace-only strings are omitted
+   (empty list returned).
+2. Every coerced item carries `source: "live_debrief"` metadata so the
+   frontend can distinguish debrief-artifact data from deterministic
+   synthesis data.
+3. The adapter never passes raw strings or objects directly to the UI —
+   every content field is coerced through `_coerce_review_field()`.
+4. Additive fields (`debrief_pending`, `debrief_failed`,
+   `live_debrief`, `review_summary`) are forwarded through unchanged
+   when present in the payload.
+5. `is_empty` is derived from content — true when all four fields are
+   empty lists.
+
+The frontend (`ReviewScreen.tsx`) handles both shapes gracefully:
+plain strings (deterministic synthesis) render directly; objects carry
+a `✦` source indicator when from `live_debrief`.  The `itemKey()`
+helper falls back to array index when `item_id` is missing (as is the
+case for scalar-coerced debrief items).
+
 ## Related docs
 
 - [Multi-agent architecture](multi-agent-architecture.md) — bot/topic/binding model. Live conversation mode is a new channel surface in this model.
 - [Longitudinal state](longitudinal-state.md) — `user_journeys` schema that post-session synthesis writes back into.
 - [Distillations migration](distillations-migration.md) — distillation pipeline that synthesis hooks into.
+- [Live voice deployment runbook](live-voice-deployment-runbook.md) — operator triage and debug endpoint documentation.

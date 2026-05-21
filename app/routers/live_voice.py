@@ -40,6 +40,7 @@ from app.services.live.debrief import (
 )
 from app.services.live.rate_limit import WS_RATE_LIMITER
 from app.services.live.schemas import PrepRequest, TurnRequest
+from app.services.live.status import canonicalize_status, normalize_row_status
 from app.services.live.stt import select_transcriber
 from app.services.charge import classify_charge
 from app.services.live.budget import (
@@ -331,7 +332,7 @@ async def create_session(
                 INSERT INTO mediator.conversations
                     (id, user_id, bot_id, mode, steering_text, status,
                      prep_summary, current_item_id, topic_id)
-                VALUES ($1, $2, $3, $4, $5, 'prepping', NULL, NULL, $6)
+                VALUES ($1, $2, $3, $4, $5, 'preparing', NULL, NULL, $6)
                 """,
                 session_id,
                 user_id,
@@ -353,7 +354,7 @@ async def create_session(
             topic_slug=body.topic,
         )
         try:
-            result = await produce_agenda(pool, request, producer=producer)
+            result = await produce_agenda(pool, request, producer=producer, session_id=session_id)
         except Exception as exc:
             logger.exception("live_voice: legacy prep failed")
             # Mark the session as prep_failed.
@@ -405,7 +406,7 @@ async def create_session(
     return CreateSessionResponse(
         session_id=session_id,
         mode=mode,
-        status="prepping",
+        status="preparing",
         prep_pending=True,
     )
 
@@ -433,15 +434,15 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
     if conv is None:
         raise HTTPException(status_code=404, detail="session not found")
 
-    status = conv["status"]
+    status = canonicalize_status(conv["status"])
 
-    # Prepping: return pending flag, empty items.
-    if status == "prepping":
+    # Preparing (canonical) / prepping (legacy): return pending flag, empty items.
+    if status == "preparing":
         return {
             "session_id": str(conv["id"]),
             "bot_id": conv["bot_id"],
             "mode": conv["mode"],
-            "status": "prepping",
+            "status": "preparing",
             "prep_pending": True,
             "prep_summary": None,
             "current_item_id": None,
@@ -486,7 +487,7 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
         "session_id": str(conv["id"]),
         "bot_id": conv["bot_id"],
         "mode": conv["mode"],
-        "status": conv["status"],
+        "status": status,
         "prep_summary": conv["prep_summary"],
         "current_item_id": str(conv["current_item_id"]) if conv["current_item_id"] else None,
         "prep_pending": False,
@@ -542,11 +543,7 @@ async def retry_prep(
             ),
         )
 
-    # Update to 'prepping' so the retry can proceed.
-    await pool.execute(
-        "UPDATE mediator.conversations SET status = 'prepping' WHERE id = $1",
-        session_id,
-    )
+    # retry_live_prep owns the status transition; caller must NOT pre-set status.
 
     # Schedule the retry as a background task.
     async def _background_retry() -> None:
@@ -575,7 +572,7 @@ async def retry_prep(
 
     return {
         "session_id": str(session_id),
-        "status": "prepping",
+        "status": "preparing",
         "prep_pending": True,
     }
 
@@ -736,6 +733,8 @@ async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[s
 
     new_status = await finalize_session(pool, session_id)
     review = await synthesize_review(pool, session_id)
+    # Normalize the status in the review response to canonical form.
+    review["status"] = canonicalize_status(review.get("status", ""))
 
     settings = get_settings()
     if settings.live_debrief_agentic_enabled and new_status == "debriefing":
@@ -797,21 +796,21 @@ async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[s
 
 @router.get("/api/live/sessions/{session_id}/review")
 async def get_review(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
-    """Return deterministic synthesis immediately.
+    """Return session review, preferring debrief artifact when available.
 
-    Never blocks waiting for debrief — always returns the deterministic
-    synthesis first.  When the conversation is in ``debriefing`` status,
-    ``debrief_pending`` is set to ``True``.  When a debrief artifact exists
-    (successful debrief), the ``live_debrief`` and optional ``review_summary``
-    fields are included.  When debrief has failed, ``debrief_failed`` metadata
-    is surfaced.
+    Sprint 5 (T5): When a non-deleted ``live_debrief`` artifact exists (highest
+    ``revision_number``), its payload is adapted via
+    ``_debrief_artifact_to_session_review`` and becomes the primary response.
+    Falls back to deterministic :func:`synthesis.synthesize_review` for old
+    conversations or missing / invalid artifacts — never 500 or blank.
+
+    Additive fields (``debrief_pending``, ``debrief_failed``,
+    ``live_debrief``, ``review_summary``) remain backward-compatible.
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
 
-    review = await synthesize_review(pool, session_id)
-
-    # ── Enrich with debrief artifacts / failure metadata ─────────────────
+    # ── 1. Load the conversation row for status + metadata ───────────────
     conv = await pool.fetchrow(
         """
         SELECT id, status, session_fields
@@ -820,10 +819,78 @@ async def get_review(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[st
         """,
         session_id,
     )
+    status = canonicalize_status(conv["status"]) if conv else ""
+
+    # ── 2. Prefer highest-revision live_debrief artifact ─────────────────
+    try:
+        from app.services.live import artifacts as live_artifacts
+        debrief_artifact = await live_artifacts.get_current_artifact(
+            pool,
+            conversation_id=str(session_id),
+            artifact_type="live_debrief",
+        )
+    except Exception:
+        logger.debug(
+            "live_voice: artifact lookup failed for %s — falling back to synthesize_review",
+            session_id,
+            exc_info=True,
+        )
+        debrief_artifact = None
+
+    if debrief_artifact is not None and isinstance(debrief_artifact.payload, dict):
+        # ── Artifact present: adapt its payload into the SessionReview shape ─
+        from app.services.live.adapters import _debrief_artifact_to_session_review
+
+        try:
+            review = _debrief_artifact_to_session_review(debrief_artifact.payload)
+        except Exception:
+            logger.warning(
+                "live_voice: _debrief_artifact_to_session_review raised for %s "
+                "— falling back to synthesize_review",
+                session_id,
+                exc_info=True,
+            )
+            review = await synthesize_review(pool, session_id)
+            review["status"] = canonicalize_status(review.get("status", ""))
+        else:
+            # Ensure session_id is always present.
+            if "session_id" not in review:
+                review["session_id"] = str(session_id)
+            # Normalize status: prefer the conversation row status (canonicalized).
+            if conv is not None:
+                review["status"] = status
+
+        # ── Always include the raw artifact payload for backward compat ──
+        review["live_debrief"] = debrief_artifact.payload
+
+        # ── Also check for review_summary artifact ───────────────────────
+        try:
+            review_summary_artifact = await live_artifacts.get_current_artifact(
+                pool,
+                conversation_id=str(session_id),
+                artifact_type="review_summary",
+            )
+            if (
+                review_summary_artifact is not None
+                and review_summary_artifact.payload
+            ):
+                review["review_summary"] = review_summary_artifact.payload.get(
+                    "review_summary"
+                )
+        except Exception:
+            logger.debug(
+                "live_voice: review_summary artifact lookup failed for %s",
+                session_id,
+                exc_info=True,
+            )
+    else:
+        # ── No artifact: fall back to deterministic synthesis ────────────
+        review = await synthesize_review(pool, session_id)
+        review["status"] = canonicalize_status(review.get("status", ""))
+
+    # ── 3. Enrich with status-dependent additive fields ──────────────────
     if conv is None:
         return review
-
-    status = conv["status"]
 
     if status == "debriefing":
         review["debrief_pending"] = True
@@ -838,32 +905,6 @@ async def get_review(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[st
             }
         else:
             review["debrief_failed"] = {"reason": "unknown"}
-
-    # When debrief succeeded (review_pending/synthesized), include artifacts
-    if status in ("review_pending", "synthesized"):
-        try:
-            from app.services.live import artifacts as live_artifacts
-            debrief_artifact = await live_artifacts.get_current_artifact(
-                pool,
-                conversation_id=str(session_id),
-                artifact_type="live_debrief",
-            )
-            if debrief_artifact is not None:
-                review["live_debrief"] = debrief_artifact.payload
-                # Also check for review_summary artifact
-                review_summary = await live_artifacts.get_current_artifact(
-                    pool,
-                    conversation_id=str(session_id),
-                    artifact_type="review_summary",
-                )
-                if review_summary is not None and review_summary.payload:
-                    review["review_summary"] = review_summary.payload.get("review_summary")
-        except Exception:
-            logger.debug(
-                "live_voice: failed to enrich /review with debrief artifacts for %s",
-                session_id,
-                exc_info=True,
-            )
 
     return review
 
@@ -888,7 +929,7 @@ async def save_review_endpoint(
         keep_items=body.keep_items,
         keep_notes=body.keep_notes,
     )
-    return {"ok": True, "status": "synthesized", "counts": counts}
+    return {"ok": True, "status": "completed", "counts": counts}
 
 
 @router.get("/api/live/ops/metrics")
@@ -896,18 +937,15 @@ async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
     """Operator-facing metrics snapshot the briefing's alarms can scrape.
 
     Returns:
-      * `p50/p95/p99` for each latency stage in the last 5 minutes
-      * `spend_usd_today` summed across all sessions started today
-      * `error_rate_5m`: 5xx as a fraction of all WS bot_turn attempts
-        (placeholder — needs a counter; returns 0 until we track it)
-      * `ws_disconnect_rate_5m`: same placeholder
-      * `active_sessions`: count of conversations in 'live' status
-
-    The Railway/Datadog/etc. alarm config triggers when:
-      * `latency.ear_to_ear.p95 > 2000` for 5min  (briefing SLO)
-      * `spend_usd_today > 80 * daily_cap`        (operator-set cap)
-      * `error_rate_5m > 0.01` for 5min
-      * `ws_disconnect_rate_5m > 0.05` for 5min
+      * ``latency`` — p50/p95/p99 per stage (last 5 min)
+      * ``spend_usd_today`` — summed across all sessions started today
+      * ``active_sessions`` — count of conversations in active / pending status
+      * ``status_counts`` — all conversations grouped by canonical status
+        (folds legacy values into canonical via ``grouped_status_metric``)
+      * ``recent_status_counts`` — status counts for conversations created
+        in the last 24 hours (canonical + legacy folded)
+      * ``error_rate_5m`` — 5xx as fraction of WS bot_turn attempts
+      * ``ws_disconnect_rate_5m`` — unexpected disconnects as fraction of opens
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
@@ -939,13 +977,42 @@ async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
         WHERE started_at::date = (now() at time zone 'utc')::date
         """,
     )
+    # Active sessions (canonical + legacy).
     active_count = await pool.fetchval(
-        "SELECT count(*) FROM mediator.conversations WHERE status IN ('live', 'prepping', 'ready')"
+        """
+        SELECT count(*) FROM mediator.conversations
+        WHERE status IN ('preparing', 'ready', 'active', 'review_pending',
+                         'prepping', 'live', 'synthesizing')
+        """
     )
+    # ── Global status counts (all time) ─────────────────────────────────
+    status_rows = await pool.fetch(
+        "SELECT status, count(*) AS cnt FROM mediator.conversations GROUP BY status"
+    )
+    from app.services.live.status import grouped_status_metric
+    normalized_statuses = grouped_status_metric(
+        [{"status": r["status"]} for r in status_rows]
+    )
+
+    # ── Recent status counts (last 24 hours) ────────────────────────────
+    recent_rows = await pool.fetch(
+        """
+        SELECT status, count(*) AS cnt
+        FROM mediator.conversations
+        WHERE created_at >= now() - interval '24 hours'
+        GROUP BY status
+        """
+    )
+    recent_statuses = grouped_status_metric(
+        [{"status": r["status"]} for r in recent_rows]
+    )
+
     return {
         "latency_ms": latency,
         "spend_usd_today": (int(spend_row["total"]) if spend_row else 0) / 100.0,
         "active_sessions": int(active_count or 0),
+        "status_counts": normalized_statuses,
+        "recent_status_counts": recent_statuses,
         "error_rate_5m": _event_rate_5m("ws_5xx", "ws_open"),
         "ws_disconnect_rate_5m": _event_rate_5m("ws_unexpected_disconnect", "ws_open"),
         "thresholds": {
@@ -953,6 +1020,314 @@ async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
             "error_rate_5m": 0.01,
             "ws_disconnect_rate_5m": 0.05,
         },
+    }
+
+
+# ── Operator debug endpoint (internal, no auth changes) ──────────────────────
+
+
+def _classify_failure(failure_reason: str | None) -> str:
+    """Classify a failure_reason string into a durable failure class.
+
+    Uses the same mapping as ``app/services/inbound_queue.FAILURE_REASON_TO_CLASS``
+    but operates independently so the debug endpoint does not depend on the
+    inbound-queue module.  Unknown / None reasons map to ``"infra_bug"``.
+    """
+    if not failure_reason:
+        return "infra_bug"
+    _MAP: dict[str, str] = {
+        "provider_send_failed": "retryable_pre_send",
+        "llm_timeout": "retryable_pre_send",
+        "llm_phase_failed": "retryable_pre_send",
+        "tool_validation_recoverable_exhausted": "retryable_pre_send",
+        "crashed": "infra_bug",
+        "transcription_failed": "infra_bug",
+        "vision_failed": "infra_bug",
+        "live_prep_submit_missing": "infra_bug",
+        "live_prep_text_no_submit": "infra_bug",
+        "live_prep_no_model_output": "infra_bug",
+        "bounded_loop_exceeded": "infra_bug",
+        "deb_budget_hard_capped": "terminal_post_send",
+        "spend_cap": "terminal_post_send",
+        "crashed_after_send": "terminal_post_send",
+        "newer_inbound_before_final_send": "terminal_post_send",
+        "submit_missing": "infra_bug",
+        "deb_tool_failure": "infra_bug",
+        "background_task_crashed": "infra_bug",
+    }
+    return _MAP.get(failure_reason, "infra_bug")
+
+
+@router.get("/api/live/ops/sessions/{session_id}/debug")
+async def ops_debug_session(
+    session_id: UUID,
+    pool: Any = Depends(get_pool),
+) -> dict[str, Any]:
+    """Operator debug endpoint — returns full session introspection.
+
+    Returns conversation metadata, bot_turns, transcript_turns (separate
+    key per SD3), artifacts grouped by type/revision with current/deleted
+    markers, provenance links with durable write counts, and extracted
+    failure classes.
+
+    Internal-only; no auth changes.
+    """
+    if not await _conversations_table_exists(pool):
+        raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+
+    # ── 1. Conversation metadata ──────────────────────────────────────────
+    conv = await pool.fetchrow(
+        "SELECT * FROM mediator.conversations WHERE id = $1",
+        session_id,
+    )
+    if conv is None:
+        raise HTTPException(status_code=404, detail="session not found")
+
+    conv_dict = dict(conv)
+    status = canonicalize_status(conv_dict.get("status", ""))
+
+    conversation: dict[str, Any] = {
+        "id": str(conv_dict["id"]),
+        "status": status,
+        "bot_id": conv_dict.get("bot_id"),
+        "user_id": str(conv_dict["user_id"]) if conv_dict.get("user_id") else None,
+        "partner_user_id": (
+            str(conv_dict["partner_user_id"])
+            if conv_dict.get("partner_user_id")
+            else None
+        ),
+        "mode": conv_dict.get("mode"),
+        "steering_text": conv_dict.get("steering_text"),
+        "prep_summary": conv_dict.get("prep_summary"),
+        "current_item_id": (
+            str(conv_dict["current_item_id"])
+            if conv_dict.get("current_item_id")
+            else None
+        ),
+        "started_at": str(conv_dict["started_at"]) if conv_dict.get("started_at") else None,
+        "ended_at": str(conv_dict["ended_at"]) if conv_dict.get("ended_at") else None,
+        "created_at": str(conv_dict["created_at"]) if conv_dict.get("created_at") else None,
+        "session_fields": conv_dict.get("session_fields"),
+        "topic_id": str(conv_dict["topic_id"]) if conv_dict.get("topic_id") else None,
+        "spend_usd_cents": conv_dict.get("spend_usd_cents"),
+    }
+
+    # ── 2. bot_turns (found by conversation_id) ───────────────────────────
+    bot_turn_rows = await pool.fetch(
+        """
+        SELECT id, kind, model_version, failure_reason, completed_at,
+               started_at, tool_call_count, duration_ms
+        FROM mediator.bot_turns
+        WHERE conversation_id = $1
+        ORDER BY started_at
+        """,
+        session_id,
+    )
+
+    bot_turns: list[dict[str, Any]] = []
+    for row in bot_turn_rows:
+        model = row.get("model_version") or ""
+        provider = model.split("/")[0] if "/" in model else ""
+        bot_turns.append({
+            "id": str(row["id"]),
+            "kind": row.get("kind"),
+            "turn_id": str(row["id"]),
+            "model": model,
+            "provider": provider,
+            "failure_reason": row.get("failure_reason"),
+            "completed": row.get("completed_at") is not None,
+            "completed_at": (
+                str(row["completed_at"]) if row.get("completed_at") else None
+            ),
+            "started_at": (
+                str(row["started_at"]) if row.get("started_at") else None
+            ),
+            "tool_call_count": row.get("tool_call_count", 0),
+            "duration_ms": row.get("duration_ms"),
+        })
+
+    # ── 3. transcript_turns (separate key per gate SD3) ────────────────────
+    transcript_rows = await pool.fetch(
+        """
+        SELECT id, speaker_label, speaker_role, text, ts,
+               asr_confidence, active_item_id, was_routing_input
+        FROM mediator.transcript_turns
+        WHERE conversation_id = $1
+        ORDER BY ts
+        """,
+        session_id,
+    )
+
+    transcript_turns: list[dict[str, Any]] = []
+    for row in transcript_rows:
+        transcript_turns.append({
+            "id": str(row["id"]),
+            "speaker_label": row["speaker_label"],
+            "speaker_role": row["speaker_role"],
+            "text": row["text"],
+            "ts": str(row["ts"]) if row.get("ts") else None,
+            "asr_confidence": row.get("asr_confidence"),
+            "active_item_id": (
+                str(row["active_item_id"]) if row.get("active_item_id") else None
+            ),
+            "was_routing_input": row.get("was_routing_input", False),
+        })
+
+    # ── 4. Artifacts grouped by type/revision ──────────────────────────────
+    artifact_rows = await pool.fetch(
+        """
+        SELECT * FROM mediator.conversation_artifacts
+        WHERE conversation_id = $1
+        ORDER BY artifact_type, revision_number DESC
+        """,
+        session_id,
+    )
+
+    # Determine current (highest non-deleted revision) per type.
+    current_by_type: dict[str, int] = {}
+    for row in artifact_rows:
+        atype = row["artifact_type"]
+        if row.get("deleted_at") is None:
+            rev = row["revision_number"]
+            if atype not in current_by_type or rev > current_by_type[atype]:
+                current_by_type[atype] = rev
+
+    artifacts_by_type: dict[str, list[dict[str, Any]]] = {}
+    for row in artifact_rows:
+        atype = row["artifact_type"]
+        is_current = (
+            row.get("deleted_at") is None
+            and row["revision_number"] == current_by_type.get(atype)
+        )
+        entry: dict[str, Any] = {
+            "id": str(row["id"]),
+            "artifact_type": atype,
+            "revision_number": row["revision_number"],
+            "payload": row.get("payload"),
+            "payload_version": row.get("payload_version", 1),
+            "created_by_turn_id": (
+                str(row["created_by_turn_id"])
+                if row.get("created_by_turn_id")
+                else None
+            ),
+            "deleted_at": str(row["deleted_at"]) if row.get("deleted_at") else None,
+            "created_at": str(row["created_at"]) if row.get("created_at") else None,
+            "expires_at": str(row["expires_at"]) if row.get("expires_at") else None,
+            "current": is_current,
+            "deleted": row.get("deleted_at") is not None,
+            "links": [],
+        }
+        artifacts_by_type.setdefault(atype, []).append(entry)
+
+    # ── 5. Artifact links (provenance) ─────────────────────────────────────
+    artifact_ids = [str(r["id"]) for r in artifact_rows]
+    link_rows: list[Any] = []
+    if artifact_ids:
+        link_rows = await pool.fetch(
+            """
+            SELECT * FROM mediator.artifact_links
+            WHERE artifact_id = ANY($1::uuid[])
+            ORDER BY created_at
+            """,
+            artifact_ids,
+        )
+
+    provenance_links: list[dict[str, Any]] = []
+    durable_counts: dict[str, int] = {}
+    link_index: dict[str, list[dict[str, Any]]] = {}
+
+    for lr in link_rows:
+        link = {
+            "id": str(lr["id"]),
+            "artifact_id": str(lr["artifact_id"]),
+            "target_table": lr["target_table"],
+            "target_id": str(lr["target_id"]),
+            "relation": lr["relation"],
+            "evidence": lr.get("evidence"),
+            "deleted_at": str(lr["deleted_at"]) if lr.get("deleted_at") else None,
+            "created_at": str(lr["created_at"]) if lr.get("created_at") else None,
+        }
+        provenance_links.append(link)
+
+        aid = str(lr["artifact_id"])
+        link_index.setdefault(aid, []).append(link)
+
+        # Aggregate durable write counts: count links to non-conversation-scoped
+        # tables (everything except conversations, conversation_items,
+        # transcript_turns, conversation_notes).
+        target = lr["target_table"]
+        if target not in (
+            "conversations",
+            "conversation_items",
+            "transcript_turns",
+            "conversation_notes",
+        ):
+            durable_counts[target] = durable_counts.get(target, 0) + 1
+
+    # Attach links to their artifacts.
+    for entries in artifacts_by_type.values():
+        for entry in entries:
+            entry["links"] = link_index.get(entry["id"], [])
+
+    # ── 6. Failure classes ─────────────────────────────────────────────────
+    failure_classes: dict[str, Any] = {
+        "session": {},
+        "bot_turns": [],
+        "non_chat": [],
+    }
+
+    # From session_fields.
+    sf = conv_dict.get("session_fields") or {}
+    if isinstance(sf, dict):
+        if sf.get("prep_error"):
+            failure_classes["session"]["prep_error"] = sf["prep_error"]
+        if sf.get("debrief_error") or sf.get("debrief_failure_reason"):
+            failure_classes["session"]["debrief_error"] = (
+                sf.get("debrief_error") or sf.get("debrief_failure_reason")
+            )
+        if sf.get("failure_class"):
+            failure_classes["session"]["failure_class"] = sf["failure_class"]
+
+    # From bot_turns.
+    for row in bot_turn_rows:
+        fr = row.get("failure_reason")
+        if fr:
+            failure_classes["bot_turns"].append({
+                "turn_id": str(row["id"]),
+                "kind": row.get("kind"),
+                "failure_reason": fr,
+                "failure_class": _classify_failure(fr),
+            })
+
+    # Non-chat result metadata: bot_turns created by live prep/debrief jobs
+    # (identified by `kind` and no `triggered_by_message_id`).
+    # These are already included in bot_turns above; surface them under a
+    # separate key for discoverability.
+    for row in bot_turn_rows:
+        if row.get("kind") in ("live_prep", "live_debrief"):
+            fr = row.get("failure_reason")
+            entry: dict[str, Any] = {
+                "turn_id": str(row["id"]),
+                "kind": row.get("kind"),
+            }
+            if fr:
+                entry["failure_reason"] = fr
+                entry["failure_class"] = _classify_failure(fr)
+            else:
+                entry["outcome"] = "success"
+            failure_classes["non_chat"].append(entry)
+
+    return {
+        "session_id": str(session_id),
+        "conversation": conversation,
+        "bot_turns": bot_turns,
+        "transcript_turns": transcript_turns,
+        "artifacts": artifacts_by_type,
+        "provenance": {
+            "links": provenance_links,
+            "durable_write_counts": durable_counts,
+        },
+        "failure_classes": failure_classes,
     }
 
 
@@ -1064,7 +1439,7 @@ async def get_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[s
         ) from exc
     if row is None:
         raise HTTPException(status_code=404, detail="session not found")
-    return {key: value for key, value in dict(row).items()}
+    return normalize_row_status(dict(row))
 
 
 # ── WebSocket stub ───────────────────────────────────────────────────────────
@@ -1140,6 +1515,24 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
     try:
+        # ── Transition session from 'ready' → 'active' (canonical) ──────────
+        # This replaces any legacy 'live' status and stamps started_at.
+        pool = websocket.app.state.pool
+        await pool.execute(
+            """
+            UPDATE mediator.conversations
+            SET status = 'active',
+                started_at = COALESCE(started_at, now())
+            WHERE id = $1::uuid
+              AND status IN ('ready', 'live')
+            """,
+            session_id,
+        )
+        logger.info(
+            "live_voice: WS start — set status=active for session_id=%s",
+            session_id,
+        )
+
         # Streaming phase descriptors so the user sees motion while the
         # backend is "waking up".
         for label in (

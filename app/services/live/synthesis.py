@@ -259,7 +259,7 @@ async def save_review(
             await conn.execute(
                 """
                 UPDATE mediator.conversations
-                SET status = 'synthesized'
+                SET status = 'completed'
                 WHERE id = $1
                 """,
                 session_id,

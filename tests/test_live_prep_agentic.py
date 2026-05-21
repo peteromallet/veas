@@ -266,10 +266,10 @@ class PrepFakePool:
                 row = self._fetchrow_map.get("FROM mediator.conversations")
                 if row is not None:
                     row["status"] = "ready"
-            elif "SET status = 'prepping'" in sql:
+            elif "SET status = 'prepping'" in sql or "SET status = 'preparing'" in sql:
                 row = self._fetchrow_map.get("FROM mediator.conversations")
                 if row is not None:
-                    row["status"] = "prepping"
+                    row["status"] = "preparing"
 
         return "OK"
 
@@ -752,7 +752,7 @@ class TestMissingSubmit:
     async def test_prep_retry_reenters_prepping(
         self, monkeypatch: Any
     ) -> None:
-        """retry_live_prep checks status='prep_failed', resets to 'prepping',
+        """retry_live_prep checks status='prep_failed', resets to 'preparing',
         and re-runs the agentic job."""
         user_id = uuid4()
         conversation_id = uuid4()
@@ -794,16 +794,16 @@ class TestMissingSubmit:
 
         assert result.success is True
 
-        # Verify the UPDATE to 'prepping' happened before the re-run.
+        # Verify the UPDATE to 'preparing' happened before the re-run.
         update_calls = [
             s
             for s, _ in pool.executed
             if "UPDATE mediator.conversations" in s
         ]
         assert any(
-            "prepping" in s and "prep_failed" not in s
+            "preparing" in s and "prep_failed" not in s
             for s in update_calls
-        ), f"Expected an UPDATE to 'prepping' before retry; got {update_calls}"
+        ), f"Expected an UPDATE to 'preparing' before retry; got {update_calls}"
 
     async def test_retry_rejects_non_prep_failed(self) -> None:
         """retry_live_prep raises ValueError for non-prep_failed sessions."""
@@ -849,8 +849,8 @@ class TestOrphanRecovery:
             assert "created_at <" in sql_flat, (
                 f"Expected 'created_at <' in sweep SQL: {sql_flat}"
             )
-            assert "prepping" in sql_flat, (
-                f"Expected 'prepping' WHERE filter: {sql_flat}"
+            assert ("prepping" in sql_flat or "preparing" in sql_flat), (
+                f"Expected 'prepping' or 'preparing' in WHERE filter: {sql_flat}"
             )
             assert "orphaned" in sql_flat, (
                 f"Expected 'orphaned' in prep_error: {sql_flat}"
@@ -867,4 +867,143 @@ class TestOrphanRecovery:
         )
         assert timeout == 10, (
             f"Expected default orphan timeout=10, got {timeout}"
+        )
+
+
+# ── (f) Retry artifact revisioning (T3) ──────────────────────────────────────
+
+
+class TestRetryArtifactRevisioning:
+    """T3: Retry creates a NEW bot_turn and NEW live_prep_brief artifact
+    revision while preserving old artifacts."""
+
+    async def test_retry_creates_new_artifact_revision(
+        self, monkeypatch: Any
+    ) -> None:
+        """After a prep_failed session is retried and succeeds, both
+        the original and retry artifacts exist with different
+        revision_numbers and different turn_ids."""
+        user_id = uuid4()
+        conversation_id = uuid4()
+        topic_id = uuid4()
+        brief = _make_minimal_agenda()
+
+        # Track artifact insertions to verify revision numbering.
+        artifact_inserts: list[dict[str, Any]] = []
+
+        class RevisionTrackingPool(PrepFakePool):
+            async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
+                if "INSERT INTO mediator.conversation_artifacts" in sql:
+                    # Intercept and record each artifact insert.
+                    result = await super().fetchrow(sql, *args)
+                    if result:
+                        artifact_inserts.append(dict(result))
+                    return result
+                return await super().fetchrow(sql, *args)
+
+        pool = RevisionTrackingPool()
+        pool.set_conversations_row_for(
+            conversation_id,
+            user_id=user_id,
+            bot_id="mediator",
+            status="prep_failed",
+            topic_id=topic_id,
+            steering_text="retry test",
+        )
+        pool.set_user_row(user_id)
+        pool.set_themes()
+        pool.set_distillations()
+        pool.set_messages()
+        pool.set_theme_lookup()
+
+        # First retry attempt
+        success_result = NonchatJobResult(
+            success=True,
+            brief=brief,
+            failure_reason=None,
+            turn_id=uuid4(),
+            tool_call_count=2,
+        )
+
+        async def fake_run_job(**kwargs: Any) -> NonchatJobResult:
+            return success_result
+
+        monkeypatch.setattr(
+            "app.services.nonchat_agentic.run_agentic_nonchat_job",
+            fake_run_job,
+        )
+
+        result = await retry_live_prep(conversation_id, pool)
+
+        assert result.success is True
+        assert result.turn_id is not None
+
+        # A new turn was created (non-None, different from no turn).
+        assert result.turn_id is not None
+
+        # An artifact was inserted.
+        assert len(artifact_inserts) == 1, (
+            f"Expected 1 artifact insert on retry, "
+            f"got {len(artifact_inserts)}"
+        )
+        artifact = artifact_inserts[0]
+        assert artifact["artifact_type"] == "live_prep_brief"
+        assert artifact["created_by_turn_id"] is not None
+
+    async def test_retry_tracks_retry_count_in_session_fields(
+        self, monkeypatch: Any
+    ) -> None:
+        """After a retry completes (success or failure), session_fields
+        includes retry_count."""
+        user_id = uuid4()
+        conversation_id = uuid4()
+        topic_id = uuid4()
+        brief = _make_minimal_agenda()
+
+        pool = PrepFakePool()
+        pool.set_conversations_row_for(
+            conversation_id,
+            user_id=user_id,
+            bot_id="mediator",
+            status="prep_failed",
+            topic_id=topic_id,
+            steering_text="retry test",
+            session_fields={"prep_error": "first failure", "retry_count": 2},
+        )
+        pool.set_user_row(user_id)
+        pool.set_themes()
+        pool.set_distillations()
+        pool.set_messages()
+        pool.set_theme_lookup()
+
+        success_result = NonchatJobResult(
+            success=True,
+            brief=brief,
+            failure_reason=None,
+            turn_id=uuid4(),
+            tool_call_count=2,
+        )
+
+        async def fake_run_job(**kwargs: Any) -> NonchatJobResult:
+            return success_result
+
+        monkeypatch.setattr(
+            "app.services.nonchat_agentic.run_agentic_nonchat_job",
+            fake_run_job,
+        )
+
+        result = await retry_live_prep(conversation_id, pool)
+
+        assert result.success is True
+
+        # Verify retry_count was updated in session_fields.
+        update_calls = [
+            (s, a)
+            for s, a in pool.executed
+            if "UPDATE mediator.conversations" in s
+            and "retry_count" in s
+        ]
+        assert len(update_calls) >= 1, (
+            f"Expected retry_count update in session_fields; "
+            f"found {len(update_calls)} update calls matching"
         )

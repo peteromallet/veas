@@ -97,6 +97,81 @@ export function liveSocketUrl(sessionId: string): string {
   return `${proto}//${window.location.host}/ws/live/${encodeURIComponent(sessionId)}${tokenSuffix}`;
 }
 
+// ── Canonical live-conversation status types ───────────────────────────────
+
+/**
+ * Canonical statuses used by the live-conversation API (post-Sprint-5).
+ * These are the values the frontend should expect after status normalization.
+ */
+export type CanonicalStatus =
+  | "preparing"
+  | "ready"
+  | "active"
+  | "debriefing"
+  | "review_pending"
+  | "completed"
+  | "prep_failed"
+  | "debrief_failed";
+
+/**
+ * Legacy statuses that may appear during migration rollout.
+ * The application layer normalizes these to canonical values, but
+ * type guards handle both for backward compatibility.
+ */
+export type LegacyStatus =
+  | "prepping"
+  | "live"
+  | "synthesized"
+  | "ended"
+  | "synthesizing";
+
+/**
+ * Union of all possible status strings the API may return.
+ */
+export type LiveStatus = CanonicalStatus | LegacyStatus;
+
+/**
+ * Map a status string to its canonical form.
+ * Canonical values pass through unchanged.
+ */
+export function canonicalizeStatus(status: string): CanonicalStatus {
+  const LEGACY_MAP: Record<string, CanonicalStatus> = {
+    prepping: "preparing",
+    live: "active",
+    synthesized: "completed",
+    ended: "completed",
+    synthesizing: "debriefing",
+  };
+  const mapped = LEGACY_MAP[status];
+  if (mapped) return mapped;
+  // Known canonical values pass through; unknown values are cast defensively.
+  return status as CanonicalStatus;
+}
+
+/**
+ * Type guard: is the status one of the canonical active/pending statuses?
+ */
+export function isActiveStatus(status: string): boolean {
+  const canonical = canonicalizeStatus(status);
+  return ["preparing", "ready", "active", "review_pending"].includes(canonical);
+}
+
+/**
+ * Type guard: is the status a terminal/completed status?
+ */
+export function isCompletedStatus(status: string): boolean {
+  const canonical = canonicalizeStatus(status);
+  return canonical === "completed";
+}
+
+/**
+ * Type guard: is the status a failed status?
+ */
+export function isFailedStatus(status: string): boolean {
+  const canonical = canonicalizeStatus(status);
+  return canonical === "prep_failed" || canonical === "debrief_failed";
+}
+
 export type CoverageEvidence =
   | "explicit_answer"
   | "emotional_shift"
@@ -124,6 +199,8 @@ export interface SessionCardPayload {
   prep_summary: string | null;
   current_item_id: string | null;
   items: AgendaItemCard[];
+  /** Present when session is in prep_failed state (Sprint 5). */
+  failure_reason?: string | null;
 }
 
 export async function fetchSessionCard(
@@ -151,6 +228,12 @@ export interface ReviewNote {
   text: string;
 }
 
+export interface DebriefFailedMeta {
+  reason?: string;
+  error?: string;
+  failed_at?: string;
+}
+
 export interface SessionReview {
   session_id: string;
   bot_id?: string;
@@ -163,6 +246,14 @@ export interface SessionReview {
   still_open: ReviewItem[];
   what_to_remember: ReviewNote[];
   is_empty: boolean;
+  /** True when the session is in 'debriefing' status (Sprint 5). */
+  debrief_pending?: boolean;
+  /** Present when debrief has failed (Sprint 5). */
+  debrief_failed?: DebriefFailedMeta;
+  /** Debrief artifact payload when debrief succeeded (Sprint 5). */
+  live_debrief?: unknown;
+  /** Review summary text extracted from review_summary artifact (Sprint 5). */
+  review_summary?: string;
 }
 
 export async function postConsent(
@@ -213,4 +304,72 @@ export async function saveReview(
     },
   );
   return handle<{ ok: boolean; status: string }>(res);
+}
+
+// ── Retry & review helpers (Sprint 5) ──────────────────────────────────────
+
+export interface RetryPrepResponse {
+  session_id: string;
+  status: "preparing";
+  prep_pending: true;
+}
+
+/**
+ * Retry a failed live-prep session.
+ * Only valid when the session is in 'prep_failed' status (409 otherwise).
+ */
+export async function retryPrep(
+  sessionId: string,
+): Promise<RetryPrepResponse> {
+  const res = await fetch(
+    `/api/live/sessions/${encodeURIComponent(sessionId)}/prep/retry`,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    },
+  );
+  return handle<RetryPrepResponse>(res);
+}
+
+export interface RetryDebriefResponse {
+  session_id: string;
+  status: "debriefing";
+  debrief_pending: true;
+}
+
+/**
+ * Retry a failed live-debrief session.
+ * Only valid when the session is in 'debrief_failed' status (409 otherwise).
+ */
+export async function retryDebrief(
+  sessionId: string,
+): Promise<RetryDebriefResponse> {
+  const res = await fetch(
+    `/api/live/sessions/${encodeURIComponent(sessionId)}/debrief/retry`,
+    {
+      method: "POST",
+      headers: { Accept: "application/json" },
+    },
+  );
+  return handle<RetryDebriefResponse>(res);
+}
+
+/**
+ * Fetch the deterministic review for a session, enriched with debrief
+ * artifacts and failure metadata when available.
+ *
+ * Never blocks waiting for debrief — always returns the deterministic
+ * synthesis first.  When debrief is in progress, ``debrief_pending`` is
+ * set to ``true``.  When debrief has failed, ``debrief_failed`` metadata
+ * is surfaced.  When debrief succeeded, ``live_debrief`` and optional
+ * ``review_summary`` fields are included.
+ */
+export async function fetchReview(
+  sessionId: string,
+): Promise<SessionReview> {
+  const res = await fetch(
+    `/api/live/sessions/${encodeURIComponent(sessionId)}/review`,
+    { headers: { Accept: "application/json" } },
+  );
+  return handle<SessionReview>(res);
 }
