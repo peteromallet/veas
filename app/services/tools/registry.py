@@ -536,6 +536,12 @@ def _debrief_write_guard_ok(
     redacted_turns: set[str] = set(transcript_policy.get("redacted_turn_ids", []))
 
     # ── Validate evidence references ────────────────────────────────────
+    # Track whether we found at least one valid evidence reference with a
+    # non-empty transcript_turn_id.  If evidence_refs is present but every
+    # item has an empty/missing turn_id, we must still require a valid
+    # derivation_source (the elif below would not fire because the ``if``
+    # branch was entered, so we need an explicit tracker).
+    found_valid_ref = False
     if evidence_refs:
         for ref in evidence_refs:
             turn_id = str(ref.get("transcript_turn_id", ""))
@@ -591,8 +597,12 @@ def _debrief_write_guard_ok(
                             error_code="debrief_quote_mismatch",
                             retryable=False,
                         )
-    elif derivation_source not in ("hot_context", "bot_notes", "prep_artifact"):
-        # For writes without transcript references, require an explicit
+            found_valid_ref = True
+
+    if not found_valid_ref and derivation_source not in (
+        "hot_context", "bot_notes", "prep_artifact"
+    ):
+        # For writes without valid transcript references, require an explicit
         # derivation_source marking it as derived from hot context / bot
         # notes / prep artifact.
         _record_debrief_write_intent(
