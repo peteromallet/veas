@@ -9,5 +9,5 @@ nixPkgs = ["python311", "nodejs_20"]
 
 [phases.build]
 cmds = [
-  "bash scripts/build_live_ui.sh",
+  "cd web/live-voice && npm ci && npm run build",
 ]
