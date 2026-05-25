@@ -229,6 +229,39 @@ async def _bound_bot_ids(pool: Any, user_id: UUID) -> set[str]:
     return {row["bot_id"] for row in rows}
 
 
+async def _resolve_live_partner_user_id(
+    pool: Any, user_id: UUID, bot_id: str
+) -> UUID | None:
+    """Find the other dyad member for this user's bot binding, if any."""
+    try:
+        row = await pool.fetchrow(
+            """
+            SELECT other_dm.user_id
+            FROM bot_bindings bb
+            JOIN dyad_members self_dm
+              ON self_dm.dyad_id = bb.dyad_id
+             AND self_dm.user_id = $1
+            JOIN dyad_members other_dm
+              ON other_dm.dyad_id = bb.dyad_id
+             AND other_dm.user_id <> $1
+            WHERE bb.bot_id = $2
+            ORDER BY other_dm.user_id
+            LIMIT 1
+            """,
+            user_id,
+            bot_id,
+        )
+    except Exception:
+        logger.warning("live_voice: partner lookup failed", exc_info=True)
+        return None
+    if row is None:
+        return None
+    try:
+        return UUID(str(row["user_id"]))
+    except (TypeError, ValueError):
+        return None
+
+
 @router.get("/api/live/personas")
 async def list_personas(pool: Any = Depends(get_pool)) -> dict[str, Any]:
     """Return personas the caller may steer.
@@ -312,6 +345,7 @@ async def create_session(
     session_id = uuid4()
     mode = "steered" if (body.steering_text or "").strip() else "open"
     steering = body.steering_text
+    partner_user_id = await _resolve_live_partner_user_id(pool, user_id, body.bot_id)
 
     # Resolve topic_id from the bot's primary_topic_slug.
     topic_id: UUID | None = None
@@ -330,12 +364,13 @@ async def create_session(
             await conn.execute(
                 """
                 INSERT INTO mediator.conversations
-                    (id, user_id, bot_id, mode, steering_text, status,
+                    (id, user_id, partner_user_id, bot_id, mode, steering_text, status,
                      prep_summary, current_item_id, topic_id)
-                VALUES ($1, $2, $3, $4, $5, 'preparing', NULL, NULL, $6)
+                VALUES ($1, $2, $3, $4, $5, $6, 'preparing', NULL, NULL, $7)
                 """,
                 session_id,
                 user_id,
+                partner_user_id,
                 body.bot_id,
                 mode,
                 steering,

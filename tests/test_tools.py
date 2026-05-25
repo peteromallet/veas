@@ -2477,6 +2477,18 @@ async def test_recent_activity_returns_period_and_stub_digest(tool_ctx):
     assert result["period_time"]["start"]["display"]
 
 
+async def test_recent_activity_handles_solo_context(tool_ctx):
+    tool_ctx.current_step = "read"
+    tool_ctx.partner = None
+
+    result = await call_tool(
+        "recent_activity", RecentActivityInput(days=7).model_dump(mode="json"), tool_ctx
+    )
+
+    assert "error" not in result
+    assert [thread["user_id"] for thread in result["threads"]] == [str(tool_ctx.user.id)]
+
+
 async def test_search_messages_returns_temporal_metadata_and_local_day_filter(tool_ctx):
     tool_ctx.current_step = "read"
     tool_ctx.user = replace(tool_ctx.user, timezone="Europe/Berlin")

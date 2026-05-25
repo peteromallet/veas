@@ -388,7 +388,10 @@ async def search_messages(
     logger.info("read tool search_messages turn_id=%s", ctx.turn_id)
     if ctx.bot_id is None or ctx.primary_topic_id is None:
         return SearchMessagesOutput(hits=[], truncated=False)
-    dyad_ids = {ctx.user.id, ctx.partner.id}
+    participant_ids = [ctx.user.id]
+    if ctx.partner is not None:
+        participant_ids.append(ctx.partner.id)
+    dyad_ids = set(participant_ids)
     if args.partner_user_id is not None and args.partner_user_id not in dyad_ids:
         return SearchMessagesOutput(hits=[], truncated=False)
     clauses = ["deleted_at IS NULL"]
@@ -397,7 +400,7 @@ async def search_messages(
         params.append(args.partner_user_id)
         clauses.append(f"(sender_id = ${len(params)} OR recipient_id = ${len(params)})")
     else:
-        params.append([ctx.user.id, ctx.partner.id])
+        params.append(participant_ids)
         clauses.append(
             f"(sender_id = ANY(${len(params)}::uuid[]) OR recipient_id = ANY(${len(params)}::uuid[]))"
         )
@@ -463,6 +466,8 @@ async def list_bridge_candidates(
         return ListBridgeCandidatesOutput(
             is_error=True, error=_err, candidates=[], truncated=False
         )
+    if ctx.partner is None:
+        return ListBridgeCandidatesOutput(candidates=[], truncated=False)
     rows = await ctx.pool.fetch(
         """
         SELECT id, source_user_id, target_user_id, kind, status, sensitivity, partner_path,
@@ -578,6 +583,9 @@ async def recent_activity(
     logger.info("read tool recent_activity turn_id=%s", ctx.turn_id)
     end = _ctx_now(ctx)
     start = end - timedelta(days=args.days)
+    participant_ids = [ctx.user.id]
+    if ctx.partner is not None:
+        participant_ids.append(ctx.partner.id)
     rows = await ctx.pool.fetch(
         """
         SELECT u.id AS user_id, u.name AS user_name, COUNT(m.id) AS message_count,
@@ -599,7 +607,7 @@ async def recent_activity(
         end,
         ctx.bot_id,
         ctx.primary_topic_id,
-        [ctx.user.id, ctx.partner.id],
+        participant_ids,
     )
     threads: list[ThreadDigest] = []
     partner_share_by_user = await _partner_share_by_user_for_current_bot(ctx)

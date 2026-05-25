@@ -154,8 +154,8 @@ class LiveVoiceFakePool:
 
         # INSERT INTO mediator.conversations
         # The current INSERT embeds literals for status/prep_summary/current_item_id:
-        #   VALUES ($1, $2, $3, $4, $5, 'preparing', NULL, NULL, $6)
-        # So args = [id, user_id, bot_id, mode, steering_text, topic_id]
+        #   VALUES ($1, $2, $3, $4, $5, $6, 'preparing', NULL, NULL, $7)
+        # So args = [id, user_id, partner_user_id, bot_id, mode, steering_text, topic_id]
         if compact.startswith("INSERT INTO mediator.conversations"):
             row_id = args[0] if args else uuid4()
             row: dict[str, Any] = {
@@ -169,14 +169,16 @@ class LiveVoiceFakePool:
             if len(args) >= 2:
                 row["user_id"] = args[1]
             if len(args) >= 3:
-                row["bot_id"] = args[2]
+                row["partner_user_id"] = args[2]
             if len(args) >= 4:
-                row["mode"] = args[3]
+                row["bot_id"] = args[3]
             if len(args) >= 5:
-                row["steering_text"] = args[4]
-            # args[5] (if present) is topic_id, NOT status
-            if len(args) >= 6 and args[5] is not None:
-                row["topic_id"] = args[5]
+                row["mode"] = args[4]
+            if len(args) >= 6:
+                row["steering_text"] = args[5]
+            # args[6] (if present) is topic_id, NOT status
+            if len(args) >= 7 and args[6] is not None:
+                row["topic_id"] = args[6]
             self._conversations[row_id] = row
             return "INSERT 0 1"
 
