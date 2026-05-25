@@ -40,6 +40,10 @@ from app.services.topic_filter import join_artifact_topics
 
 logger = logging.getLogger(__name__)
 
+_THEME_SLUG_SQL = (
+    "lower(trim(both '_' from regexp_replace(t.title, '[^[:alnum:]]+', '_', 'g')))"
+)
+
 # Sentinel class so callers can detect the agentic-preferred path even when
 # the return type is ``AgendaProducer | None``.
 _SENTINEL_AGENTIC: Any = object()
@@ -584,8 +588,13 @@ async def _persist_prep_success(
     if theme_slugs:
         try:
             rows = await pool.fetch(
-                "SELECT id, slug FROM themes WHERE user_id = $1 AND slug = ANY($2::text[])",
-                user_id,
+                f"""
+                SELECT t.id, {_THEME_SLUG_SQL} AS slug
+                FROM themes t
+                WHERE (t.recorded_by_bot_id = $1 OR t.recorded_by_bot_id IS NULL)
+                  AND {_THEME_SLUG_SQL} = ANY($2::text[])
+                """,
+                bot_id,
                 list(theme_slugs),
             )
             theme_id_by_slug = {r["slug"]: r["id"] for r in rows}
@@ -736,8 +745,13 @@ async def produce_agenda(
     if theme_slugs:
         try:
             rows = await pool.fetch(
-                "SELECT id, slug FROM themes WHERE user_id = $1 AND slug = ANY($2::text[])",
-                user_uuid,
+                f"""
+                SELECT t.id, {_THEME_SLUG_SQL} AS slug
+                FROM themes t
+                WHERE (t.recorded_by_bot_id = $1 OR t.recorded_by_bot_id IS NULL)
+                  AND {_THEME_SLUG_SQL} = ANY($2::text[])
+                """,
+                request.bot_id,
                 list(theme_slugs),
             )
             theme_id_by_slug = {r["slug"]: r["id"] for r in rows}
