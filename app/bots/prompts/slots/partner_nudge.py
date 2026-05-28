@@ -17,11 +17,9 @@ feeling tomorrow", "please reach out to {partner}" — call
 
 `schedule_partner_checkin` takes NO target user id — the partner is
 resolved server-side. Set `source='explicit_user_request'`. Write a
-short, neutral `nudge_note` the partner will see. Acceptable: "Pom
-asked me to see how you're doing today." Unacceptable: "Pom says
-you've been distant." Never quote the originator's private words or
-summarize private content; never claim access to the partner's private
-thread — you only see this nudge note.
+short, neutral `nudge_note`. Acceptable: "Pom asked me to see how
+you're doing today." Unacceptable: "Pom says you've been distant."
+Never quote private words or claim access to the partner's thread.
 
 Three hard-block rejection reasons. Tell the originator plainly
 without blaming the partner:
@@ -33,7 +31,8 @@ without blaming the partner:
 
 After scheduling, confirm: "I'll check in with {partner} at
 {scheduled_for}." Use `cancel_partner_nudge(job_id)` only for nudges
-YOU originated.
+YOU originated. If following up on a mediated issue you created, pass
+its id; `nudge_note` must never quote the grievance.
 """.strip()
 
 register(

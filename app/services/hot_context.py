@@ -50,6 +50,8 @@ class HotContext:
     temporal_context: dict[str, Any] = field(default_factory=dict)
     distillations: list[dict[str, Any]] = field(default_factory=list)
     bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
+    outgoing_mediated_issues: list[dict] = field(default_factory=list)
+    resolved_bridge_context: dict | None = None
     recent_reactions: list[dict[str, Any]] = field(default_factory=list)
     silent_turns: list[dict[str, Any]] = field(default_factory=list)
     topic_status: dict[str, Any] | None = None
@@ -887,6 +889,58 @@ async def build_hot_context(
         for row in bridge_candidate_rows
         if bridge_candidate_visible_to_target(row, target_user_id=user.id)
     ]
+    outgoing_mediated_rows = await pool.fetch(
+        """
+        SELECT id, kind, status, partner_path, shareable_summary, created_at
+        FROM bridge_candidates
+        WHERE source_user_id=$1
+          AND target_user_id=$2
+          AND status IN ('pending','ready','blocked')
+        ORDER BY created_at DESC, id DESC
+        LIMIT 3
+        """,
+        user.id,
+        partner.id,
+    )
+    outgoing_mediated_issues = [
+        {
+            "id": row["id"],
+            "kind": row["kind"],
+            "status": row["status"],
+            "partner_path": row["partner_path"],
+            "shareable_summary": row["shareable_summary"],
+        }
+        for row in outgoing_mediated_rows
+    ]
+    # Resolve bridge context for partner_nudge triggers at fire time.
+    # Convention departure: the only trigger-type-gated query in this function.
+    # Fetch fresh to avoid stale data and never copy internal_note/reason.
+    resolved_bridge_context: dict | None = None
+    _trigger_ctx = (trigger_metadata or {}).get("context")
+    if (
+        trigger_metadata is not None
+        and isinstance(_trigger_ctx, dict)
+        and _trigger_ctx.get("kind") == "partner_nudge"
+        and _trigger_ctx.get("bridge_candidate_id") is not None
+    ):
+        _bc_row = await pool.fetchrow(
+            """
+            SELECT status, partner_path, shareable_summary, target_user_id
+            FROM bridge_candidates
+            WHERE id=$1
+            """,
+            _trigger_ctx["bridge_candidate_id"],
+        )
+        if _bc_row is not None and bridge_candidate_visible_to_target(
+            _bc_row, target_user_id=user.id
+        ):
+            resolved_bridge_context = {
+                "shareable_summary": _bc_row["shareable_summary"],
+                "status": _bc_row["status"],
+            }
+        else:
+            # bridge_candidate_id present but not visible — stale/updated
+            resolved_bridge_context = {"stale": True}
     latest_sent_at = max((row["sent_at"] for row in message_rows), default=None)
     trigger_rows = await pool.fetch(
         """
@@ -1072,6 +1126,8 @@ async def build_hot_context(
         observations=observations,
         distillations=distillations,
         bridge_candidates=bridge_candidates,
+        outgoing_mediated_issues=outgoing_mediated_issues,
+        resolved_bridge_context=resolved_bridge_context,
         recent_reactions=recent_reactions,
         silent_turns=silent_turns,
         recent_messages=recent_messages,
@@ -1405,6 +1461,19 @@ def _render_with_counts(
         )
     else:
         lines.append("- none")
+    if hc.outgoing_mediated_issues:
+        lines += ["", "## Outgoing mediated issues"]
+        lines.extend(
+            f"- id={_clip_id(item['id'], clip_limit)} status={item['status']} partner_path={item['partner_path']} kind={item['kind']}: {_clip(item['shareable_summary'], clip_limit)}"
+            for item in hc.outgoing_mediated_issues
+        )
+        lines.append(
+            "- use list_bridge_candidates(scope=\"dyad\") for full lifecycle including sent/addressed/declined."
+        )
+        if truncations.get("outgoing_mediated_issues"):
+            lines.append(
+                f"- [truncated, {truncations['outgoing_mediated_issues']} more]"
+            )
     lines += ["", "## Recent messages"]
     lines.extend(
         f"- {_time_label(item, 'sent_at') or item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}{_queue_outcome_label(item)}"
@@ -1491,6 +1560,11 @@ def _render_with_counts(
         ]
         if scheduled_for_iso:
             lines.append(f"- scheduled_for: {_clip(scheduled_for_iso, clip_limit)}")
+        rc = hc.resolved_bridge_context
+        if rc is not None and not rc.get("stale"):
+            lines.append(f"- about: {_clip(rc['shareable_summary'], clip_limit)}")
+        elif rc is not None:
+            lines.append("- about: a previously raised issue (since updated or resolved)")
     return "\n".join(lines).strip()
 
 
@@ -1512,6 +1586,8 @@ def render_hot_context(hc: HotContext) -> str:
         observations=list(hc.observations),
         distillations=list(hc.distillations),
         bridge_candidates=list(hc.bridge_candidates),
+        outgoing_mediated_issues=list(hc.outgoing_mediated_issues),
+        resolved_bridge_context=hc.resolved_bridge_context,
         recent_reactions=list(hc.recent_reactions),
         silent_turns=list(hc.silent_turns),
         recent_messages=list(hc.recent_messages),
@@ -1526,6 +1602,7 @@ def render_hot_context(hc: HotContext) -> str:
     )
     truncations = {
         "distillations": 0,
+        "outgoing_mediated_issues": 0,
         "observations": 0,
         "memories": 0,
         "partner_shareable_summaries": 0,
@@ -1536,6 +1613,7 @@ def render_hot_context(hc: HotContext) -> str:
     text = _render_with_counts(working, truncations, clip_limit)
     for name in (
         "distillations",
+        "outgoing_mediated_issues",
         "partner_shareable_summaries",
         "observations",
         "memories",

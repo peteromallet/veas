@@ -1,7 +1,9 @@
 """Solo hot context construction (Sprint 5).
 
 Mirrors hot_context.py but for a single-user bot: single about-user bucket,
-no partner content, no bridge candidates.
+no partner content. When a dyad partner resolves, outgoing mediated bridge
+visibility (source_user_id = this user) is included read-only; solo bots
+have no bridge tools.
 """
 
 from __future__ import annotations
@@ -30,6 +32,7 @@ from app.services.partner_sharing import (
     has_dyad_partner,
     resolve_dyad_partner,
 )
+from app.services.cross_thread_privacy import bridge_candidate_visible_to_target
 from app.services.topic_filter import join_artifact_topics
 
 
@@ -49,6 +52,8 @@ class HotContextSolo:
     temporal_context: dict[str, Any] = field(default_factory=dict)
     distillations: list[dict[str, Any]] = field(default_factory=list)
     bridge_candidates: list[dict[str, Any]] = field(default_factory=list)
+    outgoing_mediated_issues: list[dict[str, Any]] = field(default_factory=list)
+    resolved_bridge_context: dict | None = None
     recent_reactions: list[dict[str, Any]] = field(default_factory=list)
     silent_turns: list[dict[str, Any]] = field(default_factory=list)
     topic_status: dict[str, Any] | None = None
@@ -454,6 +459,52 @@ async def build_hot_context_solo(
                     partner_recipient_share or "pending"
                 ),
             }
+    # Outgoing mediated bridge visibility: source-side unresolved bridges.
+    # Read-only; solo bots have no bridge tools. Skip when no dyad partner.
+    outgoing_mediated_issues: list[dict[str, Any]] = []
+    if dyad_partner is not None:
+        outgoing_rows = await pool.fetch(
+            """\
+            SELECT id, kind, status, partner_path, shareable_summary, created_at
+            FROM bridge_candidates
+            WHERE source_user_id=$1 AND target_user_id=$2
+              AND status IN ('pending','ready','blocked')
+            ORDER BY created_at DESC, id DESC
+            LIMIT 3
+            """,
+            user.id,
+            dyad_partner.partner_user_id,
+        )
+        outgoing_mediated_issues = [dict(row) for row in outgoing_rows]
+
+    # Resolve bridge context for partner_nudge triggers at fire time.
+    # Same gate/fetch/visibility pattern as dyadic hot_context.py.
+    resolved_bridge_context: dict | None = None
+    _trigger_ctx = (trigger_metadata or {}).get("context")
+    if (
+        trigger_metadata is not None
+        and isinstance(_trigger_ctx, dict)
+        and _trigger_ctx.get("kind") == "partner_nudge"
+        and _trigger_ctx.get("bridge_candidate_id") is not None
+    ):
+        _bc_row = await pool.fetchrow(
+            """
+            SELECT status, partner_path, shareable_summary, target_user_id
+            FROM bridge_candidates
+            WHERE id=$1
+            """,
+            _trigger_ctx["bridge_candidate_id"],
+        )
+        if _bc_row is not None and bridge_candidate_visible_to_target(
+            _bc_row, target_user_id=user.id
+        ):
+            resolved_bridge_context = {
+                "shareable_summary": _bc_row["shareable_summary"],
+                "status": _bc_row["status"],
+            }
+        else:
+            resolved_bridge_context = {"stale": True}
+
     now_utc = datetime.now(UTC)
     user_timezone = timezone_or_utc(current_user.get("timezone") or user.timezone).key
 
@@ -951,7 +1002,9 @@ async def build_hot_context_solo(
         open_watch_items=open_watch_items,
         observations=observations,
         distillations=distillations,
-        bridge_candidates=[],  # no bridge candidates for solo
+        bridge_candidates=[],  # no bridge tools for solo
+        outgoing_mediated_issues=outgoing_mediated_issues,
+        resolved_bridge_context=resolved_bridge_context,
         recent_reactions=recent_reactions,
         silent_turns=silent_turns,
         recent_messages=recent_messages,
@@ -1295,6 +1348,24 @@ def _render_solo_with_counts(
         lines.append("- none")
     if truncations.get("distillations"):
         lines.append(f"- [truncated, {truncations['distillations']} more]")
+    if hc.outgoing_mediated_issues:
+        lines += ["", "## Outgoing mediated issues"]
+        for item in hc.outgoing_mediated_issues:
+            summary = _clip(item.get("shareable_summary") or "", clip_limit)
+            line = (
+                f"- id={_clip_id(item['id'], clip_limit)}"
+                f" status={item['status']}"
+                f" partner_path={item.get('partner_path')}"
+                f" kind={item.get('kind')}"
+            )
+            if summary:
+                line += f" summary={summary}"
+            lines.append(line)
+        lines.append(
+            '- use list_bridge_candidates(scope="dyad") for full lifecycle including sent/addressed/declined.'
+        )
+        if truncations.get("outgoing_mediated_issues"):
+            lines.append(f"- [truncated, {truncations['outgoing_mediated_issues']} more]")
     lines += ["", "## Recent messages"]
     lines.extend(
         f"- {_time_label(item, 'sent_at') or item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}{_queue_outcome_label(item)}"
@@ -1389,6 +1460,11 @@ def _render_solo_with_counts(
         ]
         if scheduled_for_iso:
             lines.append(f"- scheduled_for: {_clip(scheduled_for_iso, clip_limit)}")
+        rc = hc.resolved_bridge_context
+        if rc is not None and not rc.get("stale"):
+            lines.append(f"- about: {_clip(rc['shareable_summary'], clip_limit)}")
+        elif rc is not None:
+            lines.append("- about: a previously raised issue (since updated or resolved)")
     return "\n".join(lines).strip()
 
 
@@ -1415,6 +1491,8 @@ def render_hot_context_solo(hc: HotContextSolo) -> str:
         observations=list(hc.observations),
         distillations=list(hc.distillations),
         bridge_candidates=[],
+        outgoing_mediated_issues=list(hc.outgoing_mediated_issues),
+        resolved_bridge_context=hc.resolved_bridge_context,
         recent_reactions=list(hc.recent_reactions),
         silent_turns=list(hc.silent_turns),
         recent_messages=list(hc.recent_messages),
@@ -1433,11 +1511,12 @@ def render_hot_context_solo(hc: HotContextSolo) -> str:
         "observations": 0,
         "memories": 0,
         "recent_messages": 0,
+        "outgoing_mediated_issues": 0,
         "conversation_load": 0,
     }
     clip_limit = 240
     text = _render_solo_with_counts(working, truncations, clip_limit)
-    for name in ("distillations", "observations", "memories", "recent_messages"):
+    for name in ("distillations", "observations", "memories", "recent_messages", "outgoing_mediated_issues"):
         items = getattr(working, name)
         while _estimated_tokens(text) > budget and items:
             items.pop()

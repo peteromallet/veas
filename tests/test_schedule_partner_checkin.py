@@ -305,3 +305,219 @@ async def test_cancel_partner_nudge_rejects_non_pending(fake_pool):
             ctx, CancelPartnerNudgeInput(job_id=scheduled.job_id)
         )
     assert exc.value.result["error"] == "not_pending"
+
+
+# ── Bridge-candidate link tests (T10) ──────────────────────────────────
+
+def _seed_bridge_candidate(
+    fake_pool,
+    bridge_id,
+    *,
+    source_user_id,
+    target_user_id,
+    status="ready",
+    partner_path="message_partner",
+):
+    """Seed a bridge_candidate row in the FakePool."""
+    row = {
+        "id": bridge_id,
+        "source_user_id": source_user_id,
+        "target_user_id": target_user_id,
+        "kind": "grievance",
+        "status": status,
+        "sensitivity": "medium",
+        "partner_path": partner_path,
+        "shareable_summary": "Partner feels unheard.",
+        "internal_note": "PRIVATE: deep grievance detail",
+        "created_at": datetime.now(UTC),
+    }
+    fake_pool.bridge_candidates[bridge_id] = row
+    return row
+
+
+async def test_bridge_candidate_id_persisted_in_context(fake_pool):
+    """schedule_partner_checkin(bridge_candidate_id=...) persists the id into context."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=user.id,
+        target_user_id=partner.id,
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    result = await write_tools.schedule_partner_checkin(
+        ctx,
+        SchedulePartnerCheckinInput(
+            delay={"hours": 2},
+            reason="bridge-linked nudge",
+            bridge_candidate_id=bridge_id,
+        ),
+    )
+    assert result.action == "scheduled"
+    job = fake_pool.scheduled_jobs[result.job_id]
+    assert job["context"]["bridge_candidate_id"] == str(bridge_id)
+
+
+async def test_bridge_candidate_not_owned_rejects(fake_pool):
+    """A bridge where source_user_id != ctx.user.id → bridge_candidate_not_linkable."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    # Bridge is sourced by partner, not user — not owned by ctx.user
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=partner.id,
+        target_user_id=user.id,
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    with pytest.raises(write_tools.ToolCallRejected) as exc:
+        await write_tools.schedule_partner_checkin(
+            ctx,
+            SchedulePartnerCheckinInput(
+                delay={"hours": 2},
+                reason="not my bridge",
+                bridge_candidate_id=bridge_id,
+            ),
+        )
+    assert exc.value.result["error"] == "bridge_candidate_not_linkable"
+
+
+async def test_bridge_candidate_wrong_direction_rejects(fake_pool):
+    """A bridge where source→target is ctx.user→partner but the T5 query checks
+    strict direction — confirm the fake pool enforces direction correctly now."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    # Bridge owned by user, but target is a different user — cross-dyad/wrong-target
+    other_user = User(uuid4(), "Stranger", "15555550999", "UTC")
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=user.id,
+        target_user_id=other_user.id,  # NOT the dyad partner
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    with pytest.raises(write_tools.ToolCallRejected) as exc:
+        await write_tools.schedule_partner_checkin(
+            ctx,
+            SchedulePartnerCheckinInput(
+                delay={"hours": 2},
+                reason="cross-dyad bridge",
+                bridge_candidate_id=bridge_id,
+            ),
+        )
+    assert exc.value.result["error"] == "bridge_candidate_not_linkable"
+
+
+async def test_bridge_candidate_cross_dyad_rejects(fake_pool):
+    """Bridge between two completely different users → bridge_candidate_not_linkable."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    stranger_a = User(uuid4(), "StrangerA", "15555550998", "UTC")
+    stranger_b = User(uuid4(), "StrangerB", "15555550997", "UTC")
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=stranger_a.id,
+        target_user_id=stranger_b.id,
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    with pytest.raises(write_tools.ToolCallRejected) as exc:
+        await write_tools.schedule_partner_checkin(
+            ctx,
+            SchedulePartnerCheckinInput(
+                delay={"hours": 2},
+                reason="entirely different dyad bridge",
+                bridge_candidate_id=bridge_id,
+            ),
+        )
+    assert exc.value.result["error"] == "bridge_candidate_not_linkable"
+
+
+async def test_bridge_candidate_non_ready_status_rejects(fake_pool):
+    """A bridge with status != ready → bridge_not_linkable_status."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=user.id,
+        target_user_id=partner.id,
+        status="pending",  # not ready
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    with pytest.raises(write_tools.ToolCallRejected) as exc:
+        await write_tools.schedule_partner_checkin(
+            ctx,
+            SchedulePartnerCheckinInput(
+                delay={"hours": 2},
+                reason="pending bridge",
+                bridge_candidate_id=bridge_id,
+            ),
+        )
+    assert exc.value.result["error"] == "bridge_not_linkable_status"
+    assert exc.value.result["status"] == "pending"
+
+
+async def test_bridge_candidate_non_message_partner_rejects(fake_pool):
+    """A bridge with partner_path != message_partner → bridge_not_linkable_status."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    bridge_id = uuid4()
+    _seed_bridge_candidate(
+        fake_pool,
+        bridge_id,
+        source_user_id=user.id,
+        target_user_id=partner.id,
+        status="ready",
+        partner_path="checkin",  # not message_partner
+    )
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    with pytest.raises(write_tools.ToolCallRejected) as exc:
+        await write_tools.schedule_partner_checkin(
+            ctx,
+            SchedulePartnerCheckinInput(
+                delay={"hours": 2},
+                reason="checkin path bridge",
+                bridge_candidate_id=bridge_id,
+            ),
+        )
+    assert exc.value.result["error"] == "bridge_not_linkable_status"
+
+
+async def test_bridge_candidate_id_not_passed_no_validation(fake_pool):
+    """When bridge_candidate_id is None, existing behavior is unchanged (no bridge
+    validation runs, no bridge_candidate_id in context)."""
+    user = User(uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.dyad_partners[user.id] = partner.id
+    _set_partner_share(fake_pool, partner.id, "tante_rosi", "opt_in")
+    ctx = _build_ctx(fake_pool, user, partner, bot_id="tante_rosi")
+    result = await write_tools.schedule_partner_checkin(
+        ctx,
+        SchedulePartnerCheckinInput(
+            delay={"hours": 2},
+            reason="no bridge link",
+            # bridge_candidate_id not passed → default None
+        ),
+    )
+    assert result.action == "scheduled"
+    job = fake_pool.scheduled_jobs[result.job_id]
+    assert "bridge_candidate_id" not in job["context"]

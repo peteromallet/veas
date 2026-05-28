@@ -1596,6 +1596,10 @@ class SchedulePartnerCheckinInput(BaseModel):
         default="explicit_user_request",
         description="Set to 'explicit_user_request' for direct user words like 'check in on Hannah'. 'bot_judgment' is reserved for autonomous nudges (not enabled in this release).",
     )
+    bridge_candidate_id: UUID | None = Field(
+        default=None,
+        description="Links this nudge to a mediated bridge candidate so the recipient turn gets safe context. Only meaningful for a bot that created the bridge (in practice the mediator).",
+    )
 
     @field_validator("when")
     @classmethod

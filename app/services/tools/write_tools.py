@@ -1782,6 +1782,26 @@ async def schedule_partner_checkin(
             {"error": "rate_limited", "window_hours": 24}
         )
 
+    # 4a. Bridge candidate validation (strict source→target direction; no
+    # _fetch_bridge_candidate_row which is bidirectional and uses ctx.partner).
+    if args.bridge_candidate_id is not None:
+        bridge_row = await ctx.pool.fetchrow(
+            """
+            SELECT id, source_user_id, target_user_id, status, partner_path
+            FROM bridge_candidates
+            WHERE id=$1 AND source_user_id=$2 AND target_user_id=$3
+            """,
+            args.bridge_candidate_id,
+            ctx.user.id,
+            partner.partner_user_id,
+        )
+        if bridge_row is None:
+            raise ToolCallRejected({"error": "bridge_candidate_not_linkable"})
+        if bridge_row["status"] != "ready" or bridge_row["partner_path"] != "message_partner":
+            raise ToolCallRejected(
+                {"error": "bridge_not_linkable_status", "status": bridge_row["status"]}
+            )
+
     # 4. Resolve concrete fire time and insert.
     scheduled_for = _scheduled_for_from_schedule_fields(
         ctx, args.when, args.delay, args.local_when
@@ -1794,6 +1814,8 @@ async def schedule_partner_checkin(
         "reason": args.reason,
         "source": args.source,
     }
+    if args.bridge_candidate_id is not None:
+        context_jsonb["bridge_candidate_id"] = str(args.bridge_candidate_id)
     try:
         row = await ctx.pool.fetchrow(
             """

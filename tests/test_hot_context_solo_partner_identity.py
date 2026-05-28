@@ -92,3 +92,39 @@ async def test_partner_opt_in_surfaces_in_state_field(fake_pool):
     hc = await _build_minimal(fake_pool, user, bot_id="tante_rosi")
     rendered = render_hot_context_solo(hc)
     assert "partner_sharing_state_for_this_bot: opt_in" in rendered
+
+
+async def test_solo_renders_outgoing_mediated_issues_when_dyad_partner_exists(fake_pool):
+    from uuid import uuid4 as _uuid4
+    from datetime import datetime, UTC as _UTC
+    user = User(_uuid4(), "Pom", "15555550100", "UTC")
+    partner = User(_uuid4(), "Hannah", "15555550101", "UTC")
+    fake_pool.users[user.id] = {"id": user.id, "name": user.name, "phone": user.phone, "timezone": user.timezone}
+    fake_pool.users[partner.id] = {"id": partner.id, "name": partner.name, "phone": partner.phone, "timezone": partner.timezone}
+    fake_pool.dyad_partners[user.id] = partner.id
+    bridge_id = _uuid4()
+    fake_pool.bridge_candidates[bridge_id] = {
+        "id": bridge_id,
+        "source_user_id": user.id,
+        "target_user_id": partner.id,
+        "kind": "repair",
+        "status": "pending",
+        "sensitivity": "low",
+        "partner_path": "message_partner",
+        "shareable_summary": "Solo outgoing issue",
+        "created_at": datetime.now(_UTC),
+    }
+
+    hc = await build_hot_context_solo(
+        fake_pool,
+        user,
+        triggering_message_ids=[],
+        trigger_metadata={"kind": "inbound"},
+        primary_topic_id=get_relationship_topic_id(),
+        bot_id="tante_rosi",
+    )
+    rendered = render_hot_context_solo(hc)
+
+    assert len(hc.outgoing_mediated_issues) == 1
+    assert "## Outgoing mediated issues" in rendered
+    assert "Solo outgoing issue" in rendered

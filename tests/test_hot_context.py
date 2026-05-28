@@ -120,6 +120,18 @@ class HotContextPool:
 
     async def fetchrow(self, sql, *args):
         compact = " ".join(sql.split())
+        if compact.startswith("SELECT status, partner_path, shareable_summary, target_user_id FROM bridge_candidates WHERE id="):
+            # By-id fetch for partner_nudge bridge context resolution (T6)
+            candidate_id = args[0]
+            for row in self.bridge_candidates:
+                if row["id"] == candidate_id:
+                    return {
+                        "status": row["status"],
+                        "partner_path": row.get("partner_path", "message_partner"),
+                        "shareable_summary": row.get("shareable_summary", ""),
+                        "target_user_id": row["target_user_id"],
+                    }
+            return None
         if compact.startswith("SELECT display_name FROM bots WHERE id"):
             names = {"tante_rosi": "Tante Rosi", "mediator": "Véas"}
             return {"display_name": names.get(args[0], args[0])}
@@ -262,7 +274,22 @@ class HotContextPool:
                 }
                 for row in self.distillations
             ]
+        if "FROM bridge_candidates" in compact and "status IN (" in compact:
+            # Source-side outgoing query: source_user_id=$1, target_user_id=$2
+            source_user_id, target_user_id = args
+            rows = [
+                row
+                for row in self.bridge_candidates
+                if row["source_user_id"] == source_user_id
+                and row["target_user_id"] == target_user_id
+                and row["status"] in ("pending", "ready", "blocked")
+            ]
+            rows.sort(
+                key=lambda r: (r.get("created_at"), r.get("id")), reverse=True
+            )
+            return rows[:3]
         if "FROM bridge_candidates" in compact:
+            # Target-side incoming query: target_user_id=$1, source_user_id=$2
             target_user_id, source_user_id = args
             return [
                 row
@@ -1312,3 +1339,74 @@ def test_render_hot_context_scrubs_internal_leaks_from_outbound_history(monkeypa
     assert "The person's message is rich" not in text
     assert "That's the real reply." in text
     get_settings.cache_clear()
+
+
+def _outgoing_bridge_row(pool, user, partner, *, status="ready", summary="Outgoing issue", created_at=None):
+    return {
+        "id": uuid4(),
+        "source_user_id": user.id,
+        "target_user_id": partner.id,
+        "kind": "repair",
+        "status": status,
+        "sensitivity": "low",
+        "partner_path": "message_partner",
+        "shareable_summary": summary,
+        "created_at": created_at if created_at is not None else pool.now,
+    }
+
+
+async def test_outgoing_mediated_issues_render_for_unresolved_statuses(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    pool.bridge_candidates = [
+        _outgoing_bridge_row(pool, user, partner, status="pending", summary="Pending issue"),
+        _outgoing_bridge_row(pool, user, partner, status="ready", summary="Ready issue"),
+        _outgoing_bridge_row(pool, user, partner, status="blocked", summary="Blocked issue"),
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert len(hc.outgoing_mediated_issues) == 3
+    assert "## Outgoing mediated issues" in text
+    assert "Pending issue" in text
+    assert "Ready issue" in text
+    assert "Blocked issue" in text
+
+
+async def test_outgoing_mediated_issues_excludes_terminal_statuses(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    pool.bridge_candidates = [
+        _outgoing_bridge_row(pool, user, partner, status="sent", summary="Sent should be absent"),
+        _outgoing_bridge_row(pool, user, partner, status="addressed", summary="Addressed should be absent"),
+        _outgoing_bridge_row(pool, user, partner, status="declined", summary="Declined should be absent"),
+        _outgoing_bridge_row(pool, user, partner, status="expired", summary="Expired should be absent"),
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+    text = render_hot_context(hc)
+
+    assert len(hc.outgoing_mediated_issues) == 0
+    assert "Sent should be absent" not in text
+    assert "Addressed should be absent" not in text
+    assert "Declined should be absent" not in text
+    assert "Expired should be absent" not in text
+
+
+async def test_outgoing_mediated_issues_cap_and_order(hot_context_seed):
+    pool, user, partner = hot_context_seed
+    base = pool.now
+    pool.bridge_candidates = [
+        _outgoing_bridge_row(pool, user, partner, status="ready", summary="Oldest", created_at=base - timedelta(hours=3)),
+        _outgoing_bridge_row(pool, user, partner, status="ready", summary="Middle", created_at=base - timedelta(hours=2)),
+        _outgoing_bridge_row(pool, user, partner, status="ready", summary="Second newest", created_at=base - timedelta(hours=1)),
+        _outgoing_bridge_row(pool, user, partner, status="ready", summary="Newest", created_at=base),
+    ]
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+
+    assert len(hc.outgoing_mediated_issues) == 3
+    summaries = [item["shareable_summary"] for item in hc.outgoing_mediated_issues]
+    assert summaries[0] == "Newest"
+    assert summaries[1] == "Second newest"
+    assert summaries[2] == "Middle"
+    assert "Oldest" not in summaries

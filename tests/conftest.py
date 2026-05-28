@@ -853,16 +853,50 @@ class FakePool:
                 **dict(row),
                 "partner_path": row.get("partner_path", "message_partner"),
             }
+        if compact.startswith(
+            "SELECT status, partner_path, shareable_summary, target_user_id FROM bridge_candidates WHERE id="
+        ):
+            # By-id fetch for partner_nudge bridge context resolution (T6)
+            candidate_id = args[0]
+            # Coerce string→UUID: bridge_candidate_id in trigger_metadata context
+            # is stored as str, but bridge_candidates dict keys are UUIDs.
+            if isinstance(candidate_id, str):
+                try:
+                    candidate_id = UUID(candidate_id)
+                except ValueError:
+                    return None
+            row = self.bridge_candidates.get(candidate_id)
+            if row is None:
+                return None
+            return {
+                "status": row["status"],
+                "partner_path": row.get("partner_path", "message_partner"),
+                "shareable_summary": row.get("shareable_summary", ""),
+                "target_user_id": row["target_user_id"],
+            }
         if (
             compact.startswith("SELECT id, source_user_id, target_user_id")
             and "FROM bridge_candidates" in compact
         ):
             candidate_id, user_id, partner_id = args
+            if isinstance(candidate_id, str):
+                try:
+                    candidate_id = UUID(candidate_id)
+                except ValueError:
+                    return None
             row = self.bridge_candidates.get(candidate_id)
             if row is None:
                 return None
-            if {row["source_user_id"], row["target_user_id"]} != {user_id, partner_id}:
-                return None
+            # Disambiguate: old _fetch_bridge_candidate_row uses bidirectional OR;
+            # T5 strict-direction query (schedule_partner_checkin) uses AND only.
+            if "OR (" in compact:
+                # Bidirectional: either order accepted.
+                if {row["source_user_id"], row["target_user_id"]} != {user_id, partner_id}:
+                    return None
+            else:
+                # Strict direction: source_user_id=$2 AND target_user_id=$3.
+                if row["source_user_id"] != user_id or row["target_user_id"] != partner_id:
+                    return None
             return {
                 **dict(row),
                 "partner_path": row.get("partner_path", "message_partner"),
@@ -2638,6 +2672,22 @@ class FakePool:
             ]
             rows.sort(key=lambda row: row["created_at"], reverse=True)
             return rows[:5]
+        # Outgoing bridge query (source_user_id=$1, target_user_id=$2, status IN).
+        # Added early (planned T9) to support T2 dyadic and T3 solo outgoing queries.
+        if "FROM bridge_candidates" in compact and "status IN (" in compact:
+            source_user_id, target_user_id = args[:2]
+            rows = [
+                {
+                    **dict(row),
+                    "partner_path": row.get("partner_path", "message_partner"),
+                }
+                for row in self.bridge_candidates.values()
+                if row["source_user_id"] == source_user_id
+                and row["target_user_id"] == target_user_id
+                and row["status"] in ("pending", "ready", "blocked")
+            ]
+            rows.sort(key=lambda row: row["created_at"], reverse=True)
+            return rows[:3]
         if "FROM bridge_candidates" in compact:
             if "partner_path" in compact:
                 (
