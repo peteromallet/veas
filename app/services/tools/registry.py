@@ -152,6 +152,11 @@ TOOL_DESCRIPTIONS: dict[str, str] = {
     "log_event": "Log an event against a commitment (or standalone with a metric_key). Provide at least one of adherence_status ('done', 'missed', 'excused'), value_numeric, or value_text. Use adherence_status to mark whether a scheduled slot was completed, missed, or excused. Events are scoped to the current user, topic, and bot.",
     "list_events": "List recent events for the current user and topic, optionally filtered by commitment_id. Use before logging a corrective event to avoid duplicates, and to answer questions about recent activity.",
     "get_adherence": "Compute this week's adherence status for active commitments. Returns per-day slot status for each commitment (done, missed, excused, unknown, pending). Use this before asking the user about missed days — check the adherence board first so you can distinguish unknown from missed and avoid shaming.",
+    # plan tools (mediator only)
+    "read_conversation_plan": "Read the agenda for a specific planned live-voice conversation. Use to inspect an existing plan by conversation_id before deciding whether to propose edits.",
+    "list_conversation_plans": "List the user's recent planned live-voice conversations (status prepping / preparing / ready). Use to orient before proposing a new plan or looking up an existing one.",
+    "create_conversation_plan": "Propose a numbered agenda for an upcoming live-voice conversation. The numbered bullets you propose become the agenda; only call create after the user has explicitly confirmed the list. Returns a display_text rendering for spoken confirmation.",
+    "update_conversation_plan": "Replace the agenda items for an existing planned live-voice conversation. The numbered bullets you propose become the new agenda; only call update after the user has explicitly confirmed the revised list. Preserves the conversation's mode unless you also supply a new prep_summary.",
 }
 
 
@@ -227,6 +232,11 @@ TOOL_DISPATCH: dict[str, ToolFn] = {
     "list_commitments": read_tools.list_commitments,
     "list_events": read_tools.list_events,
     "get_adherence": read_tools.get_adherence,
+    # plan tools (mediator only)
+    "read_conversation_plan": read_tools.read_conversation_plan,
+    "list_conversation_plans": read_tools.list_conversation_plans,
+    "create_conversation_plan": write_tools.create_conversation_plan,
+    "update_conversation_plan": write_tools.update_conversation_plan,
 }
 
 # ── Commitment/event tools (shared by Hector + Habits) ────────────────────
@@ -246,12 +256,25 @@ HECTOR_ONLY_TOOLS: frozenset[str] = frozenset({
     "get_adherence",
 })
 
+# ── Plan tools (mediator-only live-voice agenda authoring) ─────────────────
+PLAN_READ_TOOLS: frozenset[str] = frozenset({
+    "read_conversation_plan",
+    "list_conversation_plans",
+})
+PLAN_WRITE_TOOLS: frozenset[str] = frozenset({
+    "create_conversation_plan",
+    "update_conversation_plan",
+})
+
 # ── Bot-exclusive tools ────────────────────────────────────────────────────
 # Dict mapping a *set* of bot_ids → tools that ONLY those bots may use.
 # Any bot whose id is not in the keyed frozenset has these tools removed in
 # _step_allowed(). Commitment/event tools are shared by Hector and Habits.
+# Plan tools are mediator-only: other bots (coach, tante_rosi, habits) must
+# not create semantically incorrect live-voice conversations.
 BOT_EXCLUSIVE_TOOLS: dict[frozenset[str], frozenset[str]] = {
     frozenset({"hector", "habits"}): HECTOR_ONLY_TOOLS,
+    frozenset({"mediator"}): PLAN_READ_TOOLS | PLAN_WRITE_TOOLS,
 }
 
 # Tools whose implementation already calls audit.log_tool_call themselves
@@ -304,7 +327,7 @@ _SELF_LOGGING_TOOLS: frozenset[str] = frozenset({
     "log_event",
     # read-shaped but lives in write_tools.py and self-logs
     "list_scheduled_tasks",
-})
+}) | PLAN_WRITE_TOOLS
 
 
 READ_PHASE_TOOLS = {
@@ -333,7 +356,7 @@ READ_PHASE_TOOLS = {
     "list_commitments",
     "list_events",
     "get_adherence",
-}
+} | PLAN_READ_TOOLS
 
 WRITE_PHASE_TOOLS = {
     "update_user_style_notes",
@@ -405,7 +428,7 @@ RECORD_WRITE_TOOLS = WRITE_PHASE_TOOLS - SCHEDULE_TOOLS | {
 # skeleton which includes a dedicated ``schedule`` step.  Adding scheduling
 # to respond would let any skeleton (including quick_reply) schedule inline
 # but increases the risk of premature scheduling during lightweight turns.
-RESPOND_TOOLS = {"send_message_part", "search_emojis", "check_oob", "log_event"}
+RESPOND_TOOLS = {"send_message_part", "search_emojis", "check_oob", "log_event"} | PLAN_WRITE_TOOLS
 READ_TOOLS_FOR_STEP = READ_PHASE_TOOLS - {"send_message_part"}
 # Live prep tools: read tools minus outbound/OOB plus the required submit gate.
 # No write tools, no outbound, no schedule tools — prep is private and read-only

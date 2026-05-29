@@ -57,6 +57,7 @@ class HotContext:
     cross_topic_status: list[dict[str, Any]] = field(default_factory=list)
     partner_shareable_summaries: list[dict[str, Any]] = field(default_factory=list)
     upcoming_items: list[dict[str, Any]] = field(default_factory=list)
+    pending_live_conversations: list[dict[str, Any]] = field(default_factory=list)
     bot_id: str = MEDIATOR_BOT_ID
 
 
@@ -467,6 +468,68 @@ async def _fetch_topic_status(
         user_id,
     )
     return dict(row) if row is not None else None
+
+
+async def _fetch_pending_live_conversations(
+    pool: Any,
+    *,
+    user_id: UUID,
+    bot_id: str,
+    topic_id: UUID,
+) -> list[dict[str, Any]]:
+    """Return pending live-voice conversations for (user, bot, topic).
+
+    Includes statuses 'prepping', 'preparing', and 'ready' per gate warning
+    (migration 0055 adds 'preparing' as a valid DB value and the web router
+    writes it).  Each dict carries id, status, current_item_id, started_at,
+    and a derived title from the first conversation_item ordered by order_hint.
+    """
+    rows = await pool.fetch(
+        """\
+        SELECT c.id, c.status, c.current_item_id, c.started_at
+        FROM mediator.conversations c
+        WHERE c.user_id = $1
+          AND c.bot_id = $2
+          AND c.topic_id = $3
+          AND c.status IN ('prepping', 'preparing', 'ready')
+        ORDER BY c.started_at DESC
+        LIMIT 5
+        """,
+        user_id,
+        bot_id,
+        topic_id,
+    )
+    if not rows:
+        return []
+
+    result: list[dict[str, Any]] = []
+    for row in rows:
+        title = "Untitled"
+        item_rows = await pool.fetch(
+            """\
+            SELECT ci.title
+            FROM mediator.conversation_items ci
+            WHERE ci.conversation_id = $1
+              AND ci.kind = 'planned'
+            ORDER BY ci.order_hint
+            LIMIT 1
+            """,
+            row["id"],
+        )
+        if item_rows and item_rows[0]["title"]:
+            title = item_rows[0]["title"]
+        result.append(
+            {
+                "id": str(row["id"]),
+                "status": row["status"],
+                "current_item_id": (
+                    str(row["current_item_id"]) if row["current_item_id"] else None
+                ),
+                "started_at": _iso(row["started_at"]),
+                "title": title,
+            }
+        )
+    return result
 
 
 async def build_hot_context(
@@ -1060,6 +1123,16 @@ async def build_hot_context(
     except Exception:
         upcoming_items = []
 
+    try:
+        pending_live_conversations = await _fetch_pending_live_conversations(
+            pool,
+            user_id=user.id,
+            bot_id=bot_id,
+            topic_id=primary_topic_id,
+        )
+    except Exception:
+        pending_live_conversations = []
+
     return HotContext(
         current_user=current_user,
         partner_user=partner_user,
@@ -1080,6 +1153,7 @@ async def build_hot_context(
         cross_topic_status=cross_topic_status,
         partner_shareable_summaries=partner_shareable_summaries,
         upcoming_items=upcoming_items,
+        pending_live_conversations=pending_live_conversations,
         bot_id=bot_id,
         time_since_last_message=_duration_since(latest_sent_at),
         trigger_metadata={
@@ -1315,6 +1389,14 @@ def _render_with_counts(
             if brief:
                 line = f"{line} — {_clip(brief, clip_limit)}"
             lines.append(line)
+    if hc.pending_live_conversations:
+        lines += ["", "## Pending live conversations"]
+        for item in hc.pending_live_conversations:
+            status = item.get("status") or ""
+            title = item.get("title") or "Untitled"
+            conv_id = item.get("id") or ""
+            line = f"- [{status}] {_clip(title, clip_limit)} (id={conv_id})"
+            lines.append(line)
     if hc.cross_topic_peek:
         lines += ["", "## Cross-topic activity (peek)"]
         for item in hc.cross_topic_peek:
@@ -1520,6 +1602,7 @@ def render_hot_context(hc: HotContext) -> str:
         cross_topic_peek=list(hc.cross_topic_peek),
         cross_topic_status=list(hc.cross_topic_status),
         upcoming_items=list(hc.upcoming_items),
+        pending_live_conversations=list(hc.pending_live_conversations),
         time_since_last_message=hc.time_since_last_message,
         trigger_metadata=hc.trigger_metadata,
         bot_id=hc.bot_id,
@@ -1555,6 +1638,11 @@ def render_hot_context(hc: HotContext) -> str:
             break
         text = _render_with_counts(working, truncations, clip_limit)
     for name in ("open_watch_items", "active_themes"):
+        items = getattr(working, name)
+        while _estimated_tokens(text) > budget and items:
+            items.pop()
+            text = _render_with_counts(working, truncations, clip_limit)
+    for name in ("pending_live_conversations",):
         items = getattr(working, name)
         while _estimated_tokens(text) > budget and items:
             items.pop()

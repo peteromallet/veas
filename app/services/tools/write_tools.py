@@ -135,7 +135,14 @@ from tool_schemas import (
     CloseCommitmentOutput,
     LogEventInput,
     LogEventOutput,
+    # plan tools
+    CreateConversationPlanInput,
+    CreateConversationPlanOutput,
+    PlanItem,
+    UpdateConversationPlanInput,
+    UpdateConversationPlanOutput,
 )
+from app.services.live.plan_markdown import markdown_to_agenda, agenda_to_display
 
 logger = logging.getLogger(__name__)
 
@@ -3489,3 +3496,196 @@ async def _cancel_commitment_checkin_tasks(
             "failed to cancel commitment check-in tasks",
             extra=obs_fields(ctx),
         )
+
+
+# ── Conversation-plan write tools ──────────────────────────────────────────
+
+
+async def create_conversation_plan(
+    ctx: TurnContext, args: CreateConversationPlanInput
+) -> CreateConversationPlanOutput:
+    """Create a new conversation with agenda items from a markdown plan."""
+    try:
+        from app.bots.registry import get_bot_spec, primary_topic_id_for  # noqa: PLC0415
+
+        bot_spec = get_bot_spec(ctx.bot_id)
+        topic_id = await primary_topic_id_for(ctx.pool, bot_spec)
+    except Exception:
+        raise ToolCallRejected(
+            {"error": "topic resolution failed; refusing context-less conversation"}
+        )
+
+    agenda = markdown_to_agenda(args.plan_markdown, args.prep_summary)
+    mode = "steered" if (args.prep_summary or "").strip() else "open"
+    item_uuid_by_id = {item.id: uuid4() for item in agenda.items}
+    first_uuid = item_uuid_by_id[agenda.first_item_id]
+    started = _start()
+
+    async with ctx.pool.acquire() as conn:
+        async with conn.transaction():
+            conv_row = await conn.fetchrow(
+                """
+                INSERT INTO mediator.conversations
+                    (user_id, bot_id, topic_id, status, mode, prep_summary)
+                VALUES ($1, $2, $3, 'ready', $4, $5)
+                RETURNING id
+                """,
+                ctx.user.id,
+                ctx.bot_id,
+                topic_id,
+                mode,
+                args.prep_summary,
+            )
+            conv_id = conv_row["id"]
+
+            for item in agenda.items:
+                item_uuid = item_uuid_by_id[item.id]
+                next_uuids = [item_uuid_by_id[ref] for ref in item.next_item_ids]
+                await conn.execute(
+                    """
+                    INSERT INTO mediator.conversation_items
+                        (id, conversation_id, theme_id, kind, title, intent, ask,
+                         done_when, next_item_ids, priority, speaker_scope,
+                         coverage_evidence_required, order_hint)
+                    VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """,
+                    item_uuid,
+                    conv_id,
+                    None,  # theme_id
+                    item.title,
+                    item.intent,
+                    item.ask,
+                    item.done_when,
+                    next_uuids,
+                    item.priority,
+                    item.speaker_scope,
+                    item.coverage_evidence_required,
+                    item.order_hint,
+                )
+
+            await conn.execute(
+                "UPDATE mediator.conversations SET current_item_id=$1 WHERE id=$2",
+                first_uuid,
+                conv_id,
+            )
+
+    plan_items = [
+        PlanItem(
+            id=item_uuid_by_id[item.id],
+            title=item.title,
+            priority=item.priority,
+            order_hint=item.order_hint,
+        )
+        for item in agenda.items
+    ]
+    result = CreateConversationPlanOutput(
+        conversation_id=conv_id,
+        status="ready",
+        items=plan_items,
+        display_text=agenda_to_display(agenda.items),
+    )
+    await _log_tool_call(ctx, "create_conversation_plan", args, started, result)
+    return result
+
+
+async def update_conversation_plan(
+    ctx: TurnContext, args: UpdateConversationPlanInput
+) -> UpdateConversationPlanOutput:
+    """Replace the agenda items on an existing prepping/ready conversation."""
+    started = _start()
+
+    async with ctx.pool.acquire() as conn:
+        async with conn.transaction():
+            conv_row = await conn.fetchrow(
+                """
+                SELECT id, status, mode
+                FROM mediator.conversations
+                WHERE id=$1 AND user_id=$2
+                FOR UPDATE
+                """,
+                args.conversation_id,
+                ctx.user.id,
+            )
+            if conv_row is None:
+                raise ToolCallRejected({"error": "not found or not owned"})
+
+            conv_status = conv_row["status"]
+            if conv_status not in ("prepping", "preparing", "ready"):
+                raise ToolCallRejected(
+                    {"error": f"cannot edit agenda while status={conv_status!r}"}
+                )
+
+            await conn.execute(
+                """
+                DELETE FROM mediator.conversation_items
+                WHERE conversation_id=$1 AND kind='planned'
+                """,
+                args.conversation_id,
+            )
+
+            agenda = markdown_to_agenda(args.plan_markdown, args.prep_summary)
+            item_uuid_by_id = {item.id: uuid4() for item in agenda.items}
+            new_first_uuid = item_uuid_by_id[agenda.first_item_id]
+
+            for item in agenda.items:
+                item_uuid = item_uuid_by_id[item.id]
+                next_uuids = [item_uuid_by_id[ref] for ref in item.next_item_ids]
+                await conn.execute(
+                    """
+                    INSERT INTO mediator.conversation_items
+                        (id, conversation_id, theme_id, kind, title, intent, ask,
+                         done_when, next_item_ids, priority, speaker_scope,
+                         coverage_evidence_required, order_hint)
+                    VALUES ($1, $2, $3, 'planned', $4, $5, $6, $7, $8, $9, $10, $11, $12)
+                    """,
+                    item_uuid,
+                    args.conversation_id,
+                    None,  # theme_id
+                    item.title,
+                    item.intent,
+                    item.ask,
+                    item.done_when,
+                    next_uuids,
+                    item.priority,
+                    item.speaker_scope,
+                    item.coverage_evidence_required,
+                    item.order_hint,
+                )
+
+            if args.prep_summary is not None:
+                new_mode = "steered" if (args.prep_summary or "").strip() else "open"
+                await conn.execute(
+                    """
+                    UPDATE mediator.conversations
+                    SET current_item_id=$1, prep_summary=$2, mode=$3
+                    WHERE id=$4
+                    """,
+                    new_first_uuid,
+                    args.prep_summary,
+                    new_mode,
+                    args.conversation_id,
+                )
+            else:
+                await conn.execute(
+                    "UPDATE mediator.conversations SET current_item_id=$1 WHERE id=$2",
+                    new_first_uuid,
+                    args.conversation_id,
+                )
+
+    plan_items = [
+        PlanItem(
+            id=item_uuid_by_id[item.id],
+            title=item.title,
+            priority=item.priority,
+            order_hint=item.order_hint,
+        )
+        for item in agenda.items
+    ]
+    result = UpdateConversationPlanOutput(
+        conversation_id=args.conversation_id,
+        status=conv_status,
+        items=plan_items,
+        display_text=agenda_to_display(agenda.items),
+    )
+    await _log_tool_call(ctx, "update_conversation_plan", args, started, result)
+    return result

@@ -2347,6 +2347,92 @@ class SetTopicStatusOutput(BaseModel):
     updated_at: str | None = None
 
 
+# ---------------------------------------------------------------------------
+# Live-voice plan tools (Sprint 2 — Discord agenda authoring)
+# ---------------------------------------------------------------------------
+
+
+class PlanItem(BaseModel):
+    """A lightweight agenda-item summary returned in plan tool outputs."""
+
+    id: UUID
+    title: str
+    priority: Literal["must", "should", "optional"]
+    order_hint: int
+
+
+class ReadConversationPlanInput(BaseModel):
+    conversation_id: UUID
+
+
+class ReadConversationPlanOutput(BaseModel):
+    conversation_id: UUID
+    status: str
+    items: list[PlanItem] = Field(default_factory=list)
+    display_text: str = ""
+
+
+class ListConversationPlansInput(BaseModel):
+    limit: int = Field(default=5, ge=1, le=25)
+
+
+class ListConversationPlansRow(BaseModel):
+    conversation_id: UUID
+    status: str
+    title: str  # derived from first agenda item title; fallback 'Untitled'
+    item_count: int = 0
+    created_at: datetime
+
+
+class ListConversationPlansOutput(BaseModel):
+    is_error: bool = False
+    error: str | None = None
+    plans: list[ListConversationPlansRow] = Field(default_factory=list)
+
+
+class CreateConversationPlanInput(BaseModel):
+    """Direct-write agenda from a Discord chat turn.
+
+    No ``title`` field — the table has no title column.  The display title is
+    derived from the first agenda item at render time.
+    """
+
+    plan_markdown: str = Field(
+        min_length=1,
+        description="Numbered (1. ...) or bulleted (- ...) list of agenda items.",
+    )
+    prep_summary: str | None = Field(
+        default=None,
+        description="Optional steering summary. Presence gates mode='steered' vs 'open'.",
+    )
+
+
+class CreateConversationPlanOutput(BaseModel):
+    conversation_id: UUID
+    status: str
+    items: list[PlanItem] = Field(default_factory=list)
+    display_text: str = ""
+
+
+class UpdateConversationPlanInput(BaseModel):
+    conversation_id: UUID
+    plan_markdown: str = Field(
+        min_length=1,
+        description="Replacement numbered/bulleted list for the agenda.",
+    )
+    prep_summary: str | None = Field(
+        default=None,
+        description="Optional updated steering summary. Presence gates mode='steered' vs 'open'.",
+    )
+
+
+class UpdateConversationPlanOutput(BaseModel):
+    conversation_id: UUID
+    status: str
+    items: list[PlanItem] = Field(default_factory=list)
+    display_text: str = ""
+
+
 # Single source of truth mapping tool name -> (input model, output model).
 # The orchestrator uses this to validate LLM-produced tool calls and to render
 # the JSON schema list passed to the Anthropic API.
@@ -2443,4 +2529,9 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "list_commitments": (ListCommitmentsInput, ListCommitmentsOutput),
     "list_events": (ListEventsInput, ListEventsOutput),
     "get_adherence": (GetAdherenceInput, GetAdherenceOutput),
+    # live-voice plan tools
+    "read_conversation_plan": (ReadConversationPlanInput, ReadConversationPlanOutput),
+    "list_conversation_plans": (ListConversationPlansInput, ListConversationPlansOutput),
+    "create_conversation_plan": (CreateConversationPlanInput, CreateConversationPlanOutput),
+    "update_conversation_plan": (UpdateConversationPlanInput, UpdateConversationPlanOutput),
 }

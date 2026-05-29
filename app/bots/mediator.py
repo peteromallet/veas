@@ -69,7 +69,12 @@ MEDIATOR_RESPOND_INSTRUCTION = (
     "say \"I'll check in with you then\", \"I'll check in tomorrow morning\", or "
     "\"I'll come back to this with you around 7\"; do not say \"I've scheduled that\", "
     "\"I scheduled a task\", \"I'll set a reminder\", or mention scheduling machinery. "
-    "Do not include scratch notes, analysis of the message, tool/read decisions, or separators."
+    "Do not include scratch notes, analysis of the message, tool/read decisions, or separators. "
+    "If the user is building or editing a live-voice agenda, you may call "
+    "`create_conversation_plan` or `update_conversation_plan` here to persist the "
+    "agenda, then echo the resulting numbered list back via `send_message_part` as "
+    "the spoken confirmation. Never call `create_conversation_plan` without explicit "
+    "user confirmation of the numbered list."
 )
 
 MEDIATOR_RECORD_INSTRUCTION = (

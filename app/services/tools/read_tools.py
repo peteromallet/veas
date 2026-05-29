@@ -35,6 +35,7 @@ from app.services.tools.common import (
     watch_item_row,
 )
 from app.services.topic_filter import join_artifact_topics
+from app.services.live.plan_markdown import agenda_to_display
 from tool_schemas import (
     BotAction,
     BridgeCandidate,
@@ -95,6 +96,13 @@ from tool_schemas import (
     GetAdherenceOutput,
     CommitmentAdherence,
     AdherenceSlot,
+    # plan tools
+    ReadConversationPlanInput,
+    ReadConversationPlanOutput,
+    ListConversationPlansInput,
+    ListConversationPlansOutput,
+    ListConversationPlansRow,
+    PlanItem,
 )
 
 logger = logging.getLogger(__name__)
@@ -1756,3 +1764,100 @@ def _check_hector_read_scope(ctx: TurnContext) -> None:
             f"({sorted(_COMMITMENT_TOPIC_SLUGS)}), "
             f"got primary_topic_slug={ctx.primary_topic_slug!r}"
         )
+
+
+# ── Conversation-plan read tools ───────────────────────────────────────────
+
+
+class _DisplayProxy:
+    """Minimal proxy so agenda_to_display() works without a full AgendaItem."""
+
+    __slots__ = ("title",)
+
+    def __init__(self, title: str) -> None:
+        self.title = title
+
+
+async def read_conversation_plan(
+    ctx: TurnContext, args: ReadConversationPlanInput
+) -> ReadConversationPlanOutput:
+    """Return the agenda items for a single conversation owned by the caller."""
+    from app.services.tools.write_tools import ToolCallRejected  # noqa: PLC0415
+
+    row = await ctx.pool.fetchrow(
+        """
+        SELECT id, status, mode, current_item_id
+        FROM mediator.conversations
+        WHERE id=$1 AND user_id=$2
+        """,
+        args.conversation_id,
+        ctx.user.id,
+    )
+    if row is None:
+        raise ToolCallRejected({"error": "not found or not owned"})
+
+    item_rows = await ctx.pool.fetch(
+        """
+        SELECT id, title, priority, order_hint
+        FROM mediator.conversation_items
+        WHERE conversation_id=$1 AND kind='planned'
+        ORDER BY order_hint
+        """,
+        args.conversation_id,
+    )
+
+    items = [
+        PlanItem(
+            id=r["id"],
+            title=r["title"],
+            priority=r["priority"],
+            order_hint=r["order_hint"],
+        )
+        for r in item_rows
+    ]
+
+    proxies = [_DisplayProxy(item.title) for item in items]
+    display_text = agenda_to_display(proxies)  # type: ignore[arg-type]
+
+    return ReadConversationPlanOutput(
+        conversation_id=args.conversation_id,
+        status=row["status"],
+        items=items,
+        display_text=display_text,
+    )
+
+
+async def list_conversation_plans(
+    ctx: TurnContext, args: ListConversationPlansInput
+) -> ListConversationPlansOutput:
+    """Return a summary list of the caller's conversation plans."""
+    rows = await ctx.pool.fetch(
+        """
+        SELECT
+            c.id, c.status, c.started_at, c.created_at,
+            (SELECT ci.title FROM mediator.conversation_items ci
+             WHERE ci.conversation_id = c.id AND ci.kind='planned'
+             ORDER BY ci.order_hint LIMIT 1) AS first_title,
+            (SELECT COUNT(*) FROM mediator.conversation_items ci
+             WHERE ci.conversation_id = c.id AND ci.kind='planned') AS item_count
+        FROM mediator.conversations c
+        WHERE c.user_id=$1 AND c.status IN ('prepping','preparing','ready')
+        ORDER BY c.started_at DESC
+        LIMIT $2
+        """,
+        ctx.user.id,
+        args.limit,
+    )
+
+    plans = [
+        ListConversationPlansRow(
+            conversation_id=r["id"],
+            status=r["status"],
+            title=r["first_title"] or "Untitled",
+            item_count=int(r["item_count"]),
+            created_at=r["created_at"],
+        )
+        for r in rows
+    ]
+
+    return ListConversationPlansOutput(plans=plans)
