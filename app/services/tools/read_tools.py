@@ -166,10 +166,29 @@ def _ctx_now(ctx: TurnContext) -> datetime:
     return ctx.turn_started_at or datetime.now(UTC)
 
 
+def _coerce_datetime(value_: Any) -> datetime | None:
+    if value_ is None:
+        return None
+    if isinstance(value_, datetime):
+        return value_
+    if isinstance(value_, str):
+        text = value_.strip()
+        if not text:
+            return None
+        try:
+            return datetime.fromisoformat(text.replace("Z", "+00:00"))
+        except ValueError:
+            return None
+    return None
+
+
 def _time(
-    value_: datetime | None, ctx: TurnContext, *, timezone: str | None = None
+    value_: datetime | str | None, ctx: TurnContext, *, timezone: str | None = None
 ) -> dict[str, str] | None:
-    return temporal_reference(value_, _ctx_timezone(ctx, timezone), now=_ctx_now(ctx))
+    value_dt = _coerce_datetime(value_)
+    if value_dt is None:
+        return None
+    return temporal_reference(value_dt, _ctx_timezone(ctx, timezone), now=_ctx_now(ctx))
 
 
 def _with_audit_event_times(events: list[dict], ctx: TurnContext) -> list[dict]:

@@ -21,9 +21,12 @@ from __future__ import annotations
 import logging
 import os
 import time
+from datetime import UTC, datetime
 from typing import Any, Protocol
 from uuid import UUID
+from zoneinfo import ZoneInfo
 
+from app.config import get_settings
 from app.services.live.schemas import (
     CoverageDelta,
     TurnEmission,
@@ -37,6 +40,21 @@ from app.services.live.bot_profile import (
 )
 
 logger = logging.getLogger(__name__)
+
+_HOT_CONTEXT_CACHE_TTL_SECONDS = 120.0
+_HOT_CONTEXT_MAX_CHARS = 2600
+_HOT_CONTEXT_KEEP_SECTIONS = {
+    "## You",
+    "## Your Partner",
+    "## Current time",
+    "## Topic status",
+    "## Upcoming reminders",
+    "## Pregnancy",
+    "## Partner pregnancy",
+    "## Fitness",
+    "## Recent messages",
+}
+_hot_context_cache: dict[str, tuple[float, str]] = {}
 
 
 class TurnCaller(Protocol):
@@ -72,10 +90,71 @@ class FallbackTurnCaller:
             return await self.fallback.call(request, context)
 
 
+def fallback_turn_emission(request: TurnRequest, context: dict[str, Any]) -> TurnEmission:
+    """Build a minimal valid live reply when the model turn fails.
+
+    Live voice should degrade to a short spoken recovery instead of leaving the
+    user staring at their own transcript. Keep this deterministic and avoid
+    writing coverage, because we do not know what the failed model intended.
+    """
+    conv = context.get("conversation") or {}
+    bot_profile = context.get("bot_profile") or {}
+    bot_name = (
+        bot_profile.get("display_name")
+        or bot_profile.get("name")
+        or conv.get("bot_id")
+        or "I"
+    )
+    items = context.get("items") or []
+    current_id = conv.get("current_item_id")
+    current_ask = None
+    for item in items:
+        if str(item.get("id")) == str(current_id):
+            current_ask = item.get("ask")
+            break
+
+    user_text = (request.user_transcript_final or "").strip()
+    if user_text.lower() in {
+        "hey, can you hear me?",
+        "can you hear me?",
+        "hello?",
+        "hello",
+    }:
+        utterance = f"Yes, I can hear you. {current_ask or 'What would you like to focus on?'}"
+    else:
+        utterance = (
+            f"I heard that. I hit a formatting snag on my side, so let me keep us moving: "
+            f"{current_ask or 'what feels most important to say next?'}"
+        )
+
+    return TurnEmission(
+        utterance=utterance,
+        notes=[
+            TurnNote(
+                kind="concern",
+                text=f"{bot_name} used live-turn fallback after model emission failure.",
+            )
+        ],
+    )
+
+
 def select_turn_caller() -> "TurnCaller":
-    provider = (os.environ.get("LIVE_VOICE_TURN_PROVIDER") or "").strip().lower()
-    anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
-    deepseek_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
+    settings = get_settings()
+    provider = (
+        os.environ.get("LIVE_VOICE_TURN_PROVIDER")
+        or getattr(settings, "live_voice_turn_provider", "")
+        or ""
+    ).strip().lower()
+    anthropic_key = (
+        settings.anthropic_api_key.get_secret_value()
+        if settings.anthropic_api_key is not None
+        else ""
+    ).strip()
+    deepseek_key = (
+        settings.deepseek_api_key.get_secret_value()
+        if settings.deepseek_api_key is not None
+        else ""
+    ).strip()
     has_anthropic = anthropic_key.startswith("sk-ant-") and "stub" not in anthropic_key
     has_deepseek = bool(deepseek_key) and "stub" not in deepseek_key.lower()
 
@@ -116,8 +195,8 @@ async def load_turn_context(pool: Any, session_id: UUID) -> dict[str, Any]:
     try:
         conv = await pool.fetchrow(
             """
-            SELECT id, user_id, bot_id, prep_summary, current_item_id,
-                   session_fields, status
+            SELECT id, user_id, partner_user_id, bot_id, prep_summary,
+                   current_item_id, session_fields, status, topic_id
             FROM mediator.conversations
             WHERE id = $1
             """,
@@ -152,6 +231,14 @@ async def load_turn_context(pool: Any, session_id: UUID) -> dict[str, Any]:
             except Exception:
                 logger.warning("turn_loop: failed to load user row", exc_info=True)
         context["bot_profile"] = live_bot_profile_context(bot_id, user=user)
+        if user is not None:
+            context["temporal_anchor"] = _temporal_anchor(user)
+        if user is not None:
+            context["hot_context_rendered"] = await _load_rendered_hot_context(
+                pool,
+                conv=dict(conv),
+                user=user,
+            )
 
     try:
         items = await pool.fetch(
@@ -183,6 +270,173 @@ async def load_turn_context(pool: Any, session_id: UUID) -> dict[str, Any]:
         context["last_turns"] = []
 
     return context
+
+
+def _temporal_anchor(user: Any) -> dict[str, str]:
+    timezone = getattr(user, "timezone", None) or "UTC"
+    try:
+        tz = ZoneInfo(timezone)
+    except Exception:
+        timezone = "UTC"
+        tz = UTC
+    local_now = datetime.now(UTC).astimezone(tz)
+    return {
+        "timezone": timezone,
+        "local_date": local_now.date().isoformat(),
+        "local_day": local_now.strftime("%A"),
+        "local_time": local_now.strftime("%H:%M"),
+        "iso": local_now.isoformat(),
+    }
+
+
+async def _load_rendered_hot_context(
+    pool: Any,
+    *,
+    conv: dict[str, Any],
+    user: Any,
+) -> str | None:
+    """Load the same rendered hot context used by normal chat turns.
+
+    Live replies are intentionally lightweight, but they still need the
+    selected bot's current memory / topic / adherence context.  Fail closed to
+    no extra context so live voice never stops because an auxiliary read fails.
+    """
+    bot_id = conv.get("bot_id")
+    topic_id = conv.get("topic_id")
+    cache_key = str(conv.get("id") or "")
+    if cache_key:
+        cached = _hot_context_cache.get(cache_key)
+        if cached is not None:
+            expires_at, rendered = cached
+            if expires_at > time.monotonic():
+                return rendered
+    if not bot_id or topic_id is None:
+        return None
+    try:
+        from app.bots.registry import get_bot_spec
+        from app.services.hot_context import build_hot_context, render_hot_context
+        from app.services.hot_context_solo import (
+            build_hot_context_solo,
+            render_hot_context_solo,
+        )
+
+        bot_spec = get_bot_spec(str(bot_id))
+        trigger_metadata = {
+            "kind": "live_turn",
+            "conversation_id": str(conv.get("id")),
+            "bot_id": str(bot_id),
+        }
+
+        if bot_spec.participants_shape == "solo":
+            hot_context = await build_hot_context_solo(
+                pool,
+                user,
+                [],
+                trigger_metadata,
+                primary_topic_id=topic_id,
+                bot_id=str(bot_id),
+                allow_cross_topic_peek=getattr(
+                    bot_spec.read_scopes, "allow_cross_topic_peek", False
+                ),
+            )
+            rendered = _trim_rendered_hot_context(render_hot_context_solo(hot_context))
+            if cache_key:
+                _hot_context_cache[cache_key] = (
+                    time.monotonic() + _HOT_CONTEXT_CACHE_TTL_SECONDS,
+                    rendered,
+                )
+            return rendered
+
+        partner_user_id = conv.get("partner_user_id")
+        if partner_user_id is None:
+            return None
+        partner_row = await pool.fetchrow(
+            """
+            SELECT id, name, phone, timezone, onboarding_state,
+                   pacing_preferences, pregnancy_edd, pregnancy_dating_basis,
+                   pregnancy_lmp_date, pregnancy_scan_date,
+                   pregnancy_scan_corrected_at, pregnancy_started_at,
+                   pregnancy_ended_at, pregnancy_outcome
+            FROM users
+            WHERE id = $1
+            """,
+            partner_user_id,
+        )
+        if partner_row is None:
+            return None
+        partner = user_from_live_row(partner_user_id, partner_row)
+        hot_context = await build_hot_context(
+            pool,
+            user,
+            partner,
+            [],
+            trigger_metadata,
+            primary_topic_id=topic_id,
+            allow_cross_topic_peek=getattr(
+                bot_spec.read_scopes, "allow_cross_topic_peek", False
+            ),
+            allow_cross_topic_status_injection=getattr(
+                bot_spec.read_scopes,
+                "allow_cross_topic_status_injection",
+                False,
+            ),
+        )
+        rendered = _trim_rendered_hot_context(render_hot_context(hot_context))
+        if cache_key:
+            _hot_context_cache[cache_key] = (
+                time.monotonic() + _HOT_CONTEXT_CACHE_TTL_SECONDS,
+                rendered,
+            )
+        return rendered
+    except Exception:
+        logger.warning(
+            "turn_loop: failed to load rendered hot context for live turn",
+            exc_info=True,
+        )
+        return None
+
+
+def _trim_rendered_hot_context(rendered: str) -> str:
+    """Keep live-turn grounding useful without making every voice turn huge."""
+    text = (rendered or "").strip()
+    sections: list[tuple[str, list[str]]] = []
+    current_header: str | None = None
+    current_lines: list[str] = []
+    for line in text.splitlines():
+        if line.startswith("## "):
+            if current_header is not None:
+                sections.append((current_header, current_lines))
+            current_header = line.strip()
+            current_lines = [line]
+        elif current_header is not None:
+            current_lines.append(line)
+    if current_header is not None:
+        sections.append((current_header, current_lines))
+
+    kept: list[str] = []
+    for header, lines in sections:
+        if header in _HOT_CONTEXT_KEEP_SECTIONS:
+            kept.extend(_clip_hot_context_section(header, lines))
+            kept.append("")
+    trimmed = "\n".join(kept).strip() or text
+    if len(trimmed) <= _HOT_CONTEXT_MAX_CHARS:
+        return trimmed
+
+    return (
+        trimmed[: _HOT_CONTEXT_MAX_CHARS - 80].rstrip()
+        + "\n\n[hot context clipped for live voice latency]"
+    )
+
+
+def _clip_hot_context_section(header: str, lines: list[str]) -> list[str]:
+    """Bound verbose hot-context sections for a fast voice reply prompt."""
+    if header == "## Recent messages":
+        return lines[:7]
+    if header == "## Fitness":
+        return lines[:24]
+    if header in {"## Current time", "## You", "## Your Partner"}:
+        return lines[:10]
+    return lines[:8]
 
 
 async def apply_emission(pool: Any, session_id: UUID, emission: TurnEmission) -> None:
@@ -384,6 +638,8 @@ class AnthropicHaikuTurnCaller:
         bot_profile = context.get("bot_profile") or {"bot_id": conv.get("bot_id")}
         items = context.get("items") or []
         last_turns = context.get("last_turns") or []
+        rendered_hot_context = (context.get("hot_context_rendered") or "").strip()
+        temporal_anchor = context.get("temporal_anchor") or {}
 
         system = [
             {
@@ -404,6 +660,29 @@ class AnthropicHaikuTurnCaller:
             {
                 "type": "text",
                 "text": f"PREP SUMMARY:\n{conv.get('prep_summary') or '(no prep summary)'}",
+                "cache_control": {"type": "ephemeral"},
+            },
+            {
+                "type": "text",
+                "text": (
+                    "TEMPORAL ANCHOR:\n"
+                    f"- user_timezone: {temporal_anchor.get('timezone') or 'unknown'}\n"
+                    f"- user_local_date: {temporal_anchor.get('local_date') or 'unknown'}\n"
+                    f"- user_local_day: {temporal_anchor.get('local_day') or 'unknown'}\n"
+                    f"- user_local_time: {temporal_anchor.get('local_time') or 'unknown'}\n\n"
+                    "CURRENT CHAT-AGENT HOT CONTEXT:\n"
+                    + (
+                        rendered_hot_context
+                        if rendered_hot_context
+                        else "(hot context unavailable)"
+                    )
+                    + "\n\nTreat this as the source of truth for current dates, "
+                    "week boundaries, commitments, adherence, memories, and "
+                    "recent messages. Do not infer missed days or dates that "
+                    "are not supported here; ask a clarifying question instead. "
+                    "If the user seems confused about which day/week you mean, "
+                    "state the exact date/day you are using before asking."
+                ),
                 "cache_control": {"type": "ephemeral"},
             },
             {
@@ -431,7 +710,7 @@ class AnthropicHaikuTurnCaller:
         }
         resp = await client.messages.create(
             model=self._model,
-            max_tokens=1024,
+            max_tokens=512,
             system=system,
             tools=[tool],
             tool_choice={"type": "tool", "name": "emit_live_turn"},
@@ -476,6 +755,8 @@ class DeepseekTurnCaller:
         bot_profile = context.get("bot_profile") or {"bot_id": conv.get("bot_id")}
         items = context.get("items") or []
         last_turns = context.get("last_turns") or []
+        rendered_hot_context = (context.get("hot_context_rendered") or "").strip()
+        temporal_anchor = context.get("temporal_anchor") or {}
 
         schema = TurnEmission.model_json_schema()
         agenda = [
@@ -499,6 +780,19 @@ class DeepseekTurnCaller:
             f"OUTPUT_SCHEMA:\n{json.dumps(schema)}\n\n"
             f"SELECTED BOT PROFILE:\n{format_live_bot_profile(bot_profile)}\n\n"
             f"PREP SUMMARY:\n{conv.get('prep_summary') or '(no prep summary)'}\n\n"
+            "TEMPORAL ANCHOR:\n"
+            f"- user_timezone: {temporal_anchor.get('timezone') or 'unknown'}\n"
+            f"- user_local_date: {temporal_anchor.get('local_date') or 'unknown'}\n"
+            f"- user_local_day: {temporal_anchor.get('local_day') or 'unknown'}\n"
+            f"- user_local_time: {temporal_anchor.get('local_time') or 'unknown'}\n\n"
+            "CURRENT CHAT-AGENT HOT CONTEXT:\n"
+            + (rendered_hot_context if rendered_hot_context else "(hot context unavailable)")
+            + "\n\nTreat this as the source of truth for current dates, week "
+            "boundaries, commitments, adherence, memories, and recent messages. "
+            "Do not infer missed days or dates that are not supported here; ask "
+            "a clarifying question instead. If the user seems confused about "
+            "which day/week you mean, state the exact date/day you are using "
+            "before asking.\n\n"
             f"AGENDA:\n{json.dumps(agenda, indent=2)}"
         )
         user_content = (
@@ -512,7 +806,7 @@ class DeepseekTurnCaller:
                 {"role": "system", "content": system_text},
                 {"role": "user", "content": user_content},
             ],
-            "max_tokens": 1024,
+            "max_tokens": 512,
             "response_format": {"type": "json_object"},
             "stream": False,
         }

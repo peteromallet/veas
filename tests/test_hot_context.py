@@ -860,7 +860,7 @@ async def test_render_hot_context_respects_default_token_budget(hot_context_seed
 
 
 def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
-    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "260")
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "280")
     get_settings.cache_clear()
     user_id = uuid4()
     partner_id = uuid4()
@@ -935,7 +935,7 @@ def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
 
     text = render_hot_context(hc)
 
-    assert len(text) // 4 <= 260
+    assert len(text) // 4 <= 280
     assert "shareable" in text
     assert "OOB MUST REMAIN" not in text
     assert "core=" not in text
@@ -943,7 +943,84 @@ def test_render_hot_context_truncates_without_dropping_oob(monkeypatch):
     assert text.index("## High-significance observations") < text.index(
         "## Recent messages"
     )
-    assert text.count("[truncated, 6 more]") == 3
+    # memories + observations use the priority-ranked marker; recent_messages
+    # uses its own "older messages omitted" wording (truncated from the front).
+    assert text.count("[truncated, 6 more]") == 2
+    assert "[truncated, 6 older]" in text
+    get_settings.cache_clear()
+
+
+def test_render_hot_context_truncates_oldest_recent_messages_first(monkeypatch):
+    # Regression: when the recent-messages list is over budget, the oldest
+    # messages must be dropped so the most recent turns (the immediate context
+    # the model needs to answer) survive. Previously the list was popped from
+    # the tail, evicting the newest messages and keeping stale backlog.
+    monkeypatch.setenv("HOT_CONTEXT_TOKEN_BUDGET", "500")
+    get_settings.cache_clear()
+    user_id = uuid4()
+    partner_id = uuid4()
+    base = datetime(2026, 5, 25, 12, 0, tzinfo=UTC)
+    hc = HotContext(
+        current_user={
+            "id": user_id,
+            "name": "Maya",
+            "phone": "1",
+            "timezone": "UTC",
+            "style_notes": "short",
+            "onboarding_state": "welcomed",
+            "partner_share": "opt_in",
+            "partner_sharing_state": "opt_in",
+        },
+        partner_user={
+            "id": partner_id,
+            "name": "Ben",
+            "phone": "2",
+            "timezone": "UTC",
+            "style_notes": "short",
+            "onboarding_state": "pending",
+            "partner_share": "opt_in",
+            "partner_sharing_state": "opt_in",
+        },
+        conversation_load={
+            "period": "today",
+            "timezone": "UTC",
+            "total_count": 6,
+            "inbound_count": 6,
+            "outbound_count": 0,
+        },
+        active_oob=[],
+        memories=[],
+        active_themes=[],
+        open_watch_items=[],
+        observations=[],
+        # recent_messages are ordered oldest -> newest, as build_hot_context emits.
+        recent_messages=[
+            {
+                "id": uuid4(),
+                "direction": "inbound",
+                "sender_id": user_id,
+                "recipient_id": partner_id,
+                "content": f"unique-msg-{i:04d} " + "x" * 200,
+                "sent_at": (base + timedelta(minutes=i)).isoformat(),
+                "charge": "routine",
+            }
+            for i in range(6)
+        ],
+        time_since_last_message="1m",
+        trigger_metadata={"triggering_message_ids": [uuid4()], "messages": []},
+    )
+
+    text = render_hot_context(hc)
+
+    # Truncation must have fired and reported the dropped (older) count.
+    assert "older]" in text
+    # The newest message survives; the oldest is the one evicted.
+    assert "unique-msg-0005" in text
+    assert "unique-msg-0000" not in text
+    # Whatever survives is a contiguous newest-first suffix: no surviving
+    # message may be older than a dropped one.
+    surviving = [i for i in range(6) if f"unique-msg-{i:04d}" in text]
+    assert surviving == list(range(surviving[0], 6))
     get_settings.cache_clear()
 
 

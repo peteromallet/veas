@@ -1406,12 +1406,12 @@ def _render_with_counts(
     else:
         lines.append("- none")
     lines += ["", "## Recent messages"]
+    if truncations.get("recent_messages"):
+        lines.append(f"- [truncated, {truncations['recent_messages']} older]")
     lines.extend(
         f"- {_time_label(item, 'sent_at') or item['sent_at']} {item['direction']} charge={item['charge']} sender={item['sender_id']} recipient={item['recipient_id']}{_message_content(item, clip_limit)}{_queue_outcome_label(item)}"
         for item in hc.recent_messages
     )
-    if truncations.get("recent_messages"):
-        lines.append(f"- [truncated, {truncations['recent_messages']} more]")
     # Silent agent turns since the user's last message — work the agent
     # already did that produced no outbound message. The message timeline
     # cannot show these; this section is the only record.
@@ -1543,7 +1543,11 @@ def render_hot_context(hc: HotContext) -> str:
     ):
         items = getattr(working, name)
         while _estimated_tokens(text) > budget and items:
-            items.pop()
+            # recent_messages is ordered oldest -> newest, so drop from the
+            # front to evict stale backlog and keep the most recent turns (the
+            # immediate context the model needs). The other lists are ranked
+            # with the least valuable entries last, so they pop from the tail.
+            items.pop(0 if name == "recent_messages" else -1)
             truncations[name] += 1
             text = _render_with_counts(working, truncations, clip_limit)
     for clip_limit in (160, 100, 60, 30):

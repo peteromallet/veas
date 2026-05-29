@@ -4,7 +4,7 @@ import { createSession, LiveApiError, type Persona } from "../api";
 interface Props {
   persona: Persona;
   onCancel: () => void;
-  onStarted: (sessionId: string) => void;
+  onStarted: (sessionId: string, opts?: { skipPrep?: boolean }) => void;
 }
 
 export function SessionCard({ persona, onCancel, onStarted }: Props) {
@@ -13,8 +13,7 @@ export function SessionCard({ persona, onCancel, onStarted }: Props) {
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
 
-  async function handleSubmit(e: React.FormEvent) {
-    e.preventDefault();
+  async function startSession(skipPrep: boolean) {
     setSubmitting(true);
     setError(null);
     try {
@@ -22,8 +21,9 @@ export function SessionCard({ persona, onCancel, onStarted }: Props) {
         bot_id: persona.bot_id,
         steering_text: steering.trim(),
         mode: openEnded ? "open_ended" : "guided",
+        skip_prep: skipPrep,
       });
-      onStarted(session_id);
+      onStarted(session_id, { skipPrep });
     } catch (err: unknown) {
       if (err instanceof LiveApiError) {
         setError(err.message);
@@ -33,6 +33,11 @@ export function SessionCard({ persona, onCancel, onStarted }: Props) {
     } finally {
       setSubmitting(false);
     }
+  }
+
+  async function handleSubmit(e: React.FormEvent) {
+    e.preventDefault();
+    await startSession(false);
   }
 
   return (
@@ -101,13 +106,21 @@ export function SessionCard({ persona, onCancel, onStarted }: Props) {
           </div>
         )}
 
-        <div className="mt-6 flex items-center justify-end gap-3">
+        <div className="mt-6 flex flex-wrap items-center justify-end gap-3">
           <button
             type="button"
             onClick={onCancel}
             className="rounded-md px-4 py-2 text-sm text-veas-muted hover:text-white"
           >
             Cancel
+          </button>
+          <button
+            type="button"
+            disabled={submitting}
+            onClick={() => void startSession(true)}
+            className="rounded-md border border-white/15 px-5 py-2 text-sm font-medium text-white transition hover:border-white/30 hover:bg-white/5 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {submitting ? "Starting…" : "Just speak"}
           </button>
           <button
             type="submit"

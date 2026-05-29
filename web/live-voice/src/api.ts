@@ -8,10 +8,13 @@ export interface CreateSessionRequest {
   bot_id: string;
   steering_text: string;
   mode: "open_ended" | "guided";
+  skip_prep?: boolean;
 }
 
 export interface CreateSessionResponse {
   session_id: string;
+  status?: string;
+  prep_pending?: boolean;
 }
 
 export class LiveApiError extends Error {

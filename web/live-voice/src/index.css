@@ -19,3 +19,348 @@ body {
     Arial,
     sans-serif;
 }
+
+.robot-face {
+  --robot-glow: rgba(124, 156, 242, 0.45);
+  --robot-mouth-closed: 0.25rem;
+  --robot-mouth-open: 1rem;
+  width: 100%;
+  max-width: 10rem;
+  justify-self: center;
+  color: #dbeafe;
+}
+
+.robot-face--large {
+  --robot-mouth-closed: 0.46rem;
+  --robot-mouth-open: 1.9rem;
+  max-width: min(19rem, 72vw);
+}
+
+.robot-face__antenna {
+  width: 0.5rem;
+  height: 0.8rem;
+  margin: 0 auto -0.05rem;
+  border-radius: 999px 999px 0 0;
+  background: #334155;
+  box-shadow: 0 -0.22rem 0 #7c9cf2;
+}
+
+.robot-face--large .robot-face__antenna {
+  width: 0.8rem;
+  height: 1.25rem;
+  box-shadow: 0 -0.34rem 0 #7c9cf2;
+}
+
+.robot-face__head {
+  border: 1px solid rgba(255, 255, 255, 0.1);
+  border-radius: 0.45rem;
+  padding: 0.5rem;
+  background:
+    linear-gradient(180deg, rgba(255, 255, 255, 0.08), rgba(255, 255, 255, 0.02)),
+    #1a2128;
+  box-shadow: 0 0 1.25rem rgba(0, 0, 0, 0.25);
+}
+
+.robot-face--large .robot-face__head {
+  border-radius: 0.75rem;
+  padding: 0.85rem;
+  box-shadow: 0 1.25rem 3rem rgba(0, 0, 0, 0.25);
+}
+
+.robot-face__screen {
+  position: relative;
+  display: grid;
+  gap: 0.75rem;
+  min-height: 6.25rem;
+  align-content: center;
+  overflow: hidden;
+  border: 1px solid rgba(124, 156, 242, 0.22);
+  border-radius: 0.3rem;
+  background:
+    linear-gradient(rgba(255, 255, 255, 0.025) 50%, transparent 50%) 0 0 / 100% 0.5rem,
+    #08111b;
+  box-shadow: inset 0 0 1rem rgba(124, 156, 242, 0.08);
+}
+
+.robot-face--large .robot-face__screen {
+  gap: 1.35rem;
+  min-height: min(17rem, 62vw);
+  border-radius: 0.55rem;
+}
+
+.robot-face__scanline {
+  position: absolute;
+  inset: 0;
+  transform: translateY(-100%);
+  background: linear-gradient(180deg, transparent, rgba(124, 156, 242, 0.14), transparent);
+  animation: robot-scan 3.4s linear infinite;
+}
+
+.robot-face__eyes {
+  display: flex;
+  justify-content: center;
+  gap: 1.15rem;
+}
+
+.robot-face--large .robot-face__eyes {
+  gap: 2.25rem;
+}
+
+.robot-face__eye {
+  width: 1rem;
+  height: 1rem;
+  border-radius: 0.12rem;
+  background: #93c5fd;
+  box-shadow: 0 0 0.8rem var(--robot-glow);
+}
+
+.robot-face--large .robot-face__eye {
+  width: 2rem;
+  height: 2rem;
+  border-radius: 0.18rem;
+  box-shadow: 0 0 1.4rem var(--robot-glow);
+}
+
+.robot-face__mouth {
+  display: flex;
+  height: 1.15rem;
+  align-items: end;
+  justify-content: center;
+  gap: 0.22rem;
+}
+
+.robot-face__mouth span {
+  width: 0.34rem;
+  height: 0.28rem;
+  border-radius: 0.08rem;
+  background: #93c5fd;
+  box-shadow: 0 0 0.65rem var(--robot-glow);
+}
+
+.robot-face--large .robot-face__mouth {
+  height: 2.1rem;
+  gap: 0.38rem;
+}
+
+.robot-face--large .robot-face__mouth span {
+  width: 0.62rem;
+  height: 0.46rem;
+  border-radius: 0.12rem;
+  box-shadow: 0 0 1rem var(--robot-glow);
+}
+
+.robot-face__caption {
+  display: flex;
+  min-height: 1.5rem;
+  align-items: center;
+  justify-content: center;
+  gap: 0.4rem;
+  color: #8794a3;
+  font-size: 0.68rem;
+  line-height: 1;
+  margin-top: 0.55rem;
+  text-transform: uppercase;
+}
+
+.robot-face--large .robot-face__caption {
+  margin-top: 0.85rem;
+  font-size: 0.78rem;
+}
+
+.robot-face__pulse {
+  width: 0.42rem;
+  height: 0.42rem;
+  border-radius: 999px;
+  background: #7c9cf2;
+  box-shadow: 0 0 0.55rem var(--robot-glow);
+}
+
+.robot-face--large .robot-face__pulse {
+  width: 0.55rem;
+  height: 0.55rem;
+}
+
+.robot-face--listening .robot-face__eye,
+.robot-face--hearing .robot-face__eye {
+  animation: robot-blink 4.5s steps(1, end) infinite;
+}
+
+.robot-face--hearing {
+  --robot-glow: rgba(52, 211, 153, 0.5);
+}
+
+.robot-face--hearing .robot-face__eye,
+.robot-face--hearing .robot-face__mouth span,
+.robot-face--hearing .robot-face__pulse {
+  background: #6ee7b7;
+}
+
+.robot-face--hearing .robot-face__eyes {
+  transform: translateY(-0.12rem);
+}
+
+.robot-face--thinking {
+  --robot-glow: rgba(251, 191, 36, 0.5);
+}
+
+.robot-face--thinking .robot-face__eye,
+.robot-face--thinking .robot-face__mouth span,
+.robot-face--thinking .robot-face__pulse {
+  background: #fbbf24;
+}
+
+.robot-face--thinking .robot-face__eyes {
+  transform: translateY(-0.06rem);
+}
+
+.robot-face--thinking .robot-face__eye {
+  animation: robot-think-eyes 1.6s steps(1, end) infinite;
+}
+
+.robot-face--thinking .robot-face__mouth span {
+  height: var(--robot-mouth-closed);
+  animation: robot-think-mouth 1.2s ease-in-out infinite;
+}
+
+.robot-face--thinking .robot-face__mouth span:nth-child(2) {
+  animation-delay: 0.12s;
+}
+
+.robot-face--thinking .robot-face__mouth span:nth-child(3) {
+  animation-delay: 0.24s;
+}
+
+.robot-face--thinking .robot-face__mouth span:nth-child(4) {
+  animation-delay: 0.36s;
+}
+
+.robot-face--thinking .robot-face__mouth span:nth-child(5) {
+  animation-delay: 0.48s;
+}
+
+.robot-face--speaking {
+  --robot-glow: rgba(56, 189, 248, 0.55);
+}
+
+.robot-face--speaking .robot-face__eye,
+.robot-face--speaking .robot-face__mouth span,
+.robot-face--speaking .robot-face__pulse {
+  background: #7dd3fc;
+}
+
+.robot-face--speaking .robot-face__mouth span {
+  animation: robot-talk 0.68s ease-in-out infinite;
+}
+
+.robot-face--speaking .robot-face__mouth span:nth-child(2),
+.robot-face--speaking .robot-face__mouth span:nth-child(4) {
+  animation-delay: 0.12s;
+}
+
+.robot-face--speaking .robot-face__mouth span:nth-child(3) {
+  animation-delay: 0.22s;
+}
+
+.robot-face--connecting .robot-face__eye,
+.robot-face--connecting .robot-face__mouth span,
+.robot-face--connecting .robot-face__pulse {
+  animation: robot-pulse 1s ease-in-out infinite alternate;
+}
+
+.robot-face--paused .robot-face__eye,
+.robot-face--paused .robot-face__mouth span,
+.robot-face--offline .robot-face__eye,
+.robot-face--offline .robot-face__mouth span {
+  opacity: 0.38;
+}
+
+.robot-face--error {
+  --robot-glow: rgba(251, 113, 133, 0.48);
+}
+
+.robot-face--error .robot-face__eye,
+.robot-face--error .robot-face__mouth span,
+.robot-face--error .robot-face__pulse {
+  background: #fb7185;
+}
+
+.robot-face--error .robot-face__eye--left {
+  transform: rotate(45deg);
+}
+
+.robot-face--error .robot-face__eye--right {
+  transform: rotate(-45deg);
+}
+
+@keyframes robot-scan {
+  to {
+    transform: translateY(100%);
+  }
+}
+
+@keyframes robot-blink {
+  0%,
+  94%,
+  100% {
+    transform: scaleY(1);
+  }
+  96% {
+    transform: scaleY(0.15);
+  }
+}
+
+@keyframes robot-talk {
+  0%,
+  100% {
+    height: var(--robot-mouth-closed);
+  }
+  50% {
+    height: var(--robot-mouth-open);
+  }
+}
+
+@keyframes robot-think-eyes {
+  0%,
+  100% {
+    transform: translateX(0);
+  }
+  25% {
+    transform: translateX(-0.22rem);
+  }
+  50% {
+    transform: translateX(0.22rem);
+  }
+  75% {
+    transform: scaleY(0.35);
+  }
+}
+
+@keyframes robot-think-mouth {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  45% {
+    opacity: 1;
+    transform: translateY(-0.18rem);
+  }
+}
+
+@keyframes robot-pulse {
+  from {
+    opacity: 0.45;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .robot-face *,
+  .robot-face *::before,
+  .robot-face *::after {
+    animation-duration: 0.001ms !important;
+    animation-iteration-count: 1 !important;
+  }
+}

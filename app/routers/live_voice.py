@@ -50,7 +50,12 @@ from app.services.live.budget import (
     check_budget,
 )
 from app.services.live.synthesis import finalize_session, save_review, synthesize_review
-from app.services.live.turn_loop import apply_emission, load_turn_context, select_turn_caller
+from app.services.live.turn_loop import (
+    apply_emission,
+    fallback_turn_emission,
+    load_turn_context,
+    select_turn_caller,
+)
 from app.services.live.tts import select_tts_provider
 
 # --------------------------------------------------------------------------- #
@@ -108,6 +113,10 @@ class CreateSessionRequest(BaseModel):
         default=None,
         description="Optional steering text; presence flips mode to 'steered'",
     )
+    skip_prep: bool = Field(
+        default=False,
+        description="When true, skip live-prep agenda generation and open the mic directly.",
+    )
 
 
 class CreateSessionResponse(BaseModel):
@@ -126,11 +135,12 @@ _DEFAULT_TEST_USER_ID = UUID("00000000-0000-0000-0000-000000000001")
 
 
 def _resolve_test_user_id() -> UUID:
-    """Read LIVE_VOICE_TEST_USER_ID from env (Settings doesn't carry it yet).
-
-    Kept as a module-level helper so tests can monkeypatch the env var.
-    """
-    raw = os.environ.get("LIVE_VOICE_TEST_USER_ID", "").strip()
+    """Read LIVE_VOICE_TEST_USER_ID for unauthenticated local live-voice runs."""
+    raw = (
+        os.environ.get("LIVE_VOICE_TEST_USER_ID")
+        or getattr(get_settings(), "live_voice_test_user_id", "")
+        or ""
+    ).strip()
     if not raw:
         return _DEFAULT_TEST_USER_ID
     try:
@@ -378,6 +388,24 @@ async def create_session(
             )
 
     # Determine the prep path.
+    if body.skip_prep:
+        await pool.execute(
+            """
+            UPDATE mediator.conversations
+            SET status = 'ready',
+                prep_summary = $2
+            WHERE id = $1::uuid
+            """,
+            session_id,
+            "Just speak mode: no prep brief was generated.",
+        )
+        return CreateSessionResponse(
+            session_id=session_id,
+            mode=mode,
+            status="ready",
+            prep_pending=False,
+        )
+
     producer = select_agenda_producer()
 
     if producer is not None:
@@ -1697,21 +1725,27 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
 
                     # Drive a regular bot turn off the user's final transcript.
                     llm_start = perf_counter()
+                    ctx = {}
+                    turn_request = TurnRequest(
+                        session_id=str(session_uuid),
+                        user_transcript_final=user_text,
+                    )
                     try:
                         ctx = await load_turn_context(pool, session_uuid)
-                        emission = await turn_caller.call(
-                            TurnRequest(
-                                session_id=str(session_uuid),
-                                user_transcript_final=user_text,
-                            ),
-                            ctx,
-                        )
+                        emission = await turn_caller.call(turn_request, ctx)
                     except Exception as exc:
+                        logger.exception(
+                            "live_voice: turn caller failed; emitting fallback reply "
+                            "session_id=%s user_text=%r",
+                            session_id,
+                            user_text[:200],
+                        )
+                        emission = fallback_turn_emission(turn_request, ctx)
                         await websocket.send_json({
                             "type": "bot_turn_error",
                             "message": str(exc),
+                            "fallback": True,
                         })
-                        continue
                     llm_ttft_ms = int((perf_counter() - llm_start) * 1000)
                     db_start = perf_counter()
                     try:
@@ -1788,6 +1822,12 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                     total_bytes += len(data_bytes)
                     await transcriber.push(data_bytes)
                     if total_frames % 8 == 0:
+                        logger.info(
+                            "live_voice: received audio frames session_id=%s frames=%s bytes=%s",
+                            session_id,
+                            total_frames,
+                            total_bytes,
+                        )
                         await websocket.send_json({
                             "type": "frame_ack",
                             "frames": total_frames,

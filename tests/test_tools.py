@@ -2592,7 +2592,7 @@ async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):
             "event_type": "outbound.sent",
             "step": "respond",
             "severity": "info",
-            "occurred_at": datetime.now(UTC),
+            "occurred_at": datetime.now(UTC).isoformat(),
             "duration_ms": 2,
             "actor": "delivery",
             "message": None,
@@ -2610,6 +2610,10 @@ async def test_get_bot_actions_includes_trigger_and_outbound_content(tool_ctx):
     assert any(
         event["event_type"] == "outbound.sent" for event in action["audit_events"]
     )
+    outbound_event = next(
+        event for event in action["audit_events"] if event["event_type"] == "outbound.sent"
+    )
+    assert outbound_event["occurred_at_time"]["utc"].endswith("+00:00")
     assert "raw ciphertext" not in str(action["audit_events"])
 
 

@@ -47,6 +47,7 @@ logger = logging.getLogger(__name__)
 _THEME_SLUG_SQL = (
     "lower(trim(both '_' from regexp_replace(t.title, '[^[:alnum:]]+', '_', 'g')))"
 )
+_AGENDA_PREP_SUMMARY_MAX_CHARS = 2000
 
 # Sentinel class so callers can detect the agentic-preferred path even when
 # the return type is ``AgendaProducer | None``.
@@ -56,27 +57,32 @@ _SENTINEL_AGENTIC: Any = object()
 def select_agenda_producer() -> "AgendaProducer | None":
     """Pick the agenda producer based on env.
 
+    * ``LIVE_VOICE_PREP_PROVIDER=agentic`` or unset → agentic async path.
     * ``LIVE_VOICE_PREP_PROVIDER=stub`` → :class:`StubAgendaProducer` (sync).
     * ``LIVE_VOICE_PREP_PROVIDER=anthropic`` → :class:`AnthropicOpusAgendaProducer` (sync).
     * ``LIVE_VOICE_PREP_PROVIDER=deepseek`` → :class:`DeepseekAgendaProducer` (sync).
     * Auto-select when unset: returns ``None`` → agentic async path (Sprint 2).
     * Any explicit provider name overrides default agentic routing.
     """
-    provider = (os.environ.get("LIVE_VOICE_PREP_PROVIDER") or "").strip().lower()
+    settings_provider = getattr(get_settings(), "live_voice_prep_provider", "")
+    provider = (
+        os.environ.get("LIVE_VOICE_PREP_PROVIDER")
+        or settings_provider
+        or ""
+    ).strip().lower()
     anthropic_key = (os.environ.get("ANTHROPIC_API_KEY") or "").strip()
     deepseek_key = (os.environ.get("DEEPSEEK_API_KEY") or "").strip()
     has_anthropic = anthropic_key.startswith("sk-ant-") and "stub" not in anthropic_key
     has_deepseek = bool(deepseek_key) and "stub" not in deepseek_key.lower()
 
+    if provider in {"", "agentic", "async"}:
+        return None
     if provider == "stub":
         return StubAgendaProducer()
     if provider == "anthropic":
         return AnthropicOpusAgendaProducer()
     if provider == "deepseek":
         return DeepseekAgendaProducer()
-    # Default: agentic async path when no explicit provider is set.
-    if not provider:
-        return None
     # Fallback auto-detect for unrecognized provider values.
     if has_anthropic:
         return AnthropicOpusAgendaProducer()
@@ -104,6 +110,13 @@ def _record_value(row: Any, key: str, default: Any = None) -> Any:
         if isinstance(row, dict):
             return row.get(key, default)
         return default
+
+
+def _clip_schema_text(value: str, max_chars: int) -> str:
+    text = value.strip()
+    if len(text) <= max_chars:
+        return text
+    return text[: max_chars - 3].rstrip() + "..."
 
 
 async def gather_prep_context(
@@ -1028,11 +1041,15 @@ class StubAgendaProducer:
                 order_hint=2,
             ),
         ]
-        agenda = Agenda(
-            prep_summary=(
+        prep_summary = _clip_schema_text(
+            (
                 f"{bot_name} prepared a {topic_label} brief from: {steering!r}. "
                 "The agenda stays inside that persona and topic."
             ),
+            _AGENDA_PREP_SUMMARY_MAX_CHARS,
+        )
+        agenda = Agenda(
+            prep_summary=prep_summary,
             items=items,
             first_item_id="must_anchor",
         )
@@ -1237,4 +1254,14 @@ class DeepseekAgendaProducer:
             content = data["choices"][0]["message"]["content"]
         except (KeyError, IndexError, TypeError) as exc:
             raise RuntimeError(f"Deepseek returned unexpected payload: {data!r}") from exc
+        if not isinstance(content, str) or not content.strip():
+            finish_reason = None
+            try:
+                finish_reason = data["choices"][0].get("finish_reason")
+            except Exception:
+                pass
+            raise RuntimeError(
+                "Deepseek agenda producer returned empty content"
+                + (f" (finish_reason={finish_reason})" if finish_reason else "")
+            )
         return Agenda.model_validate_json(content)

@@ -52,9 +52,15 @@ class Settings(BaseSettings):
     vision_daily_cap_usd: float = 2.0
     transcription_daily_cap_usd: float = 1.0
     conversational_model: str = "claude-sonnet-4-6"  # Conversational loop model.
-    deepseek_conversational_model: str = "deepseek-chat"
+    deepseek_conversational_model: str = "deepseek-v4-pro"
     deepseek_thinking_enabled: bool = False
     deepseek_reasoning_effort: str | None = None
+    live_voice_stt_provider: str = ""
+    live_voice_turn_provider: str = "deepseek"
+    live_voice_prep_provider: str = "agentic"
+    live_voice_test_user_id: str = "00000000-0000-0000-0000-000000000001"
+    live_voice_whisper_model: str = ""
+    live_voice_whisper_language: str = "en"
     consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
     consult_max_tool_iterations: int = Field(default=3, ge=0, le=10)
     nonchat_default_max_tool_iterations: int = Field(default=100, ge=0, le=2000)

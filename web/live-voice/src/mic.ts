@@ -14,8 +14,8 @@
  * * AudioContext is opened at 16 kHz where supported.  Browsers that
  *   ignore the sampleRate hint will still produce useful audio; the
  *   resample-step downconverts in-process.
- * * No silence detection in v1; that's Sprint 4 (VAD).  We send every
- *   frame to the backend; the backend ASR drops what it doesn't need.
+ * * Client-side energy gating keeps background noise from becoming
+ *   expensive / hallucinated STT turns.
  */
 
 export interface MicFrameMeta {
@@ -58,12 +58,12 @@ export interface MicOpenOptions {
    */
   onVoiceState?: (state: VoiceState, meta: { rms: number; silenceMs: number }) => void;
   targetSampleRate?: number; // default 16000
-  vadThreshold?: number; // default 0.012
-  vadActiveFrames?: number; // default 2 (debounce activation)
-  turnEndMs?: number; // default 600
+  vadThreshold?: number; // default 0.018
+  vadActiveFrames?: number; // default 3 (debounce activation)
+  turnEndMs?: number; // default 850
   /**
    * Frames with RMS below this threshold are NOT delivered to `onFrame`.
-   * Default 0.005 (background room noise) — clean quiet voice still gets
+   * Default 0.01 (background room noise) — clean quiet voice still gets
    * through because real speech RMS is typically > 0.02.
    */
   silenceDropThreshold?: number;
@@ -106,10 +106,10 @@ export async function openMic({
   onError,
   onVoiceState,
   targetSampleRate = 16000,
-  vadThreshold = 0.012,
+  vadThreshold = 0.008,
   vadActiveFrames = 2,
-  turnEndMs = 600,
-  silenceDropThreshold = 0.005,
+  turnEndMs = 850,
+  silenceDropThreshold = 0.002,
 }: MicOpenOptions): Promise<MicSession> {
   if (!navigator.mediaDevices?.getUserMedia) {
     throw new Error("MediaDevices.getUserMedia is not available in this browser.");
@@ -118,7 +118,9 @@ export async function openMic({
     audio: {
       echoCancellation: true,
       noiseSuppression: true,
-      autoGainControl: true,
+      // Browser AGC can amplify room tone until it looks like speech to
+      // energy VAD. Keep it off; the backend STT can handle normal speech levels.
+      autoGainControl: false,
       channelCount: 1,
     },
   });

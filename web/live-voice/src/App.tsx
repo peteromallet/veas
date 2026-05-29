@@ -62,8 +62,12 @@ export default function App() {
           <SessionCard
             persona={view.persona}
             onCancel={() => setView({ kind: "picker" })}
-            onStarted={(sessionId) =>
-              setView({ kind: "card", persona: view.persona, sessionId })
+            onStarted={(sessionId, opts) =>
+              setView({
+                kind: opts?.skipPrep ? "live" : "card",
+                persona: view.persona,
+                sessionId,
+              })
             }
           />
         )}

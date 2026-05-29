@@ -28,6 +28,12 @@ def test_config_loads(monkeypatch) -> None:
         "DEEPSEEK_CONVERSATIONAL_MODEL": "deepseek-test",
         "DEEPSEEK_THINKING_ENABLED": "false",
         "DEEPSEEK_REASONING_EFFORT": "medium",
+        "LIVE_VOICE_STT_PROVIDER": "groq",
+        "LIVE_VOICE_TURN_PROVIDER": "deepseek",
+        "LIVE_VOICE_PREP_PROVIDER": "agentic",
+        "LIVE_VOICE_TEST_USER_ID": "11111111-1111-1111-1111-111111111111",
+        "LIVE_VOICE_WHISPER_MODEL": "whisper-large-v3-turbo",
+        "LIVE_VOICE_WHISPER_LANGUAGE": "en",
         "CONSULT_MODEL": "claude-consult-test",
         "CONSULT_MAX_TOOL_ITERATIONS": "4",
         "CONSULT_TIMEOUT_S": "12.5",
@@ -99,6 +105,12 @@ def test_config_loads(monkeypatch) -> None:
     assert settings.deepseek_conversational_model == env["DEEPSEEK_CONVERSATIONAL_MODEL"]
     assert settings.deepseek_thinking_enabled is False
     assert settings.deepseek_reasoning_effort == env["DEEPSEEK_REASONING_EFFORT"]
+    assert settings.live_voice_stt_provider == env["LIVE_VOICE_STT_PROVIDER"]
+    assert settings.live_voice_turn_provider == env["LIVE_VOICE_TURN_PROVIDER"]
+    assert settings.live_voice_prep_provider == env["LIVE_VOICE_PREP_PROVIDER"]
+    assert settings.live_voice_test_user_id == env["LIVE_VOICE_TEST_USER_ID"]
+    assert settings.live_voice_whisper_model == env["LIVE_VOICE_WHISPER_MODEL"]
+    assert settings.live_voice_whisper_language == env["LIVE_VOICE_WHISPER_LANGUAGE"]
     assert settings.consult_model == env["CONSULT_MODEL"]
     assert settings.consult_max_tool_iterations == 4
     assert settings.consult_timeout_s == 12.5

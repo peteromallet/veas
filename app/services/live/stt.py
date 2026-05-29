@@ -36,6 +36,8 @@ from typing import Any, AsyncIterator, Protocol
 
 import httpx
 
+from app.config import get_settings
+
 logger = logging.getLogger(__name__)
 
 
@@ -61,9 +63,22 @@ def select_transcriber(*, target_sample_rate: int = 16000) -> StreamingTranscrib
     * Auto-select when no provider set: prefer Groq if its key is real,
       else OpenAI Whisper, else stub.
     """
-    provider = (os.environ.get("LIVE_VOICE_STT_PROVIDER") or "").strip().lower()
-    openai_key = (os.environ.get("OPENAI_API_KEY") or "").strip()
-    groq_key = (os.environ.get("GROQ_API_KEY") or "").strip()
+    settings = get_settings()
+    provider = (
+        os.environ.get("LIVE_VOICE_STT_PROVIDER")
+        or getattr(settings, "live_voice_stt_provider", "")
+        or ""
+    ).strip().lower()
+    openai_key = (
+        settings.openai_api_key.get_secret_value()
+        if settings.openai_api_key is not None
+        else ""
+    ).strip()
+    groq_key = (
+        settings.groq_api_key.get_secret_value()
+        if settings.groq_api_key is not None
+        else ""
+    ).strip()
     has_openai = openai_key.startswith("sk-") and "stub" not in openai_key
     has_groq = bool(groq_key) and "stub" not in groq_key.lower()
 
@@ -196,9 +211,15 @@ _WHISPER_HALLUCINATIONS = (
     "dimatorzok",
     "thanks for watching",
     "thank you for watching",
+    "transcribe only what the speaker",
+    "output empty on silence",
     "사용자에게 자막을",
     "韩国语字幕",
 )
+
+_WHISPER_EXACT_HALLUCINATIONS = {
+    "output",
+}
 
 
 def _rms_below_threshold(pcm_blob: bytes, *, threshold: float) -> bool:
@@ -220,8 +241,10 @@ def _rms_below_threshold(pcm_blob: bytes, *, threshold: float) -> bool:
 
 
 def _looks_like_hallucination(text: str) -> bool:
-    low = text.lower().strip()
+    low = text.lower().strip().strip(".!?")
     if not low:
+        return True
+    if low in _WHISPER_EXACT_HALLUCINATIONS:
         return True
     for marker in _WHISPER_HALLUCINATIONS:
         if marker in low:
@@ -256,6 +279,7 @@ class WhisperBufferedTranscriber:
         # Watchdog auto-flushes when the buffer overflows (caller didn't
         # send a turn_end signal but the user has been talking for a long
         # stretch).
+        logger.info("%s stt: starting buffered transcriber sample_rate=%s", self._provider_label, self._sample_rate)
         self._watchdog_task = asyncio.create_task(self._watchdog_loop())
 
     async def push(self, pcm: bytes) -> None:
@@ -275,6 +299,12 @@ class WhisperBufferedTranscriber:
             return
         async with self._lock:
             if len(self._buf) < _MIN_FLUSH_BYTES:
+                logger.info(
+                    "%s stt: flush skipped; buffer too small bytes=%s min=%s",
+                    self._provider_label,
+                    len(self._buf),
+                    _MIN_FLUSH_BYTES,
+                )
                 return
             # Cooldown: if a transcribe just fired, leave the audio in the
             # buffer so the next flush (or watchdog) absorbs it. Prevents
@@ -284,6 +314,7 @@ class WhisperBufferedTranscriber:
                 return
             blob = bytes(self._buf)
             self._buf.clear()
+        logger.info("%s stt: flushing audio bytes=%s", self._provider_label, len(blob))
         await self._transcribe(blob)
 
     async def aclose(self) -> None:
@@ -319,7 +350,10 @@ class WhisperBufferedTranscriber:
         return _WHISPER_URL
 
     def _provider_api_key(self) -> str:
-        return (os.environ.get("OPENAI_API_KEY") or "").strip()
+        settings = get_settings()
+        if settings.openai_api_key is None:
+            return ""
+        return settings.openai_api_key.get_secret_value().strip()
 
     def _provider_api_key_ok(self, key: str) -> bool:
         return key.startswith("sk-") and "stub" not in key
@@ -330,7 +364,12 @@ class WhisperBufferedTranscriber:
         #     hallucination rate, cheaper.
         #   LIVE_VOICE_WHISPER_MODEL=gpt-4o-transcribe → top quality.
         #   default whisper-1 (broadest compat).
-        return os.environ.get("LIVE_VOICE_WHISPER_MODEL") or "whisper-1"
+        settings = get_settings()
+        return (
+            os.environ.get("LIVE_VOICE_WHISPER_MODEL")
+            or settings.live_voice_whisper_model
+            or "whisper-1"
+        )
 
     # ----- Transcribe (shared body for OpenAI and Groq) ----- #
 
@@ -348,6 +387,7 @@ class WhisperBufferedTranscriber:
         # (e.g. "Субтитры предоставил DimaTorzok" — Russian subtitle credit)
         # on pure silence/noise, and those costs add up.
         if _rms_below_threshold(pcm_blob, threshold=0.0035):
+            logger.info("%s stt: skipped upstream transcription for silence bytes=%s", self._provider_label, len(pcm_blob))
             await self._safe_emit({"type": "partial", "text": "(silence)", "ts": time.time()})
             return
 
@@ -362,7 +402,11 @@ class WhisperBufferedTranscriber:
             "temperature": "0",
             # Force English unless the operator overrides — kills the
             # Whisper Russian/Korean subtitle hallucinations on silence.
-            "language": os.environ.get("LIVE_VOICE_WHISPER_LANGUAGE") or "en",
+            "language": (
+                os.environ.get("LIVE_VOICE_WHISPER_LANGUAGE")
+                or get_settings().live_voice_whisper_language
+                or "en"
+            ),
             "prompt": (
                 "This is a live one-on-one English-language coaching conversation. "
                 "Transcribe only what the speaker actually says. Output empty on silence."
@@ -384,6 +428,12 @@ class WhisperBufferedTranscriber:
                 })
                 return
             if resp.status_code >= 400:
+                logger.warning(
+                    "%s stt: upstream returned status=%s body=%s",
+                    self._provider_label,
+                    resp.status_code,
+                    resp.text[:200],
+                )
                 await self._safe_emit({
                     "type": "error",
                     "message": f"{self._provider_label} status={resp.status_code} body={resp.text[:200]}",
@@ -399,8 +449,10 @@ class WhisperBufferedTranscriber:
                 })
                 return
         if not text or _looks_like_hallucination(text):
+            logger.info("%s stt: upstream returned empty/hallucination text=%r", self._provider_label, text)
             await self._safe_emit({"type": "partial", "text": "(silence)", "ts": time.time()})
             return
+        logger.info("%s stt: final transcript chars=%s", self._provider_label, len(text))
         await self._safe_emit({"type": "final", "text": text, "ts": time.time()})
 
     async def _safe_emit(self, event: dict[str, Any]) -> None:
@@ -424,7 +476,10 @@ class GroqWhisperTranscriber(WhisperBufferedTranscriber):
         return _GROQ_WHISPER_URL
 
     def _provider_api_key(self) -> str:
-        return (os.environ.get("GROQ_API_KEY") or "").strip()
+        settings = get_settings()
+        if settings.groq_api_key is None:
+            return ""
+        return settings.groq_api_key.get_secret_value().strip()
 
     def _provider_api_key_ok(self, key: str) -> bool:
         return bool(key) and "stub" not in key.lower()
@@ -434,7 +489,12 @@ class GroqWhisperTranscriber(WhisperBufferedTranscriber):
         #   whisper-large-v3-turbo  — fastest, ~200-400ms typical
         #   whisper-large-v3        — top accuracy
         #   distil-whisper-large-v3-en — English-only, fastest
-        return os.environ.get("LIVE_VOICE_WHISPER_MODEL") or "whisper-large-v3-turbo"
+        settings = get_settings()
+        return (
+            os.environ.get("LIVE_VOICE_WHISPER_MODEL")
+            or settings.live_voice_whisper_model
+            or "whisper-large-v3-turbo"
+        )
 
 
 # --------------------------------------------------------------------------- #

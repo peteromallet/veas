@@ -26,7 +26,13 @@ from pydantic import ValidationError
 
 from app.bots.base import BotSpec
 from app.bots.registry import BOT_SPECS
-from app.services.live.prep import StubAgendaProducer, produce_agenda
+from app.config import get_settings
+from app.services.live.prep import (
+    DeepseekAgendaProducer,
+    StubAgendaProducer,
+    produce_agenda,
+    select_agenda_producer,
+)
 from app.services.live.schemas import Agenda, AgendaItem, PrepRequest
 
 
@@ -95,6 +101,71 @@ class TestAgendaSchema:
             AgendaItem(id="x", title="t", priority="critical")  # type: ignore[arg-type]
         with pytest.raises(ValidationError):
             AgendaItem(id="x", title="t", kind="freeform")  # type: ignore[arg-type]
+
+
+class TestAgendaProducerSelection:
+    def test_agentic_provider_selects_async_path(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("LIVE_VOICE_PREP_PROVIDER", "agentic")
+
+        assert select_agenda_producer() is None
+
+
+class TestDeepseekAgendaProducer:
+    @pytest.mark.anyio
+    async def test_rejects_empty_content_with_clear_error(
+        self,
+        monkeypatch: pytest.MonkeyPatch,
+    ) -> None:
+        monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-deepseek-real-looking")
+        monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://deepseek.example")
+        get_settings.cache_clear()
+
+        class _Resp:
+            def raise_for_status(self) -> None:
+                return None
+
+            def json(self) -> dict[str, Any]:
+                return {
+                    "choices": [
+                        {
+                            "message": {"content": ""},
+                            "finish_reason": "length",
+                        }
+                    ]
+                }
+
+        class _Client:
+            def __init__(self, *args: Any, **kwargs: Any) -> None:
+                pass
+
+            async def __aenter__(self) -> "_Client":
+                return self
+
+            async def __aexit__(self, *args: Any) -> None:
+                return None
+
+            async def post(self, *args: Any, **kwargs: Any) -> _Resp:
+                return _Resp()
+
+        monkeypatch.setattr("httpx.AsyncClient", _Client)
+
+        producer = DeepseekAgendaProducer(model="deepseek-test")
+        with pytest.raises(
+            RuntimeError,
+            match="Deepseek agenda producer returned empty content",
+        ):
+            await producer(
+                PrepRequest(
+                    user_id=str(uuid4()),
+                    bot_id="hector",
+                    steering_text="test",
+                    topic_slug="habits",
+                ),
+                context={},
+            )
 
 
 # --------------------------------------------------------------------------- #
@@ -244,6 +315,22 @@ async def test_stub_producer_returns_validated_agenda() -> None:
     assert "pregnancy" in agenda.prep_summary
     assert "pregnancy" in (agenda.items[0].ask or "").lower()
     assert "partner" not in (agenda.items[0].ask or "").lower()
+
+
+async def test_stub_producer_clips_long_steering_for_fallback() -> None:
+    producer = StubAgendaProducer()
+    agenda = await producer(
+        PrepRequest(
+            user_id=str(uuid4()),
+            bot_id="mediator",
+            steering_text="x" * 5000,
+            topic_slug="relationship",
+        ),
+        context={},
+    )
+
+    assert len(agenda.prep_summary) <= 2000
+    Agenda.model_validate(agenda.model_dump())
 
 
 @pytest.mark.anyio

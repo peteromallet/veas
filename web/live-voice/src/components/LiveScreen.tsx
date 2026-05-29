@@ -9,6 +9,7 @@ import {
 } from "../api";
 import { ConsentGate, type ConsentSelection } from "./ConsentGate";
 import { openMic, type MicSession, type VoiceState } from "../mic";
+import { RobotFace } from "./RobotFace";
 
 interface Props {
   persona: Persona;
@@ -75,9 +76,11 @@ function speakViaSpeechSynthesis(
 function TextInputFallback({
   disabled,
   onSend,
+  className = "mt-4",
 }: {
   disabled: boolean;
   onSend: (text: string) => void;
+  className?: string;
 }) {
   const [value, setValue] = useState("");
   function handleSubmit(e: React.FormEvent) {
@@ -88,7 +91,7 @@ function TextInputFallback({
     setValue("");
   }
   return (
-    <form onSubmit={handleSubmit} className="mt-4 flex items-center gap-2">
+    <form onSubmit={handleSubmit} className={`${className} flex items-center gap-2`}>
       <input
         type="text"
         value={value}
@@ -115,13 +118,19 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
   const [micError, setMicError] = useState<string | null>(null);
   const [paused, setPaused] = useState(false);
   const [frameCount, setFrameCount] = useState(0);
+  const [sentFrameCount, setSentFrameCount] = useState(0);
+  const [ackedFrameCount, setAckedFrameCount] = useState(0);
+  const [lastRms, setLastRms] = useState(0);
   const [voice, setVoice] = useState<VoiceState>("silent");
   const [botSpeaking, setBotSpeaking] = useState(false);
+  const [botThinking, setBotThinking] = useState(false);
   const [ttsUnavailable, setTtsUnavailable] = useState(false);
   const [reconnecting, setReconnecting] = useState(false);
   const [reconnectAttempt, setReconnectAttempt] = useState(0);
   const [transcript, setTranscript] = useState<TranscriptLine[]>([]);
   const [spend, setSpend] = useState<{ cents: number; cap: number } | null>(null);
+  const [showTextInput, setShowTextInput] = useState(false);
+  const [showTranscript, setShowTranscript] = useState(false);
   const [showActivity, setShowActivity] = useState(false);
 
   // ── Debrief lifecycle state ──────────────────────────────────────────
@@ -166,6 +175,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
       };
       ws.onclose = (ev) => {
         if (cancelledLifetime) return;
+        setBotThinking(false);
         // Clean close (1000 / 1001) = end-session; don't reconnect.
         if (ev.code === 1000 || ev.code === 1001) {
           setStatus((s) => (s === "error" ? s : "closed"));
@@ -180,6 +190,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
       };
       ws.onerror = () => {
         setStatus((s) => (s === "open" || s === "live" ? "error" : s));
+        setBotThinking(false);
         pushEvent("WebSocket error.", "error");
       };
       hookMessageHandler(ws);
@@ -194,6 +205,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
         if (parsed?.type === "frame_ack") {
           kind = "ack";
           text = `ack: ${parsed.frames} frames / ${parsed.bytes} bytes`;
+          setAckedFrameCount(Number(parsed.frames) || 0);
         } else if (parsed?.type === "phase" || parsed?.type === "ready") {
           kind = "phase";
           text = parsed.label ?? "(phase)";
@@ -204,16 +216,21 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
         } else if (parsed?.type === "transcript_final") {
           kind = "phase";
           text = `you: ${parsed.text}`;
-          setTranscript((prev) => [
-            ...prev.slice(-40),
-            { ts: Date.now(), speaker: "user", text: parsed.text },
-          ]);
+          if (String(parsed.text ?? "").trim()) {
+            setBotThinking(true);
+            setTranscript((prev) => [
+              ...prev.slice(-40),
+              { ts: Date.now(), speaker: "user", text: parsed.text },
+            ]);
+          }
         } else if (parsed?.type === "transcript_error") {
           kind = "error";
           text = `STT error: ${parsed.message ?? "unknown"}`;
+          setBotThinking(false);
         } else if (parsed?.type === "bot_turn") {
           kind = "phase";
           text = `${persona.display_name}: ${parsed.utterance}`;
+          setBotThinking(false);
           setTranscript((prev) => [
             ...prev.slice(-40),
             { ts: Date.now(), speaker: "bot", text: parsed.utterance },
@@ -277,6 +294,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
         } else if (parsed?.type === "bot_turn_error") {
           kind = "error";
           text = `Bot turn failed: ${parsed.message ?? "unknown"}`;
+          setBotThinking(false);
         } else if (parsed?.type === "budget_soft_warned") {
           kind = "info";
           text = `Heads-up: this session has spent $${(parsed.cents / 100).toFixed(2)} of the $${(parsed.hard_cap_cents / 100).toFixed(2)} cap.`;
@@ -285,6 +303,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
           kind = "error";
           text = `This session has hit its $${(parsed.hard_cap_cents / 100).toFixed(2)} cost cap — bot turns are paused. End and save when you're ready.`;
           setSpend({ cents: parsed.cents, cap: parsed.hard_cap_cents });
+          setBotThinking(false);
         } else {
           text = parsed.label ?? parsed.phase ?? parsed.text ?? JSON.stringify(parsed);
         }
@@ -316,14 +335,19 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
     openMic({
       onFrame: (pcm) => {
         if (cancelled) return;
+        if (botSpeakingRef.current) return;
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
         ws.send(pcm);
+        setSentFrameCount((c) => c + 1);
       },
-      onAllFrames: () => {
+      onAllFrames: (meta) => {
         // Increment counter for every captured frame, dropped or sent,
         // so the UI matches what the mic actually sees.
-        if (!cancelled) setFrameCount((c) => c + 1);
+        if (!cancelled) {
+          setFrameCount((c) => c + 1);
+          setLastRms(meta.rms);
+        }
       },
       onError: (err) => {
         if (!cancelled) setMicError(err.message);
@@ -334,6 +358,7 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
         lastUserActivityRef.current = Date.now();
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (botSpeakingRef.current) return;
         if (state === "active") {
           // Barge-in: if the bot is currently speaking via TTS, cancel
           // playback locally AND tell the backend to abort the in-flight
@@ -566,9 +591,9 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
   };
 
   return (
-    <section className="mx-auto max-w-2xl px-6 py-10">
-      <div className="rounded-lg border border-white/5 bg-veas-surface p-6">
-        <header className="mb-6 flex items-center justify-between">
+    <section className="mx-auto flex min-h-[calc(100vh-8rem)] max-w-4xl px-4 py-6 sm:px-6">
+      <div className="flex min-h-[42rem] flex-1 flex-col rounded-lg border border-white/5 bg-veas-surface p-4 sm:p-6">
+        <header className="flex items-center justify-between">
           <div>
             <p className="text-xs uppercase tracking-widest text-veas-muted">
               In session with
@@ -607,94 +632,73 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
           </div>
         </header>
 
-        <div className="rounded-md border border-white/5 bg-veas-bg/60 px-4 py-3 text-sm">
-          {reconnecting ? (
-            <p className="text-amber-200">
-              Connection dropped — reconnecting (attempt {reconnectAttempt})…
-            </p>
-          ) : status === "live" ? (
-            <p className="text-white/90">
-              {paused
-                ? "Mic paused. Press Resume to continue."
-                : "Listening — speak when you're ready."}
-            </p>
-          ) : status === "error" ? (
-            <p className="text-rose-300">
-              Trouble hearing you. Type below — we can keep going.
-            </p>
-          ) : (
-            <p className="text-veas-muted">Connecting…</p>
-          )}
-          {ttsUnavailable && (
-            <p className="mt-1 text-[11px] text-veas-muted">
-              Voice playback unavailable — bot turns will show as text.
-            </p>
-          )}
-          {micError && (
-            <p className="mt-2 text-xs text-rose-300">Mic error: {micError}</p>
-          )}
-          <div className="mt-2 flex items-center gap-3 text-[11px] text-veas-muted">
-            <span>Frames sent: {frameCount}</span>
-            <span className="inline-flex items-center gap-1">
-              <span
-                className={`h-1.5 w-1.5 rounded-full ${
-                  voice === "active" ? "bg-emerald-400" : "bg-slate-500"
-                }`}
-                aria-hidden
-              />
-              {voice === "active" ? "voice detected" : "silence"}
-            </span>
-            {botSpeaking && (
-              <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-sky-300">
-                bot speaking
-              </span>
+        <div className="flex flex-1 flex-col items-center justify-center py-8 text-center sm:py-12">
+          <RobotFace
+            botName={persona.display_name}
+            status={status}
+            voice={voice}
+            botSpeaking={botSpeaking}
+            thinking={botThinking}
+            paused={paused}
+            reconnecting={reconnecting}
+            size="large"
+          />
+          <div className="mt-8 max-w-xl">
+            {reconnecting ? (
+              <p className="text-base text-amber-200">
+                Connection dropped — reconnecting (attempt {reconnectAttempt})…
+              </p>
+            ) : status === "live" ? (
+              <p className="text-lg text-white/90">
+                {paused
+                  ? "Mic paused. Press Resume to continue."
+                  : botSpeaking
+                    ? `${persona.display_name} is speaking.`
+                    : voice === "active"
+                      ? "Hearing you."
+                      : botThinking
+                        ? `${persona.display_name} is thinking.`
+                      : "Listening — speak when you're ready."}
+              </p>
+            ) : status === "error" ? (
+              <p className="text-base text-rose-300">
+                Trouble hearing you. Type below — we can keep going.
+              </p>
+            ) : (
+              <p className="text-base text-veas-muted">Connecting…</p>
             )}
+            {ttsUnavailable && (
+              <p className="mt-1 text-[11px] text-veas-muted">
+                Voice playback unavailable — bot turns will show as text.
+              </p>
+            )}
+            {micError && (
+              <p className="mt-2 text-xs text-rose-300">Mic error: {micError}</p>
+            )}
+            <div className="mt-3 flex flex-wrap items-center justify-center gap-3 text-[11px] text-veas-muted">
+              <span>Frames: {frameCount} captured / {sentFrameCount} sent / {ackedFrameCount} acked</span>
+              <span>RMS: {lastRms.toFixed(3)}</span>
+              <span className="inline-flex items-center gap-1">
+                <span
+                  className={`h-1.5 w-1.5 rounded-full ${
+                    voice === "active" ? "bg-emerald-400" : "bg-slate-500"
+                  }`}
+                  aria-hidden
+                />
+                {voice === "active" ? "voice detected" : "silence"}
+              </span>
+              {botSpeaking && (
+                <span className="rounded-full bg-sky-500/15 px-2 py-0.5 text-sky-300">
+                  bot speaking
+                </span>
+              )}
+              {botThinking && !botSpeaking && voice !== "active" && (
+                <span className="rounded-full bg-amber-500/15 px-2 py-0.5 text-amber-200">
+                  thinking
+                </span>
+              )}
+            </div>
           </div>
-        </div>
-
-        <TextInputFallback
-          disabled={status !== "live"}
-          onSend={(text) => {
-            const ws = wsRef.current;
-            if (ws?.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: "text_input", text }));
-            }
-          }}
-        />
-
-        <div className="mt-6 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <button
-            type="button"
-            onClick={handlePauseToggle}
-            disabled={status !== "live"}
-            className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            {paused ? "Resume" : "Pause"}
-          </button>
-          <button
-            type="button"
-            onClick={handleAdvance}
-            disabled={status !== "live"}
-            className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
-          >
-            Advance
-          </button>
-          <button
-            type="button"
-            onClick={handleBackUp}
-            disabled={status !== "live"}
-            className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
-            title="Rewind the most recently covered item — 'that's not what I meant'"
-          >
-            Back up
-          </button>
-          <button
-            type="button"
-            onClick={handleEnd}
-            className="rounded-md bg-rose-500/90 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500"
-          >
-            Stop for everyone
-          </button>
         </div>
 
         {/* ── Debrief overlay ────────────────────────────────────────── */}
@@ -770,35 +774,103 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
           </div>
         )}
 
-        <div className="mt-6">
-          <h3 className="text-xs uppercase tracking-widest text-veas-muted">
-            Transcript
-          </h3>
-          <div className="mt-2 max-h-80 min-h-[10rem] overflow-y-auto rounded-md border border-white/5 bg-veas-bg/40 p-3 text-sm">
-            {transcript.length === 0 ? (
-              <p className="text-veas-muted">No turns yet.</p>
-            ) : (
-              <ul className="space-y-3">
-                {transcript.map((t, i) => (
-                  <li key={i} className={`flex ${t.speaker === "user" ? "justify-end" : "justify-start"}`}>
-                    <div
-                      className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
-                        t.speaker === "user"
-                          ? "bg-veas-accent/20 text-white"
-                          : "bg-white/5 text-white"
-                      }`}
-                    >
-                      <p className="text-[10px] uppercase tracking-wider text-veas-muted">
-                        {t.speaker === "user" ? "you" : persona.display_name}
-                      </p>
-                      <p className="mt-0.5 whitespace-pre-wrap leading-relaxed">{t.text}</p>
-                    </div>
-                  </li>
-                ))}
-              </ul>
-            )}
+        <div className="mt-auto border-t border-white/5 pt-4">
+          {showTextInput && (
+            <div className="mb-3 rounded-md border border-white/5 bg-veas-bg/40 p-3">
+              <TextInputFallback
+                disabled={status !== "live"}
+                className=""
+                onSend={(text) => {
+                  const ws = wsRef.current;
+                  if (ws?.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: "text_input", text }));
+                  }
+                }}
+              />
+            </div>
+          )}
+
+          <div className="grid grid-cols-3 gap-2 sm:grid-cols-6">
+            <button
+              type="button"
+              onClick={handlePauseToggle}
+              disabled={status !== "live"}
+              className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              {paused ? "Resume" : "Pause"}
+            </button>
+            <button
+              type="button"
+              onClick={handleAdvance}
+              disabled={status !== "live"}
+              className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
+            >
+              Advance
+            </button>
+            <button
+              type="button"
+              onClick={handleBackUp}
+              disabled={status !== "live"}
+              className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30 disabled:cursor-not-allowed disabled:opacity-50"
+              title="Rewind the most recently covered item — 'that's not what I meant'"
+            >
+              Back up
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTextInput((s) => !s)}
+              className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30"
+            >
+              {showTextInput ? "Hide text" : "Type"}
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowTranscript((s) => !s)}
+              className="rounded-md border border-white/10 px-3 py-2 text-sm text-white hover:border-white/30"
+            >
+              {showTranscript ? "Hide log" : "Log"}
+            </button>
+            <button
+              type="button"
+              onClick={handleEnd}
+              className="rounded-md bg-rose-500/90 px-3 py-2 text-sm font-medium text-white hover:bg-rose-500"
+            >
+              Stop
+            </button>
           </div>
         </div>
+
+        {showTranscript && (
+          <div className="mt-4">
+            <h3 className="text-xs uppercase tracking-widest text-veas-muted">
+              Transcript
+            </h3>
+            <div className="mt-2 max-h-72 min-h-[10rem] overflow-y-auto rounded-md border border-white/5 bg-veas-bg/40 p-3 text-sm">
+              {transcript.length === 0 ? (
+                <p className="text-veas-muted">No turns yet.</p>
+              ) : (
+                <ul className="space-y-3">
+                  {transcript.map((t, i) => (
+                    <li key={i} className={`flex ${t.speaker === "user" ? "justify-end" : "justify-start"}`}>
+                      <div
+                        className={`max-w-[80%] rounded-lg px-3 py-2 text-sm ${
+                          t.speaker === "user"
+                            ? "bg-veas-accent/20 text-white"
+                            : "bg-white/5 text-white"
+                        }`}
+                      >
+                        <p className="text-[10px] uppercase tracking-wider text-veas-muted">
+                          {t.speaker === "user" ? "you" : persona.display_name}
+                        </p>
+                        <p className="mt-0.5 whitespace-pre-wrap leading-relaxed">{t.text}</p>
+                      </div>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          </div>
+        )}
 
         <div className="mt-3">
           <button

@@ -386,6 +386,42 @@ class TestSessionCreation:
         assert data["status"] == "ready", data
         assert data["prep_pending"] is False, data
 
+    def test_create_session_skip_prep_returns_ready_without_background_job(
+        self,
+        monkeypatch,
+    ) -> None:
+        """Just-speak mode skips prep and opens the consent/live flow directly."""
+
+        async def _should_not_run(*args, **kwargs) -> None:
+            raise AssertionError("skip_prep must not schedule live prep")
+
+        pool = LiveVoiceFakePool()
+        monkeypatch.setattr(
+            "app.routers.live_voice.primary_topic_id_for",
+            _fake_primary_topic_id_for,
+        )
+        monkeypatch.setattr(
+            "app.routers.live_voice.run_live_prep_agentic_job",
+            _should_not_run,
+        )
+        client = _client(monkeypatch, pool)
+
+        resp = client.post(
+            "/api/live/sessions",
+            json={
+                "bot_id": "tante_rosi",
+                "steering_text": "",
+                "skip_prep": True,
+            },
+        )
+
+        assert resp.status_code == 200, resp.text
+        data = resp.json()
+        assert data["status"] == "ready", data
+        assert data["prep_pending"] is False, data
+        session_id = UUID(data["session_id"])
+        assert pool._conversations[session_id]["status"] == "ready"
+
 
 class TestCardEndpoint:
     """GET /api/live/sessions/{id}/card returns correct states."""

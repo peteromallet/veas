@@ -94,7 +94,7 @@ to Railway/Datadog with the thresholds it returns under `thresholds`:
 | Provider | Var | Stub | Real |
 |---|---|---|---|
 | STT | `LIVE_VOICE_STT_PROVIDER` | `stub` | `whisper` (default if real `OPENAI_API_KEY`) or `openai_realtime` |
-| Prep | `LIVE_VOICE_PREP_PROVIDER` | `stub` | `anthropic` (default if real `ANTHROPIC_API_KEY`) |
+| Prep | `LIVE_VOICE_PREP_PROVIDER` | `stub` | `agentic` or unset (default async bot turn); `anthropic`/`deepseek` are legacy sync overrides |
 | Turn | `LIVE_VOICE_TURN_PROVIDER` | `stub` | `anthropic` (default if real `ANTHROPIC_API_KEY`) |
 | TTS | `LIVE_VOICE_TTS_PROVIDER` | `stub` | `elevenlabs` (default if real `ELEVENLABS_API_KEY`) |
 
