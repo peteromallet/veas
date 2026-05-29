@@ -87,20 +87,29 @@ class LiveVoiceFakePool:
             return self._conversations_table_exists
         raise AssertionError(f"unexpected fetchval: {compact}")
 
+    def _resolve_uuid(self, value: Any) -> Any:
+        """Coerce a string argument to UUID if it looks like one."""
+        if isinstance(value, str):
+            try:
+                return UUID(value)
+            except (ValueError, AttributeError):
+                pass
+        return value
+
     async def fetchrow(self, sql: str, *args: Any) -> dict[str, Any] | None:
         compact = " ".join(sql.split())
         # SELECT from mediator.conversations (used by card and retry endpoints)
         if compact.startswith("SELECT id, user_id, bot_id, mode, status, prep_summary"):
-            return self._conversations.get(args[0])
+            return self._conversations.get(self._resolve_uuid(args[0]))
         if compact.startswith("SELECT id, status FROM mediator.conversations WHERE id"):
-            conv = self._conversations.get(args[0])
+            conv = self._conversations.get(self._resolve_uuid(args[0]))
             if conv is None:
                 return None
             return {"id": conv["id"], "status": conv["status"]}
         # SELECT with user_id, bot_id, steering_text, topic_id, status,
         # session_fields (used by retry_live_prep).
         if compact.startswith("SELECT id, user_id, bot_id, steering_text, topic_id, status, session_fields"):
-            conv = self._conversations.get(args[0])
+            conv = self._conversations.get(self._resolve_uuid(args[0]))
             if conv is None:
                 return None
             return {
@@ -112,6 +121,29 @@ class LiveVoiceFakePool:
                 "status": conv["status"],
                 "session_fields": conv.get("session_fields", {}),
             }
+        # _require_ownership (HTTP): SELECT id, user_id, partner_user_id, status FROM mediator.conversations WHERE id
+        if compact.startswith("SELECT id, user_id, partner_user_id, status FROM mediator.conversations WHERE id"):
+            conv = self._conversations.get(self._resolve_uuid(args[0]))
+            if conv is None:
+                return None
+            return {
+                "id": conv["id"],
+                "user_id": conv.get("user_id"),
+                "partner_user_id": conv.get("partner_user_id", None),
+                "status": conv["status"],
+            }
+        # WS ownership check: SELECT user_id, partner_user_id FROM mediator.conversations WHERE id
+        if compact.startswith("SELECT user_id, partner_user_id FROM mediator.conversations WHERE id"):
+            conv = self._conversations.get(self._resolve_uuid(args[0]))
+            if conv is None:
+                return None
+            return {
+                "user_id": conv.get("user_id"),
+                "partner_user_id": conv.get("partner_user_id", None),
+            }
+        # get_session (legacy): SELECT * FROM mediator.conversations WHERE id
+        if compact.startswith("SELECT * FROM mediator.conversations WHERE id"):
+            return self._conversations.get(self._resolve_uuid(args[0]))
         # gather_prep_context: SELECT from users
         if compact.startswith("SELECT id, name, phone, timezone, style_notes, onboarding_state"):
             return {
@@ -134,8 +166,30 @@ class LiveVoiceFakePool:
 
     async def fetch(self, sql: str, *args: Any) -> list[dict[str, Any]]:
         compact = " ".join(sql.split())
+        # list_sessions: SELECT id, status, bot_id, prep_summary, steering_text, created_at, ... FROM mediator.conversations c WHERE (user_id = $1 OR partner_user_id = $1)
+        if compact.startswith("SELECT id, status, bot_id, prep_summary, steering_text, created_at"):
+            user_id = self._resolve_uuid(args[0]) if args else None
+            status_filter = args[1] if len(args) > 1 else None
+            results = []
+            for conv in self._conversations.values():
+                uid = conv.get("user_id")
+                pid = conv.get("partner_user_id")
+                if uid != user_id and pid != user_id:
+                    continue
+                if status_filter is not None and conv.get("status") != status_filter:
+                    continue
+                results.append({
+                    "id": conv["id"],
+                    "status": conv["status"],
+                    "bot_id": conv.get("bot_id", "unknown"),
+                    "prep_summary": conv.get("prep_summary"),
+                    "steering_text": conv.get("steering_text"),
+                    "created_at": conv.get("created_at"),
+                    "item_count": len(self._items.get(conv["id"], [])),
+                })
+            return sorted(results, key=lambda r: (r["created_at"] or ""), reverse=True)
         if "FROM mediator.conversation_items" in compact:
-            conv_id = args[0] if args else None
+            conv_id = self._resolve_uuid(args[0]) if args else None
             return self._items.get(conv_id, [])
         # gather_prep_context: SELECT from themes (id, slug, label)
         if "FROM themes" in compact and "slug = ANY" not in compact:
@@ -188,29 +242,31 @@ class LiveVoiceFakePool:
         ) or compact.startswith(
             "UPDATE mediator.conversations SET status = 'prepping' WHERE"
         ):
-            conv_id = args[0]
+            conv_id = self._resolve_uuid(args[0])
             if conv_id in self._conversations:
                 self._conversations[conv_id]["status"] = "preparing"
             return "UPDATE 1"
 
         if compact.startswith("UPDATE mediator.conversations SET status = 'ready'"):
-            conv_id = args[0]
+            conv_id = self._resolve_uuid(args[0])
             if conv_id in self._conversations:
                 self._conversations[conv_id]["status"] = "ready"
             return "UPDATE 1"
 
         if compact.startswith("UPDATE mediator.conversations SET status = 'prep_failed'"):
-            conv_id = args[0]
+            conv_id = self._resolve_uuid(args[0])
             if conv_id in self._conversations:
                 self._conversations[conv_id]["status"] = "prep_failed"
             return "UPDATE 1"
 
         # Generic UPDATE with SET ... WHERE id = $1 (multiple params)
         if compact.startswith("UPDATE mediator.conversations SET"):
-            # Try to find the id param
+            # Try to find the id param — arg can be UUID, UUID str, or other.
+            # Prefer the first arg that matches a known conversation.
             for i, arg in enumerate(args):
-                if isinstance(arg, UUID) and i > 0:
-                    conv_id = arg
+                maybe_uuid = self._resolve_uuid(arg)
+                if isinstance(maybe_uuid, UUID):
+                    conv_id = maybe_uuid
                     if conv_id in self._conversations:
                         # Parse SET clauses from compact string
                         if "status = " in compact:
@@ -224,7 +280,7 @@ class LiveVoiceFakePool:
                                 self._conversations[conv_id]["session_fields"]["retry_count"] = args[1] if len(args) > 1 else 1
                             else:
                                 self._conversations[conv_id]["session_fields"]["prep_error"] = "orphaned"
-                    return "UPDATE 1"
+                        return "UPDATE 1"
             return "UPDATE 1"
 
         # INSERT INTO mediator.bot_turns
@@ -234,7 +290,7 @@ class LiveVoiceFakePool:
         # INSERT INTO mediator.conversation_items
         if compact.startswith("INSERT INTO mediator.conversation_items"):
             # args: id, conversation_id, title, intent, ask, done_when, kind, priority, speaker_scope, theme_id, order_hint, coverage_evidence_required
-            conv_id = args[1] if len(args) > 1 else None
+            conv_id = self._resolve_uuid(args[1]) if len(args) > 1 else None
             item_id = args[0] if args else uuid4()
             if conv_id is not None:
                 self._items.setdefault(conv_id, []).append({

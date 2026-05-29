@@ -21,7 +21,7 @@ import os
 from typing import Any
 from uuid import UUID, uuid4
 
-from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from pydantic import BaseModel, Field
 
 from app.bots.registry import BOT_SPECS, _maybe_register_staging_bots, primary_topic_id_for
@@ -154,6 +154,51 @@ def _resolve_test_user_id() -> UUID:
         return _DEFAULT_TEST_USER_ID
 
 
+def get_current_user(request: Request) -> UUID:
+    """Return the caller's UUID from the Bearer JWT, or the dev placeholder.
+
+    When ``live_voice_auth_enabled`` is False (default) the function bypasses
+    token verification and returns the configured test user id.  When enabled,
+    the ``Authorization: Bearer <token>`` header is required; a missing header,
+    invalid signature, or non-UUID ``user_id`` claim all raise 401.
+    """
+    if not get_settings().live_voice_auth_enabled:
+        return _resolve_test_user_id()
+    auth_header = request.headers.get("Authorization", "")
+    if not auth_header.startswith("Bearer "):
+        raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
+    token = auth_header[len("Bearer "):]
+    try:
+        claims = live_jwt.verify(token)
+        return UUID(claims.user_id)
+    except (live_jwt.JWTError, ValueError):
+        raise HTTPException(status_code=401, detail="Invalid or expired token")
+
+
+async def _require_ownership(pool: Any, session_id: UUID, user_id: UUID) -> dict:
+    """Fetch a conversation row and verify that ``user_id`` is an owner.
+
+    Raises 404 if the row does not exist, 403 if the caller is neither the
+    primary user nor the partner.  Returns ``dict(row)`` on success.
+
+    Uses a targeted column SELECT (never SELECT *) and guards against NULL
+    ``partner_user_id`` before comparison.
+    """
+    row = await pool.fetchrow(
+        "SELECT id, user_id, partner_user_id, status FROM mediator.conversations WHERE id=$1",
+        session_id,
+    )
+    if row is None:
+        raise HTTPException(status_code=404, detail="Session not found")
+    row_dict = dict(row)
+    is_owner = row_dict["user_id"] == user_id or (
+        row_dict["partner_user_id"] is not None and row_dict["partner_user_id"] == user_id
+    )
+    if not is_owner:
+        raise HTTPException(status_code=403, detail="Not an owner of this session")
+    return row_dict
+
+
 async def _conversations_table_exists(pool: Any) -> bool:
     """Check whether ``mediator.conversations`` is present.
 
@@ -273,7 +318,10 @@ async def _resolve_live_partner_user_id(
 
 
 @router.get("/api/live/personas")
-async def list_personas(pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def list_personas(
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return personas the caller may steer.
 
     Scoped to the caller's rows in ``bot_bindings`` (joined through
@@ -282,7 +330,6 @@ async def list_personas(pool: Any = Depends(get_pool)) -> dict[str, Any]:
     with ``scoped=false`` so the frontend can surface a "dev mode" hint.
     """
     _maybe_register_staging_bots()
-    user_id = _resolve_test_user_id()  # replaced by auth.uid() when OAuth lands
 
     bound = await _bound_bot_ids(pool, user_id)
     if bound:
@@ -319,10 +366,66 @@ async def public_config() -> dict[str, Any]:
     }
 
 
+@router.get("/api/live/sessions")
+async def list_sessions(
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+    status: str | None = Query(None),
+) -> dict[str, Any]:
+    """Return sessions where the caller is owner or partner, newest first."""
+    if not await _conversations_table_exists(pool):
+        raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+
+    if status is not None:
+        rows = await pool.fetch(
+            """
+            SELECT id, status, bot_id, prep_summary, steering_text, created_at,
+                   (SELECT COUNT(*) FROM mediator.conversation_items ci
+                    WHERE ci.conversation_id = c.id) AS item_count
+            FROM mediator.conversations c
+            WHERE (user_id = $1 OR partner_user_id = $1)
+              AND status = $2
+            ORDER BY created_at DESC
+            """,
+            user_id,
+            status,
+        )
+    else:
+        rows = await pool.fetch(
+            """
+            SELECT id, status, bot_id, prep_summary, steering_text, created_at,
+                   (SELECT COUNT(*) FROM mediator.conversation_items ci
+                    WHERE ci.conversation_id = c.id) AS item_count
+            FROM mediator.conversations c
+            WHERE (user_id = $1 OR partner_user_id = $1)
+            ORDER BY created_at DESC
+            """,
+            user_id,
+        )
+
+    sessions = []
+    for row in rows:
+        bot_spec = BOT_SPECS.get(row["bot_id"])
+        topic_label = bot_spec.display_name if bot_spec else row["bot_id"]
+        sessions.append({
+            "id": str(row["id"]),
+            "status": canonicalize_status(row["status"]),
+            "bot_id": row["bot_id"],
+            "topic_label": topic_label,
+            "prep_summary": row["prep_summary"],
+            "steering_text": row["steering_text"],
+            "item_count": int(row["item_count"]),
+            "created_at": row["created_at"],
+        })
+
+    return {"sessions": sessions}
+
+
 @router.post("/api/live/sessions", response_model=CreateSessionResponse)
 async def create_session(
     body: CreateSessionRequest,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> CreateSessionResponse:
     """Create a new live-voice conversation + run prep (Sprint 2).
 
@@ -351,7 +454,6 @@ async def create_session(
         )
 
     bot_spec = BOT_SPECS[body.bot_id]
-    user_id = _resolve_test_user_id()  # TODO: replace with auth.uid() once magic-link lands.
     session_id = uuid4()
     mode = "steered" if (body.steering_text or "").strip() else "open"
     steering = body.steering_text
@@ -475,7 +577,11 @@ async def create_session(
 
 
 @router.get("/api/live/sessions/{session_id}/card")
-async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def get_session_card(
+    session_id: UUID,
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return the session card payload: prep_summary + items grouped by theme.
 
     The session card is what the user sees before pressing Start; the raw
@@ -484,6 +590,8 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
 
     conv = await pool.fetchrow(
         """
@@ -581,6 +689,7 @@ async def get_session_card(session_id: UUID, pool: Any = Depends(get_pool)) -> d
 async def retry_prep(
     session_id: UUID,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Retry a failed live-prep session.
 
@@ -589,6 +698,8 @@ async def retry_prep(
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
 
     row = await pool.fetchrow(
         "SELECT id, status FROM mediator.conversations WHERE id = $1",
@@ -644,6 +755,7 @@ async def retry_prep(
 async def retry_debrief(
     session_id: UUID,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Retry a failed live-debrief session.
 
@@ -660,6 +772,8 @@ async def retry_debrief(
     settings = get_settings()
     if not settings.live_debrief_agentic_enabled:
         raise HTTPException(status_code=403, detail="live_debrief_agentic not enabled")
+    if settings.live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
 
     row = await pool.fetchrow(
         "SELECT id, status FROM mediator.conversations WHERE id = $1",
@@ -723,6 +837,7 @@ async def post_consent(
     session_id: UUID,
     body: ConsentBody,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Record the pre-mic consent decision.
 
@@ -733,6 +848,8 @@ async def post_consent(
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
     if body.kind not in ("solo", "partner_present"):
         raise HTTPException(status_code=400, detail="kind must be 'solo' or 'partner_present'")
     if body.kind == "partner_present" and not (body.partner_label or "").strip():
@@ -784,7 +901,11 @@ async def post_consent(
 
 
 @router.post("/api/live/sessions/{session_id}/end")
-async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def end_session(
+    session_id: UUID,
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Flip the session to review_pending (or debriefing) and synthesize review.
 
     When ``live_debrief_agentic_enabled`` is True, the session transitions to
@@ -793,6 +914,8 @@ async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[s
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
 
     new_status = await finalize_session(pool, session_id)
     review = await synthesize_review(pool, session_id)
@@ -858,7 +981,11 @@ async def end_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[s
 
 
 @router.get("/api/live/sessions/{session_id}/review")
-async def get_review(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def get_review(
+    session_id: UUID,
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return session review, preferring debrief artifact when available.
 
     Sprint 5 (T5): When a non-deleted ``live_debrief`` artifact exists (highest
@@ -872,6 +999,8 @@ async def get_review(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[st
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
 
     # ── 1. Load the conversation row for status + metadata ───────────────
     conv = await pool.fetchrow(
@@ -983,9 +1112,12 @@ async def save_review_endpoint(
     session_id: UUID,
     body: SaveReviewBody,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
     counts = await save_review(
         pool,
         session_id,
@@ -1439,7 +1571,12 @@ async def replay_turn(
 
 
 @router.get("/api/live/sessions/{session_id}/tts/{turn_id}")
-async def stream_tts(session_id: UUID, turn_id: UUID, pool: Any = Depends(get_pool)):
+async def stream_tts(
+    session_id: UUID,
+    turn_id: UUID,
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+):
     """Stream mp3 TTS audio for a previously emitted bot turn.
 
     The bot_turn WS event includes `tts_url` when a TTS provider is
@@ -1452,6 +1589,8 @@ async def stream_tts(session_id: UUID, turn_id: UUID, pool: Any = Depends(get_po
 
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
     turn = await pool.fetchrow(
         """
         SELECT text FROM mediator.transcript_turns
@@ -1482,13 +1621,19 @@ async def stream_tts(session_id: UUID, turn_id: UUID, pool: Any = Depends(get_po
 
 
 @router.get("/api/live/sessions/{session_id}")
-async def get_session(session_id: UUID, pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def get_session(
+    session_id: UUID,
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Return a single conversation row (or 404)."""
     if not await _conversations_table_exists(pool):
         raise HTTPException(
             status_code=503,
             detail="live conversations not yet migrated",
         )
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
     try:
         row = await pool.fetchrow(
             "SELECT * FROM mediator.conversations WHERE id = $1",
@@ -1527,7 +1672,7 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
     # tokens; when unset (the local dev default) we still verify tokens
     # when present but allow tokenless connections so the dev flow keeps
     # working until the frontend wires the magic-link DM path.
-    require_auth = (os.environ.get("LIVE_VOICE_WS_AUTH_REQUIRED") or "").strip() == "1"
+    require_auth = get_settings().live_voice_auth_enabled or (os.environ.get("LIVE_VOICE_WS_AUTH_REQUIRED") or "").strip() == "1"
     token = websocket.query_params.get("token") or ""
     authed_user_id: str | None = None
     if token:
@@ -1578,19 +1723,60 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
 
     await websocket.accept()
     try:
+        pool = websocket.app.state.pool
+
+        # Ownership check: verify the authed user owns or is a partner of this
+        # conversation before touching any state.  The JWT authed_user_id is a
+        # str; asyncpg returns uuid.UUID objects — must coerce to UUID first or
+        # the comparison always returns NotImplemented (silently rejects owners).
+        ws_user_uuid: UUID | None = None
+        if authed_user_id is not None:
+            ws_user_uuid = UUID(authed_user_id)
+            ownership_row = await pool.fetchrow(
+                "SELECT user_id, partner_user_id FROM mediator.conversations WHERE id=$1::uuid",
+                session_id,
+            )
+            if (
+                ownership_row is None
+                or (
+                    ownership_row["user_id"] != ws_user_uuid
+                    and (
+                        ownership_row["partner_user_id"] is None
+                        or ownership_row["partner_user_id"] != ws_user_uuid
+                    )
+                )
+            ):
+                await websocket.close(code=4003)
+                return
+
         # ── Transition session from 'ready' → 'active' (canonical) ──────────
         # This replaces any legacy 'live' status and stamps started_at.
-        pool = websocket.app.state.pool
-        await pool.execute(
-            """
-            UPDATE mediator.conversations
-            SET status = 'active',
-                started_at = COALESCE(started_at, now())
-            WHERE id = $1::uuid
-              AND status IN ('ready', 'live')
-            """,
-            session_id,
-        )
+        # When a user is authenticated, scope the UPDATE to rows they own so an
+        # authed caller cannot flip another user's session to 'active'.
+        if ws_user_uuid is not None:
+            await pool.execute(
+                """
+                UPDATE mediator.conversations
+                SET status = 'active',
+                    started_at = COALESCE(started_at, now())
+                WHERE id = $1::uuid
+                  AND status IN ('ready', 'live')
+                  AND (user_id = $2 OR partner_user_id = $2)
+                """,
+                session_id,
+                ws_user_uuid,
+            )
+        else:
+            await pool.execute(
+                """
+                UPDATE mediator.conversations
+                SET status = 'active',
+                    started_at = COALESCE(started_at, now())
+                WHERE id = $1::uuid
+                  AND status IN ('ready', 'live')
+                """,
+                session_id,
+            )
         logger.info(
             "live_voice: WS start — set status=active for session_id=%s",
             session_id,

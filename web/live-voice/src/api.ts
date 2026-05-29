@@ -60,42 +60,105 @@ async function handle<T>(res: Response): Promise<T> {
   return (await res.json()) as T;
 }
 
+// ── Auth helpers ─────────────────────────────────────────────────────────────
+
+/**
+ * Read the magic-link JWT from sessionStorage.
+ *
+ * Stored under ``veas.live.token`` by ReviewScreen (or future login flow).
+ * Returns ``null`` when no token is present — callers using ``authFetch``
+ * will then make unauthenticated requests (dev fallback).
+ */
+export function getAuthToken(): string | null {
+  try {
+    if (typeof window !== "undefined" && window.sessionStorage) {
+      return window.sessionStorage.getItem("veas.live.token") || null;
+    }
+  } catch {
+    // sessionStorage unavailable (SSR / sandbox).
+  }
+  return null;
+}
+
+/**
+ * Thin wrapper around ``fetch`` that injects the ``Authorization: Bearer``
+ * header when ``getAuthToken()`` returns a token, then delegates to ``handle``.
+ *
+ * All live-voice API calls route through this function so the backend can
+ * enforce conversation ownership when ``LIVE_VOICE_AUTH_ENABLED`` is true.
+ */
+export async function authFetch<T>(
+  url: string,
+  opts?: RequestInit,
+): Promise<T> {
+  const token = getAuthToken();
+  const headers = new Headers(opts?.headers);
+  if (token) {
+    headers.set("Authorization", `Bearer ${token}`);
+  }
+  if (!headers.has("Accept")) {
+    headers.set("Accept", "application/json");
+  }
+  const res = await fetch(url, { ...opts, headers });
+  return handle<T>(res);
+}
+
+// ── Personas ─────────────────────────────────────────────────────────────────
+
 export async function fetchPersonas(): Promise<Persona[]> {
-  const res = await fetch("/api/live/personas", {
-    headers: { Accept: "application/json" },
-  });
-  const data = await handle<{ personas?: Persona[] } | Persona[]>(res);
+  const data = await authFetch<{ personas?: Persona[] } | Persona[]>(
+    "/api/live/personas",
+  );
   if (Array.isArray(data)) return data;
   return data.personas ?? [];
 }
 
+// ── Sessions ─────────────────────────────────────────────────────────────────
+
 export async function createSession(
   req: CreateSessionRequest,
 ): Promise<CreateSessionResponse> {
-  const res = await fetch("/api/live/sessions", {
+  return authFetch<CreateSessionResponse>("/api/live/sessions", {
     method: "POST",
-    headers: {
-      "Content-Type": "application/json",
-      Accept: "application/json",
-    },
+    headers: { "Content-Type": "application/json" },
     body: JSON.stringify(req),
   });
-  return handle<CreateSessionResponse>(res);
 }
+
+export interface SessionSummary {
+  id: string;
+  status: string;
+  bot_id: string;
+  topic_label: string;
+  prep_summary: string | null;
+  steering_text: string | null;
+  item_count: number;
+  created_at: string;
+}
+
+/**
+ * Fetch the caller's sessions (own + partner), newest first.
+ *
+ * Optionally filtered by ``status`` (canonical or legacy — the backend
+ * normalises internally).
+ */
+export async function fetchSessions(
+  status?: string,
+): Promise<SessionSummary[]> {
+  let url = "/api/live/sessions";
+  if (status) {
+    url += `?status=${encodeURIComponent(status)}`;
+  }
+  const data = await authFetch<{ sessions: SessionSummary[] }>(url);
+  return data.sessions ?? [];
+}
+
+// ── WebSocket URL ────────────────────────────────────────────────────────────
 
 export function liveSocketUrl(sessionId: string): string {
   const proto = window.location.protocol === "https:" ? "wss:" : "ws:";
-  // Magic-link JWT (set by ReviewScreen.tsx / future login) is stored on
-  // sessionStorage under "veas.live.token". When present, append it as a
-  // query param so the WS handler can authenticate the connection.
-  let token = "";
-  try {
-    if (typeof window !== "undefined" && window.sessionStorage) {
-      token = window.sessionStorage.getItem("veas.live.token") || "";
-    }
-  } catch {
-    token = "";
-  }
+  // Use getAuthToken so the WS handler can authenticate the connection.
+  const token = getAuthToken();
   const tokenSuffix = token ? `?token=${encodeURIComponent(token)}` : "";
   return `${proto}//${window.location.host}/ws/live/${encodeURIComponent(sessionId)}${tokenSuffix}`;
 }
@@ -209,11 +272,9 @@ export interface SessionCardPayload {
 export async function fetchSessionCard(
   sessionId: string,
 ): Promise<SessionCardPayload> {
-  const res = await fetch(
+  return authFetch<SessionCardPayload>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/card`,
-    { headers: { Accept: "application/json" } },
   );
-  return handle<SessionCardPayload>(res);
 }
 
 export interface ReviewItem {
@@ -263,29 +324,21 @@ export async function postConsent(
   sessionId: string,
   body: { kind: "solo" | "partner_present"; partner_label?: string },
 ): Promise<{ ok: boolean }> {
-  const res = await fetch(
+  return authFetch<{ ok: boolean }>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/consent`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
   );
-  return handle<{ ok: boolean }>(res);
 }
 
 export async function endSession(sessionId: string): Promise<SessionReview> {
-  const res = await fetch(
+  return authFetch<SessionReview>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/end`,
-    {
-      method: "POST",
-      headers: { Accept: "application/json" },
-    },
+    { method: "POST" },
   );
-  return handle<SessionReview>(res);
 }
 
 export async function saveReview(
@@ -295,18 +348,14 @@ export async function saveReview(
     keep_notes: { note_id: string; text: string }[];
   },
 ): Promise<{ ok: boolean; status: string }> {
-  const res = await fetch(
+  return authFetch<{ ok: boolean; status: string }>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/review/save`,
     {
       method: "POST",
-      headers: {
-        "Content-Type": "application/json",
-        Accept: "application/json",
-      },
+      headers: { "Content-Type": "application/json" },
       body: JSON.stringify(body),
     },
   );
-  return handle<{ ok: boolean; status: string }>(res);
 }
 
 // ── Retry & review helpers (Sprint 5) ──────────────────────────────────────
@@ -324,14 +373,10 @@ export interface RetryPrepResponse {
 export async function retryPrep(
   sessionId: string,
 ): Promise<RetryPrepResponse> {
-  const res = await fetch(
+  return authFetch<RetryPrepResponse>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/prep/retry`,
-    {
-      method: "POST",
-      headers: { Accept: "application/json" },
-    },
+    { method: "POST" },
   );
-  return handle<RetryPrepResponse>(res);
 }
 
 export interface RetryDebriefResponse {
@@ -347,14 +392,10 @@ export interface RetryDebriefResponse {
 export async function retryDebrief(
   sessionId: string,
 ): Promise<RetryDebriefResponse> {
-  const res = await fetch(
+  return authFetch<RetryDebriefResponse>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/debrief/retry`,
-    {
-      method: "POST",
-      headers: { Accept: "application/json" },
-    },
+    { method: "POST" },
   );
-  return handle<RetryDebriefResponse>(res);
 }
 
 /**
@@ -370,9 +411,7 @@ export async function retryDebrief(
 export async function fetchReview(
   sessionId: string,
 ): Promise<SessionReview> {
-  const res = await fetch(
+  return authFetch<SessionReview>(
     `/api/live/sessions/${encodeURIComponent(sessionId)}/review`,
-    { headers: { Accept: "application/json" } },
   );
-  return handle<SessionReview>(res);
 }

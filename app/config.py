@@ -61,6 +61,7 @@ class Settings(BaseSettings):
     live_voice_test_user_id: str = "00000000-0000-0000-0000-000000000001"
     live_voice_whisper_model: str = ""
     live_voice_whisper_language: str = "en"
+    live_voice_auth_enabled: bool = False
     consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
     consult_max_tool_iterations: int = Field(default=3, ge=0, le=10)
     nonchat_default_max_tool_iterations: int = Field(default=100, ge=0, le=2000)

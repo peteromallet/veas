@@ -4,6 +4,7 @@ import {
   postConsent,
   endSession,
   fetchReview,
+  getAuthToken,
   type Persona,
   type SessionReview,
 } from "../api";
@@ -242,7 +243,13 @@ export function LiveScreen({ persona, sessionId, onEnd, onRetryDebrief }: Props)
           if (parsed.tts_url) {
             void (async () => {
               try {
-                const res = await fetch(parsed.tts_url);
+                // Use getAuthToken to inject Authorization header for TTS
+                // requests (the authFetch wrapper expects JSON responses, but
+                // TTS returns audio/mpeg blobs — build the fetch manually).
+                const ttoken = getAuthToken();
+                const theaders = new Headers();
+                if (ttoken) theaders.set("Authorization", `Bearer ${ttoken}`);
+                const res = await fetch(parsed.tts_url, { headers: theaders });
                 if (!res.ok || (res.headers.get("X-TTS-Provider") || "") === "stub") {
                   throw new Error("tts unavailable");
                 }
