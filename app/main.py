@@ -266,6 +266,18 @@ def _install_bot_coalescer(
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     async with db_lifespan(app):
         settings = get_settings()
+        # ── Live-voice prod auth guard ────────────────────────────────────
+        # Ownership / operator enforcement on /api/live hinges on
+        # ``live_voice_auth_enabled``; when it is off the router silently
+        # serves transcripts and ops data without auth.  A production deploy
+        # that forgets to set the flag would re-open the holes this fix
+        # closed, so refuse to boot rather than run wide-open.
+        if settings.is_production and not settings.live_voice_auth_enabled:
+            raise RuntimeError(
+                "live_voice_auth_enabled must be True in production "
+                f"(env_name={settings.env_name!r}); refusing to start with "
+                "live-voice auth disabled."
+            )
         _log_startup_diagnostics()
         pool = app.state.pool
         if settings.messaging_provider.strip().lower() == "discord":

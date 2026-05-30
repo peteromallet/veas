@@ -199,6 +199,26 @@ async def _require_ownership(pool: Any, session_id: UUID, user_id: UUID) -> dict
     return row_dict
 
 
+def _require_operator(user_id: UUID) -> None:
+    """Authorize an operator-only (``/api/live/ops/*``) request.
+
+    These endpoints leak aggregate ops data and full session transcripts, so
+    they are gated behind an explicit operator allow-list
+    (``live_voice_ops_user_ids``) on top of ``get_current_user``.
+
+    Behaviour mirrors the ownership gate's flag-aware pattern: when
+    ``live_voice_auth_enabled`` is False (local dev / tests) the check is a
+    no-op so the debug tooling keeps working.  When auth is enabled, the
+    caller's id MUST appear in the configured allow-list, otherwise 403.  An
+    empty allow-list therefore fails closed (no operator ⇒ nobody allowed).
+    """
+    if not get_settings().live_voice_auth_enabled:
+        return
+    allowed = get_settings().live_voice_ops_user_id_set
+    if str(user_id) not in allowed:
+        raise HTTPException(status_code=403, detail="Operator access required")
+
+
 async def _conversations_table_exists(pool: Any) -> bool:
     """Check whether ``mediator.conversations`` is present.
 
@@ -1128,7 +1148,10 @@ async def save_review_endpoint(
 
 
 @router.get("/api/live/ops/metrics")
-async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
+async def ops_metrics(
+    pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
+) -> dict[str, Any]:
     """Operator-facing metrics snapshot the briefing's alarms can scrape.
 
     Returns:
@@ -1142,6 +1165,7 @@ async def ops_metrics(pool: Any = Depends(get_pool)) -> dict[str, Any]:
       * ``error_rate_5m`` — 5xx as fraction of WS bot_turn attempts
       * ``ws_disconnect_rate_5m`` — unexpected disconnects as fraction of opens
     """
+    _require_operator(user_id)
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
     latency_rows = await pool.fetch(
@@ -1257,6 +1281,7 @@ def _classify_failure(failure_reason: str | None) -> str:
 async def ops_debug_session(
     session_id: UUID,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Operator debug endpoint — returns full session introspection.
 
@@ -1265,8 +1290,10 @@ async def ops_debug_session(
     markers, provenance links with durable write counts, and extracted
     failure classes.
 
-    Internal-only; no auth changes.
+    Operator-only: requires an authenticated caller whose id is in the
+    ``live_voice_ops_user_ids`` allow-list (no-op when auth is disabled).
     """
+    _require_operator(user_id)
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
 
@@ -1531,6 +1558,7 @@ async def replay_turn(
     session_id: UUID,
     turn_id: UUID,
     pool: Any = Depends(get_pool),
+    user_id: UUID = Depends(get_current_user),
 ) -> dict[str, Any]:
     """Re-run the turn caller against the original user input.
 
@@ -1543,6 +1571,8 @@ async def replay_turn(
     """
     if not await _conversations_table_exists(pool):
         raise HTTPException(status_code=503, detail="live conversations not yet migrated")
+    if get_settings().live_voice_auth_enabled:
+        await _require_ownership(pool, session_id, user_id)
     user_turn = await pool.fetchrow(
         """
         SELECT text FROM mediator.transcript_turns

@@ -62,6 +62,13 @@ class Settings(BaseSettings):
     live_voice_whisper_model: str = ""
     live_voice_whisper_language: str = "en"
     live_voice_auth_enabled: bool = False
+    # Comma-separated allow-list of operator user-ids (UUIDs) permitted to hit
+    # the ``/api/live/ops/*`` debug / metrics endpoints.  These leak aggregate
+    # ops data and full session transcripts, so they require BOTH a valid
+    # authenticated caller (``get_current_user``) AND membership in this list.
+    # Empty (the default) means no operator is configured, which — when auth is
+    # enabled — denies every caller (fail-closed).
+    live_voice_ops_user_ids: str = ""
     consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
     consult_max_tool_iterations: int = Field(default=3, ge=0, le=10)
     nonchat_default_max_tool_iterations: int = Field(default=100, ge=0, le=2000)
@@ -217,6 +224,46 @@ class Settings(BaseSettings):
                 bot_id = m.group(1).lower()
                 result[bot_id] = value
         return result
+
+    # Non-production environment identifiers.  Anything outside this set is
+    # treated as production by ``is_production`` (fail-safe: an unrecognised
+    # env name is assumed to be prod so the boot guards engage).
+    _NON_PROD_ENV_NAMES: frozenset[str] = frozenset(
+        {"local", "test", "tests", "staging", "stage", "dev", "development", "ci"}
+    )
+
+    @property
+    def is_production(self) -> bool:
+        """True when the configured environment looks like production.
+
+        Production is inferred from ``env_name`` (the repo's existing
+        environment convention).  Recognised non-prod names are local / test /
+        staging / dev / ci; anything else — including the empty string — is
+        treated as production so security guards fail safe.
+        """
+        return self.env_name.strip().lower() not in self._NON_PROD_ENV_NAMES
+
+    @cached_property
+    def live_voice_ops_user_id_set(self) -> frozenset[str]:
+        """Parsed allow-list of operator user-ids (lowercased UUID strings).
+
+        Splits ``live_voice_ops_user_ids`` on commas, strips whitespace, drops
+        empties, and normalises each entry to a canonical lowercase UUID string
+        so membership checks are case-insensitive.  Entries that are not valid
+        UUIDs are dropped (and would never match a real caller id).
+        """
+        from uuid import UUID as _UUID
+
+        result: set[str] = set()
+        for raw in self.live_voice_ops_user_ids.split(","):
+            candidate = raw.strip()
+            if not candidate:
+                continue
+            try:
+                result.add(str(_UUID(candidate)))
+            except ValueError:
+                continue
+        return frozenset(result)
 
     @model_validator(mode="after")
     def default_consult_model(self) -> "Settings":
