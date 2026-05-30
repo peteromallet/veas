@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -23,6 +24,8 @@ from eval.retrieval.adapters import IlikeBaselineRetriever, Retriever, StubSeman
 from eval.retrieval.loader import load_corpus, load_golden_set
 from eval.retrieval.metrics import (
     aggregate,
+    aggregate_by_difficulty,
+    aggregate_by_fairness,
     aggregate_by_query_type,
     recall_at_k,
     reciprocal_rank,
@@ -43,6 +46,8 @@ class EvalReport(BaseModel):
     golden_set_path: str
     overall: dict[str, float | int]
     by_query_type: dict[str, dict[str, float | int]]
+    by_fairness: dict[str, dict[str, float | int]] | None = None
+    by_difficulty: dict[str, dict[str, float | int]] | None = None
     per_case: list[dict[str, Any]]
     generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
 
@@ -83,6 +88,7 @@ def run_eval(
             thread_id=case.thread_id,
             topic_id=case.topic_id,
             limit=limit,
+            **(case.extra_scope or {}),
         )
 
         case_result: dict[str, Any] = {
@@ -90,6 +96,8 @@ def run_eval(
             "query": case.query,
             "query_type": case.query_type,
             "scope": case.scope,
+            "fairness": case.fairness or "unlabeled",
+            "difficulty": case.difficulty or "unlabeled",
             "expected_count": len(case.expected_message_ids),
             "retrieved_count": len(ranked_ids),
             "ranked_ids": ranked_ids,
@@ -112,6 +120,8 @@ def run_eval(
     if ks and per_case_results:
         overall = aggregate(per_case_results)
         by_query_type = aggregate_by_query_type(per_case_results)
+        by_fairness = aggregate_by_fairness(per_case_results) or None
+        by_difficulty = aggregate_by_difficulty(per_case_results) or None
     else:
         overall = {
             "recall@1": 0.0,
@@ -121,6 +131,8 @@ def run_eval(
             "n": len(golden_set.cases),
         }
         by_query_type = {}
+        by_fairness = None
+        by_difficulty = None
 
     return EvalReport(
         adapter_name=getattr(retriever, "__class__", type(retriever)).__name__,
@@ -128,6 +140,8 @@ def run_eval(
         golden_set_path="",  # Filled by CLI wrapper or caller
         overall=overall,
         by_query_type=by_query_type,
+        by_fairness=by_fairness,
+        by_difficulty=by_difficulty,
         per_case=per_case_results,
     )
 
@@ -229,6 +243,36 @@ def write_markdown_report(report: EvalReport, path: Path) -> None:
                     )
                 lines.append(f"")
 
+    # Fairness breakdown table (only when non-None and non-empty).
+    if report.by_fairness:
+        lines.append(f"## Per Fairness Metrics")
+        lines.append(f"")
+        for fl in sorted(report.by_fairness.keys()):
+            fl_data = report.by_fairness[fl]
+            lines.append(f"### {fl}")
+            lines.append(f"")
+            lines.append(f"| Metric    | Value |")
+            lines.append(f"|-----------|-------|")
+            for mkey in sorted(k for k in fl_data if k != "n"):
+                lines.append(f"| {mkey} | {fl_data[mkey]:.4f} |")
+            lines.append(f"| n         | {fl_data.get('n', 0)} |")
+            lines.append(f"")
+
+    # Difficulty breakdown table (only when non-None and non-empty).
+    if report.by_difficulty:
+        lines.append(f"## Per Difficulty Metrics")
+        lines.append(f"")
+        for dl in sorted(report.by_difficulty.keys()):
+            dl_data = report.by_difficulty[dl]
+            lines.append(f"### {dl}")
+            lines.append(f"")
+            lines.append(f"| Metric    | Value |")
+            lines.append(f"|-----------|-------|")
+            for mkey in sorted(k for k in dl_data if k != "n"):
+                lines.append(f"| {mkey} | {dl_data[mkey]:.4f} |")
+            lines.append(f"| n         | {dl_data.get('n', 0)} |")
+            lines.append(f"")
+
     path.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -243,7 +287,7 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument(
         "--adapter",
-        choices=["baseline", "stub", "semantic", "hybrid"],
+        choices=["baseline", "stub", "semantic", "hybrid", "db"],
         required=True,
         help="Retriever adapter to evaluate.",
     )
@@ -310,6 +354,14 @@ def main(argv: list[str] | None = None) -> EvalReport:
         from eval.retrieval.adapters import HybridRetriever
 
         retriever = HybridRetriever(corpus)
+    elif adapter_name == "db":
+        from eval.retrieval.adapters import DbBackedRetriever
+
+        try:
+            retriever = DbBackedRetriever(corpus)
+        except ValueError as e:
+            print(f"Error: {e}", file=sys.stderr)
+            sys.exit(1)
     else:
         raise ValueError(f"Unknown adapter: {adapter_name}")
 

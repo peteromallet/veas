@@ -514,8 +514,34 @@ thread(
 
 
 # ---------------------------------------------------------------------------
+# Nav anchor helpers
+# ---------------------------------------------------------------------------
+
+
+def _nav_anchor_positions(n: int) -> tuple[int, int, int]:
+    """Return (start_pos, mid_pos, end_pos) for nav anchor insertion.
+
+    Positions are insertion points: the anchor is emitted before the message
+    at that index.  Guarantees three distinct positions within [0, n].
+    """
+    if n < 3:
+        # Degenerate thread: emit all anchors after the last real message.
+        return (n, n, n)
+    start = 1  # after first real message
+    mid = max(start + 1, int(n * 0.30))
+    end = n - 1  # before last message (penultimate insertion point)
+    # Ensure distinct.
+    if mid >= end:
+        mid = max(start + 1, end - 1)
+    if mid <= start:
+        mid = start + 1
+    return (start, mid, end)
+
+
+# ---------------------------------------------------------------------------
 # Emit corpus
 # ---------------------------------------------------------------------------
+
 
 def build_corpus():
     messages = []
@@ -526,7 +552,45 @@ def build_corpus():
     tick = 0
     for th in THREADS:
         s1, s2 = th["dyad"]
+        n_msgs = len(th["msgs"])
+        start_pos, mid_pos, end_pos = _nav_anchor_positions(n_msgs)
+        nav_anchors: dict[int, dict[str, str]] = {
+            start_pos: {
+                "id": f"nav_{th['thread_id']}_start",
+                "content": f"[NAV_ANCHOR: {th['thread_id']} start]",
+            },
+            mid_pos: {
+                "id": f"nav_{th['thread_id']}_mid",
+                "content": f"[NAV_ANCHOR: {th['thread_id']} midpoint]",
+            },
+            end_pos: {
+                "id": f"nav_{th['thread_id']}_end",
+                "content": f"[NAV_ANCHOR: {th['thread_id']} recent_end]",
+            },
+        }
         for i, m in enumerate(th["msgs"]):
+            # Emit nav anchor before the real message if we're at an anchor
+            # position.  Use a descriptive id (nav_*) so real message ids
+            # (m001..) are preserved for golden-case expected_ids.
+            if i in nav_anchors:
+                a = nav_anchors[i]
+                # Interpolate tick halfway between the previous real message
+                # and this one so the anchor slots chronologically.
+                anchor_tick = tick + 0.5
+                rec = {
+                    "id": a["id"],
+                    "thread_id": th["thread_id"],
+                    "topic_id": th["topic_id"],
+                    "sender": s1,
+                    "recipient": s2,
+                    "sent_at": (
+                        base + timedelta(minutes=anchor_tick)
+                    ).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "content": a["content"],
+                }
+                messages.append(rec)
+                by_id[a["id"]] = rec
+
             if isinstance(m, tuple):
                 content, media = m
             else:
@@ -535,8 +599,8 @@ def build_corpus():
             mid = f"m{counter:03d}"
             sender = s1 if i % 2 == 0 else s2
             recipient = s2 if i % 2 == 0 else s1
-            sent_at = base + timedelta(minutes=tick)
             tick += 1
+            sent_at = base + timedelta(minutes=tick)
             rec = {
                 "id": mid,
                 "thread_id": th["thread_id"],
@@ -569,37 +633,51 @@ def build_corpus():
 CASES: list[dict] = [
     # ===================== VERBATIM_QUOTE (exact substring) =================
     dict(id="GC01", query="I told you so", expected=["m013"], scope="all",
-         qt="verbatim_quote", note="Exact terse reply."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Exact terse reply."),
     dict(id="GC02", query="fine.", expected=["m007"], scope="all",
-         qt="verbatim_quote", note="One-word reply, exact match."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="One-word reply, exact match."),
     dict(id="GC03", query="osso buco", expected=["m081", "m087", "m090", "m091"], scope="all",
-         qt="verbatim_quote", note="Substring across dinner thread + media menu (m090)."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Substring across dinner thread + media menu (m090)."),
     dict(id="GC04", query="Blue Ridge", expected=["m061", "m069", "m073", "m086", "m087", "m077"],
-         scope="all", qt="verbatim_quote", note="Appears in hike+dinner threads; m077 media."),
+         scope="all", qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Appears in hike+dinner threads; m077 media."),
     dict(id="GC05", query="idempotency key", expected=["m021", "m025"], scope="all",
-         qt="verbatim_quote", note="Near-duplicate Nexus payment-bug pair."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Near-duplicate Nexus payment-bug pair."),
     dict(id="GC06", query="rate limiting", expected=["m010", "m029"], scope="thread",
          thread="thread_nexus_kickoff",
          note="Thread-scoped: only m010 is in kickoff; m029 in bugs is scoped out.",
-         qt="verbatim_quote", expected_in_scope=["m010"]),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         expected_in_scope=["m010"]),
     dict(id="GC07", query="httpOnly cookies", expected=["m213", "m218"], scope="all",
-         qt="verbatim_quote", note="Security thread exact phrase."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Security thread exact phrase."),
     dict(id="GC08", query="worker pool", expected=["m050", "m052", "m054", "m058"], scope="all",
-         qt="verbatim_quote", note="Atlas incident; m058 in media summary too."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Atlas incident; m058 in media summary too."),
     dict(id="GC09", query="osso buco", expected=["m090"], scope="thread",
          thread="thread_weekend_dinner",
-         qt="verbatim_quote", note="Scoped to dinner thread; media menu match."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Scoped to dinner thread; media menu match."),
     dict(id="GC10", query="kitchen faucet", expected=["m133", "m142"], scope="all",
-         qt="verbatim_quote", note="Repairs thread + media photo (m142); bathroom faucet m144 is distractor."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Repairs thread + media photo (m142); bathroom faucet m144 is distractor."),
     dict(id="GC11", query="half marathon", expected=["m190", "m191"], scope="all",
-         qt="verbatim_quote", note="Fitness running thread."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Fitness running thread."),
     dict(id="GC12", query="Lisbon flights", expected=["m145"], scope="all",
-         qt="verbatim_quote", note="Exact bigram only in m145."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Exact bigram only in m145."),
     dict(id="GC13", query="running shoes", expected=["m196", "m197"], scope="all",
-         qt="verbatim_quote", note="Fitness thread exact phrase."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Fitness thread exact phrase."),
     dict(id="GC14", query="sure", expected=["m027"], scope="thread",
          thread="thread_nexus_bugs",
-         qt="verbatim_quote", note="Terse hotfix confirmation, scoped."),
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="Terse hotfix confirmation, scoped."),
 
     # ===================== PARAPHRASE (realistic overlap) ===================
     # Queries are short, keyword-style search phrases (the way a user/agent
@@ -610,87 +688,87 @@ CASES: list[dict] = [
     # precision against same-word distractors. A labeled minority are genuinely
     # zero-overlap synonym-only cases (hard_zero=True).
     dict(id="GC15", query="login integration", expected=["m004"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'login integration' is a substring of m004 ('OAuth2 login integration'). Baseline can hit m004; semantic must also rank it over the security-thread login mentions.",
          overlap_hint="login integration"),
     dict(id="GC16", query="migration scripts blocked", expected=["m006"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'migration scripts' substring of m005/m006/m016; the 'blocked' status answer is m006. Baseline returns the lexical set ordered by recency; semantic prefers the blocked one.",
          overlap_hint="migration scripts blocked"),
     dict(id="GC17", query="don't forget sunscreen", expected=["m067"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'sunscreen' substring of m067. Realistic reminder phrasing.",
          overlap_hint="sunscreen"),
     dict(id="GC18", query="caching layer", expected=["m008"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'caching layer' substring of m008. Query is the user's term; m009 ('benchmark the cache') is a lexical neighbor semantic should also relate.",
          overlap_hint="caching layer"),
     dict(id="GC19", query="duplicating transaction", expected=["m019", "m025"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'duplicating transaction' substring of m019; m025 is the near-duplicate. Orion m176/m177 same-shape billing bug is a different-topic distractor.",
          overlap_hint="duplicating transaction"),
     dict(id="GC20", query="apartment search", expected=["m127", "m128"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'apartment search' substring of m127; m128 (movers) is the paired action needing meaning. Baseline gets m127 only.",
          overlap_hint="apartment search"),
     dict(id="GC21", query="dishes in the sink", expected=["m094", "m096", "m105"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'dishes' phrasing overlaps m094 ('dishes ... in the sink'); the fairness/resolution targets m096/m105 need meaning. Baseline gets m094.",
          overlap_hint="dishes in the sink"),
     dict(id="GC22", query="car repair", expected=["m109"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'car repair' substring of m109. Realistic search term; semantic also relates m117/m118 (same incident) but answer is m109.",
          overlap_hint="car repair"),
     dict(id="GC23", query="query latency", expected=["m036", "m037"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'query latency' substring of m036; m037 has the p95 number. Video-call latency m047 is a same-word distractor semantic should de-rank.",
          overlap_hint="query latency"),
     dict(id="GC24", query="window seat", expected=["m150"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'window seat' substring of m150. Direct keyword search.",
          overlap_hint="window seat"),
     dict(id="GC25", query="rollback plan", expected=["m183", "m185"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'rollback' substring of m183/m185 ('rollback plan'/'rollback steps'). m184 (the actual fallback mechanism) needs meaning.",
          overlap_hint="rollback"),
     dict(id="GC26", query="drafty window", expected=["m137"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'drafty' substring of m137; also m138 summary list. Answer is the report m137.",
          overlap_hint="drafty window"),
     dict(id="GC27", query="rooftop reservation", expected=["m085"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'rooftop' + 'reservation' both in m085. m093 uses 'reservations' = doubts (same-word distractor) semantic should reject.",
          overlap_hint="rooftop / reservation"),
     dict(id="GC28", query="token theft risk", expected=["m212", "m213"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'token theft risk' substring of m213; m212 (the local-storage finding) needs meaning. Many other 'token' mentions are distractors (m018 gift token).",
          overlap_hint="token theft risk"),
     # --- HARD zero-overlap paraphrase (synonym only; baseline must miss) ----
     dict(id="GC29", query="sunburn anecdote", expected=["m068"], scope="all",
-         qt="paraphrase", hard_zero=True,
+         qt="paraphrase", hard_zero=True, difficulty="hard", fairness="adversarial",
          note="HARD: m068 says 'looked like a tomato' — no shared substring. Baseline []."),
     dict(id="GC30", query="NPE fix", expected=["m015"], scope="all",
-         qt="paraphrase", hard_zero=True,
+         qt="paraphrase", hard_zero=True, difficulty="hard", fairness="adversarial",
          note="HARD: m015 says 'null pointer ... fixed it' — acronym, no substring. Baseline []."),
     dict(id="GC31", query="demoralized after the launch", expected=["m059"], scope="all",
-         qt="paraphrase", hard_zero=True,
+         qt="paraphrase", hard_zero=True, difficulty="hard", fairness="adversarial",
          note="HARD: m059 'feeling pretty down' — 'demoralized' shares no substring; 'launch' appears in m059? no. Baseline []."),
     dict(id="GC32", query="UV protection", expected=["m067"], scope="all",
-         qt="paraphrase", hard_zero=True,
+         qt="paraphrase", hard_zero=True, difficulty="hard", fairness="adversarial",
          note="HARD: 'UV protection' vs 'sunscreen' — synonym only, no substring. Baseline []."),
     dict(id="GC33", query="food and drinks to pack", expected=["m063"], scope="all",
-         qt="paraphrase", hard_zero=True,
+         qt="paraphrase", hard_zero=True, difficulty="hard", fairness="adversarial",
          note="HARD: m063 'pack the sandwiches ... water filters' — synonyms, no shared substring. Baseline []."),
     dict(id="GC34", query="hiding money stress", expected=["m111", "m112"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'money' substring of m111 ('stress about money'); 'hiding' substring of m112. Baseline can hit both lexically; tests ranking + recall.",
          overlap_hint="money / hiding"),
     dict(id="GC35", query="brute force", expected=["m216", "m218"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="'brute force' substring of m216/m218. Realistic term; semantic should also surface m212 (the vuln) via meaning though it's not expected here.",
          overlap_hint="brute force"),
     dict(id="GC36", query="partitioning the events table", expected=["m040"], scope="all",
-         qt="paraphrase",
+         qt="paraphrase", difficulty="medium", fairness="either",
          note="Substring of m040; m041 ('Daily partitioning') and m038/m039 (index on events table) are strong lexical neighbors — tests precision.",
          overlap_hint="partitioning the events table"),
 
@@ -701,78 +779,78 @@ CASES: list[dict] = [
     # the retriever generalizes by meaning across the topic.
     dict(id="GC37", query="bring food", scope="topic", topic="topic_weekend_plans",
          expected=["m063", "m080", "m081", "m087", "m090", "m091"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'food' substring of m069/m073 (hike) — baseline catches the hike-food mentions but misses the dinner thread (Luigi's m080-m091), which needs meaning to span.",
          overlap_hint="food"),
     dict(id="GC38", query="deploy", scope="topic", topic="topic_project_nexus",
          expected=["m006", "m010", "m019", "m025", "m028", "m219"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'deploy' substring of m019/m025 (bugs). Baseline catches the bugs-thread deploy mentions; the kickoff schema-block m006 and security-fix m219 need meaning to span the topic.",
          overlap_hint="deploy"),
     dict(id="GC39", query="overkill for our scale", scope="topic",
          topic="topic_project_nexus",
          expected=["m008", "m009", "m010", "m012"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'scale' substring of m008. Baseline gets m008; benchmarking m009 and rate-limit m010/m012 (the scaling responses) need meaning.",
          overlap_hint="scale"),
     dict(id="GC40", query="login flow", scope="all",
          expected=["m003", "m004", "m167", "m168", "m212", "m213"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'login flow' substring of m168 (Orion). Baseline gets m168; the Nexus auth (m003/m004/m212/m213) needs meaning to span both projects.",
          overlap_hint="login flow"),
     dict(id="GC41", query="Lisbon", scope="topic", topic="topic_travel_planning",
          expected=["m145", "m149", "m156", "m158", "m160"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'Lisbon' substring of m145/m149 (flights) and m156 (itinerary). Baseline gets the literal Lisbon mentions; tram/Belem itinerary items (m158/m160) need meaning. Barcelona m154 distractor.",
          overlap_hint="Lisbon"),
     dict(id="GC42", query="rate limiting", scope="all",
          expected=["m010", "m012", "m171", "m172", "m216"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'rate limiting' substring across Nexus kickoff (m010), Orion (m171), security (m216). Baseline has a real lexical shot here; m012/m172 (the fixes) partly need meaning. Hardest verbatim-style cross-thread.",
          overlap_hint="rate limiting"),
     dict(id="GC43", query="broken", scope="topic",
          topic="topic_household_logistics",
          expected=["m133", "m135", "m137", "m138"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="hard", fairness="semantic_favored",
          note="'broken' substring of m136 (a neighbor, not expected) — the actual broken-items (faucet m133, fan m135, window m137) are described without the word 'broken', so semantics carry it. Baseline likely 0 here.",
          overlap_hint="broken (weak)"),
     dict(id="GC44", query="training plan", scope="topic", topic="topic_fitness_goals",
          expected=["m192", "m194", "m197", "m205", "m206"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'training' substring of m192/m194 (running). Baseline catches running-side; the gym schedule (m205/m206) is the cross-thread part needing meaning.",
          overlap_hint="training"),
     dict(id="GC45", query="budget", scope="topic",
          topic="topic_relationship_friction",
          expected=["m108", "m110", "m111", "m115"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'budget' substring of m115 (money thread). Baseline gets m115; the bill/spending/stress lead-up (m108/m110/m111) needs meaning. Chores thread excluded by topic+meaning.",
          overlap_hint="budget"),
     dict(id="GC46", query="duplicate charge", scope="all",
          expected=["m019", "m025", "m176", "m177"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'charge' substring of m176 (Orion billing). Baseline gets the Orion side; Nexus transaction-dup m019/m025 spans the other project by meaning. Email-dup m030/m031 same-word distractor.",
          overlap_hint="charge"),
     dict(id="GC47", query="6 AM Saturday", scope="topic",
          topic="topic_weekend_plans",
          expected=["m061", "m065", "m069", "m073", "m075"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'6 AM' substring of m065/m069/m073. Baseline catches the timing lines; trail/forecast logistics (m061/m075) need meaning. Dinner thread excluded by meaning.",
          overlap_hint="6 AM"),
     dict(id="GC48", query="audit findings", scope="topic",
          topic="topic_project_nexus",
          expected=["m212", "m216", "m218", "m219"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'audit findings' substring of m218 (+m221 media, a neighbor). Baseline gets m218; the local-storage finding m212, rate-limit fix m216, push m219 need meaning. Office-door m222 same-word distractor.",
          overlap_hint="audit findings"),
     dict(id="GC49", query="Atlas is down", scope="topic", topic="topic_project_atlas",
          expected=["m049", "m052", "m056", "m058"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'Atlas is down' substring of m049. Baseline gets m049; worker-pool cause m052, recovery m056, postmortem m058 need meaning. m059 'feeling down' same-word distractor.",
          overlap_hint="Atlas is down"),
     dict(id="GC50", query="other apartments", scope="topic",
          topic="topic_household_logistics",
          expected=["m121", "m122", "m125", "m127"],
-         qt="cross_thread",
+         qt="cross_thread", difficulty="medium", fairness="either",
          note="'other apartments' substring of m122. Baseline gets m122; lease decision m121, requirements m125, search split m127 need meaning. Chess-move m132 same-word distractor.",
          overlap_hint="other apartments"),
 
@@ -781,41 +859,81 @@ CASES: list[dict] = [
     # recall of the topical thread needs meaning beyond the literal hit.
     dict(id="GC51", query="authentication module", scope="topic", topic="topic_project_nexus",
          expected=["m003", "m004", "m014"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'authentication module' substring of m003 (+m014 media). Baseline gets those; OAuth2 status m004 needs meaning."),
     dict(id="GC52", query="payment processor", scope="topic", topic="topic_project_nexus",
          expected=["m010", "m019", "m025", "m032"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'payment processor' substring of m019/m025. Baseline gets payment dup; rate-limit m010 and app-crash m032 (other Nexus bugs) need meaning."),
     dict(id="GC53", query="Blue Ridge hike", scope="thread", thread="thread_weekend_hike",
          expected=["m061", "m063", "m069", "m073", "m075"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'Blue Ridge' substring of m061/m069/m073. Baseline catches those; food/forecast logistics m063/m075 need meaning. Whitetail m079 distractor."),
     dict(id="GC54", query="dinner", scope="thread", thread="thread_weekend_dinner",
          expected=["m080", "m081", "m085", "m087"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'dinner' substring of m080/m087. Baseline gets those; Luigi's name m081, reservation m085 need meaning. Marco's m092 distractor."),
     dict(id="GC55", query="latency", scope="all",
          expected=["m008", "m010", "m036", "m037"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'latency' substring of m036/m037 (Atlas). Baseline gets Atlas perf; Nexus cache m008 + rate-limit m010 (cross-topic perf) need meaning. Video-call latency m047 distractor."),
     dict(id="GC56", query="feels equal", scope="topic",
          topic="topic_relationship_friction", expected=["m096", "m098", "m100", "m105"],
-         qt="topic_recall",
+         qt="topic_recall", difficulty="medium", fairness="either",
          note="'equal' substring of m100. Baseline gets m100; the fairness conflict m096/m098/m105 needs meaning. Mostly meaning-driven."),
     dict(id="GC57", query="Belem tower", scope="thread", thread="thread_travel_itinerary",
          expected=["m156", "m158", "m159", "m160"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'Belem' substring of m158/m159/m160. Baseline gets Belem mentions; the relaxed-itinerary framing m156 needs meaning. Roller-coaster m165 distractor."),
     dict(id="GC58", query="gym membership", scope="thread", thread="thread_fitness_gym",
          expected=["m201", "m205", "m206", "m210"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'gym membership' substring of m201 (+m210 media). Baseline gets those; schedule m205/m206 needs meaning. Split m211 distractor."),
     dict(id="GC59", query="Atlas launch", scope="topic",
          topic="topic_project_atlas", expected=["m034", "m042", "m044", "m045"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'Atlas launch' substring of m034. Baseline gets m034; deadline/burnout/slip m042/m044/m045 need meaning."),
     dict(id="GC60", query="beta rollout", scope="thread", thread="thread_orion_rollout",
          expected=["m179", "m180", "m182", "m185"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'beta rollout' substring of m179. Baseline gets m179; ramp plan m180/m182 and runbook m185 need meaning. Ad-campaign m188 distractor."),
     dict(id="GC61", query="call the landlord", scope="thread",
          thread="thread_house_repairs", expected=["m133", "m135", "m137", "m138"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'landlord' substring of m134 (a neighbor) and m138. The broken items m133/m135/m137 are described without 'landlord' — need meaning. Data-leak m143 distractor."),
     dict(id="GC62", query="half marathon training", scope="thread",
          thread="thread_fitness_running", expected=["m190", "m192", "m194", "m197"], qt="topic_recall",
+         difficulty="medium", fairness="either",
          note="'half marathon' substring of m190/m191; 'training' in m192/m194. Baseline catches those; shoes m197 needs meaning. 10K m200 distractor."),
+
+    # ===================== NEW KEYWORD-PLAUSIBLE (GC63+) ====================
+    # Short, terse, context-dependent query shapes that genuinely contain
+    # ILIKE-matchable substrings.  These give the baseline fair shots and
+    # increase corpus density for the keyword_favoured / either fairness slices.
+    dict(id="GC63", query="sprint review", expected=["m002"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'sprint review' substring of m002 ('latest sprint review'). Terse keyword query."),
+    dict(id="GC64", query="first aid kit", expected=["m070"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'first aid kit' substring of m070. Realistic context-dependent lookup."),
+    dict(id="GC65", query="design doc", expected=["m048"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'design doc' substring of m048. Short terse query shape."),
+    dict(id="GC66", query="moving quotes", expected=["m128"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'moving quotes' substring of m128. Quick move-planning lookup."),
+    dict(id="GC67", query="monthly budget", expected=["m115"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'monthly budget' substring of m115. Personal finance keyword."),
+    dict(id="GC68", query="audit trail", expected=["m078"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'audit trail' substring of m078 (a cross-topic lexical trap — 'trail' is hiking but 'audit trail' is work)."),
+    dict(id="GC69", query="dishwasher", expected=["m123", "m130"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'dishwasher' substring of m123 and m130 (media). Both are in the house_move thread."),
+    dict(id="GC70", query="feature flags", expected=["m179", "m180"], scope="all",
+         qt="verbatim_quote", difficulty="easy", fairness="keyword_favored",
+         note="'feature flags' substring of m179; 'Flags' in m180. Orion rollout thread."),
 ]
 
 
@@ -844,6 +962,10 @@ def build_golden():
             "scope": c["scope"],
             "query_type": c["qt"],
         }
+        if c.get("difficulty"):
+            rec["difficulty"] = c["difficulty"]
+        if c.get("fairness"):
+            rec["fairness"] = c["fairness"]
         if c.get("thread"):
             rec["thread_id"] = c["thread"]
         if c.get("topic"):

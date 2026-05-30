@@ -1,20 +1,20 @@
 # Retrieval Evaluation Report
 
 - **Adapter:** SemanticRetriever
-- **Corpus:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/corpus.yaml
-- **Golden Set:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/golden_set.yaml
-- **Generated:** 2026-05-30T01:59:40.893347+00:00
-- **Cases:** 62
+- **Corpus:** /Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml
+- **Golden Set:** /Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml
+- **Generated:** 2026-05-30T03:51:07.413895+00:00
+- **Cases:** 70
 
 ## Overall Metrics
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.8454 |
-| recall@1 | 0.4188 |
-| recall@10 | 0.8610 |
-| recall@5 | 0.7476 |
-| n         | 62 |
+| mrr | 0.8490 |
+| recall@1 | 0.4638 |
+| recall@10 | 0.8531 |
+| recall@5 | 0.7407 |
+| n         | 70 |
 
 ## Per Query-Type Metrics
 
@@ -22,29 +22,29 @@
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.8155 |
+| mrr | 0.8048 |
 | recall@1 | 0.1560 |
-| recall@10 | 0.7286 |
-| recall@5 | 0.4702 |
+| recall@10 | 0.6810 |
+| recall@5 | 0.4345 |
 | n         | 14 |
 
 #### Cases
 
 | Case ID | Query | Scope | Expected | Retrieved | Recall@1 | Recall@5 | Recall@10 | MRR |
 |---------|-------|-------|----------|-----------|----------|----------|-----------|-----|
-| GC37 | bring food | topic | 6 | 10 | 0.1667 | 0.3333 | 0.5000 | 1.0000 |
+| GC37 | bring food | topic | 6 | 10 | 0.1667 | 0.3333 | 0.3333 | 1.0000 |
 | GC38 | deploy | topic | 6 | 10 | 0.0000 | 0.1667 | 0.5000 | 0.5000 |
 | GC39 | overkill for our scale | topic | 4 | 10 | 0.2500 | 0.5000 | 0.7500 | 1.0000 |
 | GC40 | login flow | all | 6 | 10 | 0.1667 | 0.3333 | 0.5000 | 1.0000 |
 | GC41 | Lisbon | topic | 5 | 10 | 0.2000 | 0.6000 | 0.6000 | 1.0000 |
 | GC42 | rate limiting | all | 5 | 10 | 0.0000 | 0.4000 | 1.0000 | 0.3333 |
-| GC43 | broken | topic | 4 | 10 | 0.0000 | 0.2500 | 0.5000 | 0.2500 |
+| GC43 | broken | topic | 4 | 10 | 0.0000 | 0.0000 | 0.2500 | 0.1000 |
 | GC44 | training plan | topic | 5 | 10 | 0.2000 | 0.4000 | 0.6000 | 1.0000 |
 | GC45 | budget | topic | 4 | 10 | 0.2500 | 0.7500 | 1.0000 | 1.0000 |
 | GC46 | duplicate charge | all | 4 | 10 | 0.0000 | 0.5000 | 1.0000 | 0.3333 |
 | GC47 | 6 AM Saturday | topic | 5 | 10 | 0.2000 | 0.6000 | 1.0000 | 1.0000 |
 | GC48 | audit findings | topic | 4 | 10 | 0.2500 | 0.5000 | 0.5000 | 1.0000 |
-| GC49 | Atlas is down | topic | 4 | 10 | 0.2500 | 0.5000 | 0.7500 | 1.0000 |
+| GC49 | Atlas is down | topic | 4 | 10 | 0.2500 | 0.2500 | 0.5000 | 1.0000 |
 | GC50 | other apartments | topic | 4 | 10 | 0.2500 | 0.7500 | 1.0000 | 1.0000 |
 
 ### paraphrase
@@ -90,8 +90,8 @@
 |-----------|-------|
 | mrr | 0.7639 |
 | recall@1 | 0.1486 |
-| recall@10 | 0.8208 |
-| recall@5 | 0.6333 |
+| recall@10 | 0.7792 |
+| recall@5 | 0.5500 |
 | n         | 12 |
 
 #### Cases
@@ -101,25 +101,25 @@
 | GC51 | authentication module | topic | 3 | 10 | 0.3333 | 1.0000 | 1.0000 | 1.0000 |
 | GC52 | payment processor | topic | 4 | 10 | 0.0000 | 0.5000 | 0.5000 | 0.3333 |
 | GC53 | Blue Ridge hike | thread | 5 | 10 | 0.2000 | 0.6000 | 0.6000 | 1.0000 |
-| GC54 | dinner | thread | 4 | 10 | 0.0000 | 0.2500 | 0.7500 | 0.5000 |
+| GC54 | dinner | thread | 4 | 10 | 0.0000 | 0.2500 | 0.5000 | 0.5000 |
 | GC55 | latency | all | 4 | 10 | 0.0000 | 0.5000 | 0.5000 | 0.5000 |
 | GC56 | feels equal | topic | 4 | 10 | 0.2500 | 0.5000 | 1.0000 | 1.0000 |
 | GC57 | Belem tower | thread | 4 | 10 | 0.2500 | 0.7500 | 1.0000 | 1.0000 |
-| GC58 | gym membership | thread | 4 | 10 | 0.2500 | 0.7500 | 1.0000 | 1.0000 |
-| GC59 | Atlas launch | topic | 4 | 10 | 0.2500 | 0.5000 | 0.5000 | 1.0000 |
-| GC60 | beta rollout | thread | 4 | 10 | 0.2500 | 0.5000 | 1.0000 | 1.0000 |
-| GC61 | call the landlord | thread | 4 | 10 | 0.0000 | 0.7500 | 1.0000 | 0.3333 |
+| GC58 | gym membership | thread | 4 | 10 | 0.2500 | 0.5000 | 1.0000 | 1.0000 |
+| GC59 | Atlas launch | topic | 4 | 10 | 0.2500 | 0.2500 | 0.5000 | 1.0000 |
+| GC60 | beta rollout | thread | 4 | 10 | 0.2500 | 0.5000 | 0.7500 | 1.0000 |
+| GC61 | call the landlord | thread | 4 | 10 | 0.0000 | 0.2500 | 1.0000 | 0.3333 |
 | GC62 | half marathon training | thread | 4 | 10 | 0.0000 | 1.0000 | 1.0000 | 0.5000 |
 
 ### verbatim_quote
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.8690 |
-| recall@1 | 0.4762 |
-| recall@10 | 0.9643 |
-| recall@5 | 0.9524 |
-| n         | 14 |
+| mrr | 0.8788 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9545 |
+| recall@5 | 0.9242 |
+| n         | 22 |
 
 #### Cases
 
@@ -139,3 +139,85 @@
 | GC12 | Lisbon flights | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
 | GC13 | running shoes | all | 2 | 10 | 0.5000 | 1.0000 | 1.0000 | 1.0000 |
 | GC14 | sure | thread | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC63 | sprint review | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC64 | first aid kit | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC65 | design doc | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC66 | moving quotes | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC67 | monthly budget | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC68 | audit trail | all | 1 | 10 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC69 | dishwasher | all | 2 | 10 | 0.0000 | 0.0000 | 0.5000 | 0.1667 |
+| GC70 | feature flags | all | 2 | 10 | 0.5000 | 1.0000 | 1.0000 | 1.0000 |
+
+## Per Fairness Metrics
+
+### adversarial
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.6667 |
+| recall@1 | 0.6000 |
+| recall@10 | 0.8000 |
+| recall@5 | 0.8000 |
+| n         | 5 |
+
+### either
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.8730 |
+| recall@1 | 0.3881 |
+| recall@10 | 0.8206 |
+| recall@5 | 0.6552 |
+| n         | 42 |
+
+### keyword_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.8788 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9545 |
+| recall@5 | 0.9242 |
+| n         | 22 |
+
+### semantic_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.1000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.2500 |
+| recall@5 | 0.0000 |
+| n         | 1 |
+
+## Per Difficulty Metrics
+
+### easy
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.8788 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9545 |
+| recall@5 | 0.9242 |
+| n         | 22 |
+
+### hard
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.5722 |
+| recall@1 | 0.5000 |
+| recall@10 | 0.7083 |
+| recall@5 | 0.6667 |
+| n         | 6 |
+
+### medium
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.8730 |
+| recall@1 | 0.3881 |
+| recall@10 | 0.8206 |
+| recall@5 | 0.6552 |
+| n         | 42 |

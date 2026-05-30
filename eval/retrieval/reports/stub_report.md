@@ -1,10 +1,10 @@
 # Retrieval Evaluation Report
 
 - **Adapter:** StubSemanticRetriever
-- **Corpus:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/corpus.yaml
-- **Golden Set:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/golden_set.yaml
-- **Generated:** 2026-05-30T02:00:33.727256+00:00
-- **Cases:** 62
+- **Corpus:** /Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml
+- **Golden Set:** /Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml
+- **Generated:** 2026-05-30T03:51:52.849776+00:00
+- **Cases:** 70
 
 ## Overall Metrics
 
@@ -14,7 +14,7 @@
 | recall@1 | 0.0000 |
 | recall@10 | 0.0000 |
 | recall@5 | 0.0000 |
-| n         | 62 |
+| n         | 70 |
 
 ## Per Query-Type Metrics
 
@@ -119,7 +119,7 @@
 | recall@1 | 0.0000 |
 | recall@10 | 0.0000 |
 | recall@5 | 0.0000 |
-| n         | 14 |
+| n         | 22 |
 
 #### Cases
 
@@ -139,3 +139,85 @@
 | GC12 | Lisbon flights | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | GC13 | running shoes | all | 2 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | GC14 | sure | thread | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC63 | sprint review | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC64 | first aid kit | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC65 | design doc | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC66 | moving quotes | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC67 | monthly budget | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC68 | audit trail | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC69 | dishwasher | all | 2 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC70 | feature flags | all | 2 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+
+## Per Fairness Metrics
+
+### adversarial
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 5 |
+
+### either
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 42 |
+
+### keyword_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 22 |
+
+### semantic_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 1 |
+
+## Per Difficulty Metrics
+
+### easy
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 22 |
+
+### hard
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 6 |
+
+### medium
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 42 |

@@ -1,21 +1,21 @@
 {
   "adapter_name": "IlikeBaselineRetriever",
-  "corpus_path": "/Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/corpus.yaml",
-  "golden_set_path": "/Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/golden_set.yaml",
+  "corpus_path": "/Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml",
+  "golden_set_path": "/Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml",
   "overall": {
-    "recall@1": 0.2690860215053763,
-    "recall@5": 0.453494623655914,
-    "recall@10": 0.4626344086021506,
-    "mrr": 0.6209677419354839,
-    "n": 62
+    "recall@1": 0.33833333333333326,
+    "recall@5": 0.5016666666666667,
+    "recall@10": 0.5097619047619049,
+    "mrr": 0.66,
+    "n": 70
   },
   "by_query_type": {
     "verbatim_quote": {
-      "recall@1": 0.4404761904761905,
-      "recall@5": 0.9166666666666667,
-      "recall@10": 0.9285714285714286,
-      "mrr": 0.875,
-      "n": 14
+      "recall@1": 0.5984848484848485,
+      "recall@5": 0.9015151515151516,
+      "recall@10": 0.9090909090909091,
+      "mrr": 0.9204545454545454,
+      "n": 22
     },
     "paraphrase": {
       "recall@1": 0.3409090909090909,
@@ -35,8 +35,61 @@
       "recall@1": 0.12777777777777777,
       "recall@5": 0.2805555555555555,
       "recall@10": 0.2805555555555555,
-      "mrr": 0.6041666666666666,
+      "mrr": 0.5791666666666667,
       "n": 12
+    }
+  },
+  "by_fairness": {
+    "keyword_favored": {
+      "recall@1": 0.5984848484848485,
+      "recall@5": 0.9015151515151516,
+      "recall@10": 0.9090909090909091,
+      "mrr": 0.9204545454545454,
+      "n": 22
+    },
+    "either": {
+      "recall@1": 0.2503968253968254,
+      "recall@5": 0.3638888888888888,
+      "recall@10": 0.3734126984126983,
+      "mrr": 0.6178571428571429,
+      "n": 42
+    },
+    "adversarial": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 5
+    },
+    "semantic_favored": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 1
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "recall@1": 0.5984848484848485,
+      "recall@5": 0.9015151515151516,
+      "recall@10": 0.9090909090909091,
+      "mrr": 0.9204545454545454,
+      "n": 22
+    },
+    "medium": {
+      "recall@1": 0.2503968253968254,
+      "recall@5": 0.3638888888888888,
+      "recall@10": 0.3734126984126983,
+      "mrr": 0.6178571428571429,
+      "n": 42
+    },
+    "hard": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 6
     }
   },
   "per_case": [
@@ -45,6 +98,8 @@
       "query": "I told you so",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -64,6 +119,8 @@
       "query": "fine.",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 4,
       "ranked_ids": [
@@ -86,6 +143,8 @@
       "query": "osso buco",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 4,
       "ranked_ids": [
@@ -111,6 +170,8 @@
       "query": "Blue Ridge",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 6,
       "retrieved_count": 6,
       "ranked_ids": [
@@ -140,6 +201,8 @@
       "query": "idempotency key",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 3,
       "ranked_ids": [
@@ -162,6 +225,8 @@
       "query": "rate limiting",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -182,6 +247,8 @@
       "query": "httpOnly cookies",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -203,6 +270,8 @@
       "query": "worker pool",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 4,
       "ranked_ids": [
@@ -228,6 +297,8 @@
       "query": "osso buco",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 4,
       "ranked_ids": [
@@ -250,6 +321,8 @@
       "query": "kitchen faucet",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -270,6 +343,8 @@
       "query": "half marathon",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -291,6 +366,8 @@
       "query": "Lisbon flights",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -310,6 +387,8 @@
       "query": "running shoes",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -331,6 +410,8 @@
       "query": "sure",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -350,6 +431,8 @@
       "query": "login integration",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -369,6 +452,8 @@
       "query": "migration scripts blocked",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -386,6 +471,8 @@
       "query": "don't forget sunscreen",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -403,6 +490,8 @@
       "query": "caching layer",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -422,6 +511,8 @@
       "query": "duplicating transaction",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -443,6 +534,8 @@
       "query": "apartment search",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -463,6 +556,8 @@
       "query": "dishes in the sink",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -482,6 +577,8 @@
       "query": "car repair",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -501,6 +598,8 @@
       "query": "query latency",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -521,6 +620,8 @@
       "query": "window seat",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -540,6 +641,8 @@
       "query": "rollback plan",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -560,6 +663,8 @@
       "query": "drafty window",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -579,6 +684,8 @@
       "query": "rooftop reservation",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -596,6 +703,8 @@
       "query": "token theft risk",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -616,6 +725,8 @@
       "query": "sunburn anecdote",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -633,6 +744,8 @@
       "query": "NPE fix",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -650,6 +763,8 @@
       "query": "demoralized after the launch",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -667,6 +782,8 @@
       "query": "UV protection",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -684,6 +801,8 @@
       "query": "food and drinks to pack",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -701,6 +820,8 @@
       "query": "hiding money stress",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -719,6 +840,8 @@
       "query": "brute force",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 3,
       "ranked_ids": [
@@ -741,6 +864,8 @@
       "query": "partitioning the events table",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -760,6 +885,8 @@
       "query": "bring food",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -784,6 +911,8 @@
       "query": "deploy",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 3,
       "ranked_ids": [
@@ -810,6 +939,8 @@
       "query": "overkill for our scale",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -832,6 +963,8 @@
       "query": "login flow",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -857,6 +990,8 @@
       "query": "Lisbon",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 6,
       "ranked_ids": [
@@ -885,6 +1020,8 @@
       "query": "rate limiting",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 6,
       "ranked_ids": [
@@ -913,6 +1050,8 @@
       "query": "broken",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "semantic_favored",
+      "difficulty": "hard",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -935,6 +1074,8 @@
       "query": "training plan",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -956,6 +1097,8 @@
       "query": "budget",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -979,6 +1122,8 @@
       "query": "duplicate charge",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1001,6 +1146,8 @@
       "query": "6 AM Saturday",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1024,6 +1171,8 @@
       "query": "audit findings",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -1047,6 +1196,8 @@
       "query": "Atlas is down",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1069,6 +1220,8 @@
       "query": "other apartments",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1091,6 +1244,8 @@
       "query": "authentication module",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -1113,6 +1268,8 @@
       "query": "payment processor",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 3,
       "ranked_ids": [
@@ -1137,6 +1294,8 @@
       "query": "Blue Ridge hike",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1160,10 +1319,15 @@
       "query": "dinner",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
-      "retrieved_count": 2,
+      "retrieved_count": 5,
       "ranked_ids": [
+        "nav_thread_weekend_dinner_end",
         "m084",
+        "nav_thread_weekend_dinner_mid",
+        "nav_thread_weekend_dinner_start",
         "m080"
       ],
       "expected_ids": [
@@ -1176,13 +1340,15 @@
       "recall_at_1": 0.0,
       "recall_at_5": 0.25,
       "recall_at_10": 0.25,
-      "reciprocal_rank": 0.5
+      "reciprocal_rank": 0.2
     },
     {
       "case_id": "GC55",
       "query": "latency",
       "query_type": "topic_recall",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 5,
       "ranked_ids": [
@@ -1209,6 +1375,8 @@
       "query": "feels equal",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -1229,6 +1397,8 @@
       "query": "Belem tower",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1251,6 +1421,8 @@
       "query": "gym membership",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 2,
       "ranked_ids": [
@@ -1274,6 +1446,8 @@
       "query": "Atlas launch",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1296,6 +1470,8 @@
       "query": "beta rollout",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1318,6 +1494,8 @@
       "query": "call the landlord",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 1,
       "ranked_ids": [
@@ -1340,6 +1518,8 @@
       "query": "half marathon training",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
       "ranked_ids": [],
@@ -1354,7 +1534,179 @@
       "recall_at_5": 0.0,
       "recall_at_10": 0.0,
       "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC63",
+      "query": "sprint review",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m002"
+      ],
+      "expected_ids": [
+        "m002"
+      ],
+      "notes": "'sprint review' substring of m002 ('latest sprint review'). Terse keyword query.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC64",
+      "query": "first aid kit",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m070"
+      ],
+      "expected_ids": [
+        "m070"
+      ],
+      "notes": "'first aid kit' substring of m070. Realistic context-dependent lookup.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC65",
+      "query": "design doc",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m048"
+      ],
+      "expected_ids": [
+        "m048"
+      ],
+      "notes": "'design doc' substring of m048. Short terse query shape.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC66",
+      "query": "moving quotes",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m128"
+      ],
+      "expected_ids": [
+        "m128"
+      ],
+      "notes": "'moving quotes' substring of m128. Quick move-planning lookup.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC67",
+      "query": "monthly budget",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m115"
+      ],
+      "expected_ids": [
+        "m115"
+      ],
+      "notes": "'monthly budget' substring of m115. Personal finance keyword.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC68",
+      "query": "audit trail",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m078"
+      ],
+      "expected_ids": [
+        "m078"
+      ],
+      "notes": "'audit trail' substring of m078 (a cross-topic lexical trap — 'trail' is hiking but 'audit trail' is work).",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC69",
+      "query": "dishwasher",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 2,
+      "retrieved_count": 3,
+      "ranked_ids": [
+        "m130",
+        "m125",
+        "m124"
+      ],
+      "expected_ids": [
+        "m123",
+        "m130"
+      ],
+      "notes": "'dishwasher' substring of m123 and m130 (media). Both are in the house_move thread.",
+      "recall_at_1": 0.5,
+      "recall_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC70",
+      "query": "feature flags",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 2,
+      "retrieved_count": 1,
+      "ranked_ids": [
+        "m179"
+      ],
+      "expected_ids": [
+        "m179",
+        "m180"
+      ],
+      "notes": "'feature flags' substring of m179; 'Flags' in m180. Orion rollout thread.",
+      "recall_at_1": 0.5,
+      "recall_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "reciprocal_rank": 1.0
     }
   ],
-  "generated_at": "2026-05-30T01:59:05.960598+00:00"
+  "generated_at": "2026-05-30T03:48:22.466778+00:00"
 }

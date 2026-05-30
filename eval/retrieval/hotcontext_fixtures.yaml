@@ -1,0 +1,208 @@
+# Hot-context evaluation fixtures.
+# Covers all four categories with >=8 total fixtures.
+# Referenced message ids MUST exist in corpus.yaml.
+
+fixtures:
+# =========================================================================
+# gap_continue — gold messages are prior messages in the same topic
+# that are NOT in the last window (simulating a gap that needs filling).
+# >=3 required.
+# =========================================================================
+- id: HC01
+  topic_id: topic_project_nexus
+  last_window_message_ids:
+    - m006
+    - m007
+    - m008
+    - m009
+    - m010
+  gold_prior_on_topic_ids:
+    - m001
+    - m002
+    - m003
+    - m004
+    - m005
+  budget: 5
+  rationale: 'Window covers Nexus kickoff msgs after midpoint; gold covers earlier msgs in same topic that are not in window — classic gap_continue.'
+  category: gap_continue
+
+- id: HC02
+  topic_id: topic_weekend_plans
+  last_window_message_ids:
+    - m069
+    - m070
+    - m071
+    - m072
+    - m073
+  gold_prior_on_topic_ids:
+    - m061
+    - m062
+    - m063
+    - m064
+    - m065
+  budget: 5
+  rationale: 'Window covers late hike planning; gold covers early hike thread msgs — gap_continue in same topic.'
+  category: gap_continue
+
+- id: HC03
+  topic_id: topic_relationship_friction
+  last_window_message_ids:
+    - m111
+    - m112
+    - m113
+    - m114
+    - m115
+  gold_prior_on_topic_ids:
+    - m095
+    - m096
+    - m097
+    - m098
+  budget: 4
+  rationale: 'Window covers money thread resolution; gold covers earlier chore thread msgs — same topic, gap_continue.'
+  category: gap_continue
+
+- id: HC04
+  topic_id: topic_project_atlas
+  last_window_message_ids:
+    - m055
+    - m056
+    - m057
+    - m058
+    - m059
+  gold_prior_on_topic_ids:
+    - m049
+    - m050
+    - m051
+    - m052
+    - m053
+  budget: 5
+  rationale: 'Window covers Atlas incident recovery; gold covers early incident msgs — gap_continue.'
+  category: gap_continue
+
+# =========================================================================
+# topic_switch — last window message is from a DIFFERENT topic than
+# fixture.topic_id. >=2 required.
+# =========================================================================
+- id: HC05
+  topic_id: topic_project_nexus
+  last_window_message_ids:
+    - m192
+    - m193
+    - m194
+    - m195
+  gold_prior_on_topic_ids:
+    - m001
+    - m002
+    - m003
+  budget: 3
+  rationale: 'Last window msg m195 is in fitness_goals topic; gold is in project_nexus — clean topic_switch from fitness to nexus.'
+  category: topic_switch
+
+- id: HC06
+  topic_id: topic_weekend_plans
+  last_window_message_ids:
+    - m121
+    - m122
+    - m123
+    - m124
+  gold_prior_on_topic_ids:
+    - m080
+    - m081
+    - m082
+  budget: 3
+  rationale: 'Last window msg m124 is in household_logistics topic; gold is in weekend_plans — topic_switch from house move to dinner planning.'
+  category: topic_switch
+
+- id: HC07
+  topic_id: topic_travel_planning
+  last_window_message_ids:
+    - m010
+    - m011
+    - m012
+    - m013
+  gold_prior_on_topic_ids:
+    - m145
+    - m146
+    - m147
+  budget: 3
+  rationale: 'Last window msg m013 is in project_nexus topic; gold is in travel_planning — topic_switch from Nexus to travel.'
+  category: topic_switch
+
+# =========================================================================
+# no_relevant_prior — gold list is empty (no prior messages on this topic).
+# >=1 required.
+# =========================================================================
+- id: HC08
+  topic_id: topic_weekend_plans
+  last_window_message_ids:
+    - m075
+    - m076
+    - m077
+    - m078
+    - nav_thread_weekend_hike_end
+  gold_prior_on_topic_ids: []
+  budget: 5
+  rationale: 'Window covers late hike msgs; no relevant prior on-topic msgs needed — this is a fresh continuation with no missed context.'
+  category: no_relevant_prior
+
+- id: HC09
+  topic_id: topic_project_orion
+  last_window_message_ids:
+    - m188
+    - nav_thread_orion_rollout_end
+  gold_prior_on_topic_ids: []
+  budget: 5
+  rationale: 'Window covers Orion rollout completion; no relevant prior Orion msgs needed — fresh state.'
+  category: no_relevant_prior
+
+# =========================================================================
+# near_duplicate_prior — gold ids share a topic AND at least one other
+# corpus message in the same topic shares key words with gold but is NOT in gold.
+# >=2 required.
+# =========================================================================
+- id: HC10
+  topic_id: topic_project_nexus
+  last_window_message_ids:
+    - m024
+    - m025
+    - m026
+    - m027
+    - m028
+  gold_prior_on_topic_ids:
+    - m019
+    - m020
+    - m021
+  budget: 3
+  rationale: 'Gold covers payment bug discovery; m022 (same topic, shares "session token" "bug" keywords with m021) and m029 (shares "rate limiting" with m010) are distractors NOT in gold. Near-duplicate prior: payment processor duplication discussed twice.'
+  category: near_duplicate_prior
+
+- id: HC11
+  topic_id: topic_project_atlas
+  last_window_message_ids:
+    - m054
+    - m055
+    - m056
+    - m057
+    - m058
+  gold_prior_on_topic_ids:
+    - m050
+    - m051
+    - m052
+    - m053
+  budget: 4
+  rationale: 'Gold covers worker pool incident; m035-m036-m037 (same topic, shares "latency" "pipeline" keywords) are planning-thread distractors NOT in gold. Near-duplicate: worker pool saturation vs data pipeline saturation.'
+  category: near_duplicate_prior
+
+- id: HC12
+  topic_id: topic_relationship_friction
+  last_window_message_ids:
+    - m105
+    - nav_thread_friction_chores_end
+    - m107
+  gold_prior_on_topic_ids:
+    - m108
+    - m109
+    - m110
+  budget: 3
+  rationale: 'Gold covers money friction start; m095-m096-m097 (same topic, shares "exhausted" "fair" keywords with m110) are chores-thread distractors NOT in gold. Near-duplicate: two money-related blame cycles.'
+  category: near_duplicate_prior

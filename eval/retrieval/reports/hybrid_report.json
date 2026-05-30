@@ -1,21 +1,21 @@
 {
   "adapter_name": "HybridRetriever",
-  "corpus_path": "/Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/corpus.yaml",
-  "golden_set_path": "/Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/golden_set.yaml",
+  "corpus_path": "/Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml",
+  "golden_set_path": "/Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml",
   "overall": {
-    "recall@1": 0.41075268817204297,
-    "recall@5": 0.7658602150537636,
-    "recall@10": 0.8637096774193548,
-    "mrr": 0.8427419354838711,
-    "n": 62
+    "recall@1": 0.45666666666666667,
+    "recall@5": 0.7640476190476192,
+    "recall@10": 0.8554761904761905,
+    "mrr": 0.8466666666666669,
+    "n": 70
   },
   "by_query_type": {
     "verbatim_quote": {
-      "recall@1": 0.5119047619047619,
-      "recall@5": 0.9523809523809524,
-      "recall@10": 0.9642857142857143,
-      "mrr": 0.9166666666666666,
-      "n": 14
+      "recall@1": 0.6212121212121212,
+      "recall@5": 0.9469696969696971,
+      "recall@10": 0.9545454545454546,
+      "mrr": 0.9166666666666665,
+      "n": 22
     },
     "paraphrase": {
       "recall@1": 0.6742424242424242,
@@ -26,17 +26,70 @@
     },
     "cross_thread": {
       "recall@1": 0.12023809523809523,
-      "recall@5": 0.4797619047619047,
-      "recall@10": 0.7404761904761905,
-      "mrr": 0.744047619047619,
+      "recall@5": 0.44404761904761897,
+      "recall@10": 0.6928571428571428,
+      "mrr": 0.7333333333333333,
       "n": 14
     },
     "topic_recall": {
       "recall@1": 0.1486111111111111,
-      "recall@5": 0.6333333333333333,
-      "recall@10": 0.8208333333333333,
-      "mrr": 0.763888888888889,
+      "recall@5": 0.5499999999999999,
+      "recall@10": 0.7791666666666667,
+      "mrr": 0.7500000000000001,
       "n": 12
+    }
+  },
+  "by_fairness": {
+    "keyword_favored": {
+      "recall@1": 0.6212121212121212,
+      "recall@5": 0.9469696969696971,
+      "recall@10": 0.9545454545454546,
+      "mrr": 0.9166666666666665,
+      "n": 22
+    },
+    "either": {
+      "recall@1": 0.36428571428571416,
+      "recall@5": 0.682142857142857,
+      "recall@10": 0.8246031746031748,
+      "mrr": 0.8492063492063492,
+      "n": 42
+    },
+    "adversarial": {
+      "recall@1": 0.6,
+      "recall@5": 0.8,
+      "recall@10": 0.8,
+      "mrr": 0.6666666666666666,
+      "n": 5
+    },
+    "semantic_favored": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.25,
+      "mrr": 0.1,
+      "n": 1
+    }
+  },
+  "by_difficulty": {
+    "easy": {
+      "recall@1": 0.6212121212121212,
+      "recall@5": 0.9469696969696971,
+      "recall@10": 0.9545454545454546,
+      "mrr": 0.9166666666666665,
+      "n": 22
+    },
+    "medium": {
+      "recall@1": 0.36428571428571416,
+      "recall@5": 0.682142857142857,
+      "recall@10": 0.8246031746031748,
+      "mrr": 0.8492063492063492,
+      "n": 42
+    },
+    "hard": {
+      "recall@1": 0.5,
+      "recall@5": 0.6666666666666666,
+      "recall@10": 0.7083333333333334,
+      "mrr": 0.5722222222222222,
+      "n": 6
     }
   },
   "per_case": [
@@ -45,6 +98,8 @@
       "query": "I told you so",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -73,6 +128,8 @@
       "query": "fine.",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -101,6 +158,8 @@
       "query": "osso buco",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -132,6 +191,8 @@
       "query": "Blue Ridge",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 6,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -165,6 +226,8 @@
       "query": "idempotency key",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -194,6 +257,8 @@
       "query": "rate limiting",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -205,8 +270,8 @@
         "m007",
         "m008",
         "m001",
-        "m009",
-        "m014"
+        "nav_thread_nexus_kickoff_end",
+        "m009"
       ],
       "expected_ids": [
         "m010",
@@ -223,6 +288,8 @@
       "query": "httpOnly cookies",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -252,6 +319,8 @@
       "query": "worker pool",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -263,8 +332,8 @@
         "m063",
         "m098",
         "m089",
-        "m077",
-        "m134"
+        "nav_thread_friction_chores_start",
+        "nav_thread_friction_chores_end"
       ],
       "expected_ids": [
         "m050",
@@ -283,6 +352,8 @@
       "query": "osso buco",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -292,10 +363,10 @@
         "m081",
         "m080",
         "m092",
+        "nav_thread_weekend_dinner_mid",
         "m086",
-        "m084",
-        "m089",
-        "m085"
+        "nav_thread_weekend_dinner_start",
+        "nav_thread_weekend_dinner_end"
       ],
       "expected_ids": [
         "m090"
@@ -311,6 +382,8 @@
       "query": "kitchen faucet",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -340,6 +413,8 @@
       "query": "half marathon",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -369,6 +444,8 @@
       "query": "Lisbon flights",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -378,10 +455,10 @@
         "m149",
         "m155",
         "m154",
+        "nav_thread_travel_flights_start",
         "m146",
-        "m166",
-        "m162",
-        "m158"
+        "nav_thread_travel_flights_end",
+        "nav_thread_travel_flights_mid"
       ],
       "expected_ids": [
         "m145"
@@ -397,6 +474,8 @@
       "query": "running shoes",
       "query_type": "verbatim_quote",
       "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -406,10 +485,10 @@
         "m194",
         "m207",
         "m192",
+        "nav_thread_fitness_running_start",
         "m071",
         "m190",
-        "m199",
-        "m187"
+        "m199"
       ],
       "expected_ids": [
         "m196",
@@ -426,6 +505,8 @@
       "query": "sure",
       "query_type": "verbatim_quote",
       "scope": "thread",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -438,7 +519,7 @@
         "m028",
         "m029",
         "m030",
-        "m031"
+        "nav_thread_nexus_bugs_end"
       ],
       "expected_ids": [
         "m027"
@@ -454,6 +535,8 @@
       "query": "login integration",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -482,6 +565,8 @@
       "query": "migration scripts blocked",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -490,11 +575,11 @@
         "m016",
         "m199",
         "m010",
+        "nav_thread_house_move_start",
         "m213",
         "m217",
-        "m139",
-        "m184",
-        "m052"
+        "nav_thread_travel_flights_start",
+        "m139"
       ],
       "expected_ids": [
         "m006"
@@ -510,6 +595,8 @@
       "query": "don't forget sunscreen",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -538,6 +625,8 @@
       "query": "caching layer",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -545,12 +634,12 @@
         "m009",
         "m214",
         "m215",
+        "nav_thread_atlas_planning_end",
+        "nav_thread_friction_chores_end",
+        "nav_thread_friction_money_end",
         "m096",
         "m037",
-        "m050",
-        "m046",
-        "m033",
-        "m012"
+        "m050"
       ],
       "expected_ids": [
         "m008"
@@ -566,6 +655,8 @@
       "query": "duplicating transaction",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -595,6 +686,8 @@
       "query": "apartment search",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -624,6 +717,8 @@
       "query": "dishes in the sink",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -654,19 +749,21 @@
       "query": "car repair",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
         "m109",
         "m118",
+        "nav_thread_house_repairs_start",
+        "nav_thread_house_repairs_end",
+        "nav_thread_house_repairs_mid",
         "m117",
         "m055",
-        "m124",
-        "m185",
-        "m077",
-        "m049",
-        "m187",
-        "m056"
+        "nav_thread_friction_chores_end",
+        "nav_thread_friction_chores_start",
+        "m124"
       ],
       "expected_ids": [
         "m109"
@@ -682,6 +779,8 @@
       "query": "query latency",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -711,19 +810,21 @@
       "query": "window seat",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
         "m150",
         "m137",
+        "nav_thread_travel_flights_end",
+        "nav_thread_travel_flights_mid",
+        "nav_thread_travel_flights_start",
         "m149",
-        "m082",
-        "m222",
-        "m138",
-        "m165",
-        "m157",
-        "m187",
-        "m117"
+        "nav_thread_weekend_dinner_mid",
+        "nav_thread_friction_chores_end",
+        "nav_thread_weekend_dinner_start",
+        "nav_thread_weekend_dinner_end"
       ],
       "expected_ids": [
         "m150"
@@ -739,6 +840,8 @@
       "query": "rollback plan",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -768,6 +871,8 @@
       "query": "drafty window",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -780,7 +885,7 @@
         "m120",
         "m129",
         "m043",
-        "m141"
+        "nav_thread_travel_flights_end"
       ],
       "expected_ids": [
         "m137"
@@ -796,6 +901,8 @@
       "query": "rooftop reservation",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -804,11 +911,11 @@
         "m088",
         "m092",
         "m087",
+        "nav_thread_weekend_hike_start",
+        "nav_thread_weekend_hike_mid",
         "m158",
-        "m146",
-        "m069",
-        "m077",
-        "m151"
+        "nav_thread_weekend_hike_end",
+        "m146"
       ],
       "expected_ids": [
         "m085"
@@ -824,6 +931,8 @@
       "query": "token theft risk",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -853,6 +962,8 @@
       "query": "sunburn anecdote",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -881,19 +992,21 @@
       "query": "NPE fix",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
-        "m187",
-        "m219",
-        "m028",
-        "m118",
-        "m052",
-        "m024",
-        "m199",
-        "m023",
-        "m213",
-        "m019"
+        "nav_thread_house_repairs_start",
+        "nav_thread_house_repairs_end",
+        "nav_thread_house_repairs_mid",
+        "nav_thread_orion_design_start",
+        "nav_thread_orion_design_end",
+        "nav_thread_friction_money_end",
+        "nav_thread_orion_rollout_start",
+        "nav_thread_orion_rollout_end",
+        "nav_thread_friction_money_start",
+        "nav_thread_orion_design_mid"
       ],
       "expected_ids": [
         "m015"
@@ -909,6 +1022,8 @@
       "query": "demoralized after the launch",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -937,6 +1052,8 @@
       "query": "UV protection",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -965,6 +1082,8 @@
       "query": "food and drinks to pack",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -993,6 +1112,8 @@
       "query": "hiding money stress",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1022,6 +1143,8 @@
       "query": "brute force",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1051,6 +1174,8 @@
       "query": "partitioning the events table",
       "query_type": "paraphrase",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1060,10 +1185,10 @@
         "m037",
         "m105",
         "m093",
+        "nav_thread_weekend_dinner_start",
+        "nav_thread_weekend_dinner_end",
         "m201",
-        "m084",
-        "m189",
-        "m125"
+        "m084"
       ],
       "expected_ids": [
         "m040"
@@ -1079,6 +1204,8 @@
       "query": "bring food",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1088,10 +1215,10 @@
         "m084",
         "m070",
         "m073",
-        "m065",
-        "m093",
-        "m091",
-        "m083"
+        "nav_thread_weekend_dinner_start",
+        "nav_thread_weekend_dinner_mid",
+        "nav_thread_weekend_dinner_end",
+        "m065"
       ],
       "expected_ids": [
         "m063",
@@ -1104,7 +1231,7 @@
       "notes": "'food' substring of m069/m073 (hike) — baseline catches the hike-food mentions but misses the dinner thread (Luigi's m080-m091), which needs meaning to span. (overlap: food)",
       "recall_at_1": 0.0,
       "recall_at_5": 0.3333333333333333,
-      "recall_at_10": 0.5,
+      "recall_at_10": 0.3333333333333333,
       "reciprocal_rank": 0.5
     },
     {
@@ -1112,6 +1239,8 @@
       "query": "deploy",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1145,6 +1274,8 @@
       "query": "overkill for our scale",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1176,6 +1307,8 @@
       "query": "login flow",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1209,6 +1342,8 @@
       "query": "Lisbon",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1241,6 +1376,8 @@
       "query": "rate limiting",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1273,19 +1410,21 @@
       "query": "broken",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "semantic_favored",
+      "difficulty": "hard",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m136",
+        "nav_thread_house_repairs_end",
+        "nav_thread_house_repairs_start",
+        "nav_thread_house_repairs_mid",
         "m141",
         "m129",
-        "m133",
-        "m124",
-        "m143",
-        "m138",
-        "m128",
-        "m132",
-        "m126"
+        "nav_thread_house_move_end",
+        "nav_thread_house_move_start",
+        "nav_thread_house_move_mid",
+        "m133"
       ],
       "expected_ids": [
         "m133",
@@ -1295,15 +1434,17 @@
       ],
       "notes": "'broken' substring of m136 (a neighbor, not expected) — the actual broken-items (faucet m133, fan m135, window m137) are described without the word 'broken', so semantics carry it. Baseline likely 0 here. (overlap: broken (weak))",
       "recall_at_1": 0.0,
-      "recall_at_5": 0.25,
-      "recall_at_10": 0.5,
-      "reciprocal_rank": 0.25
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.25,
+      "reciprocal_rank": 0.1
     },
     {
       "case_id": "GC44",
       "query": "training plan",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1311,12 +1452,12 @@
         "m210",
         "m194",
         "m190",
+        "nav_thread_fitness_gym_start",
         "m191",
         "m201",
         "m197",
         "m203",
-        "m207",
-        "m196"
+        "m207"
       ],
       "expected_ids": [
         "m192",
@@ -1336,6 +1477,8 @@
       "query": "budget",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1367,6 +1510,8 @@
       "query": "duplicate charge",
       "query_type": "cross_thread",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1398,6 +1543,8 @@
       "query": "6 AM Saturday",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1430,6 +1577,8 @@
       "query": "audit findings",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1461,19 +1610,21 @@
       "query": "Atlas is down",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m049",
         "m044",
+        "nav_thread_atlas_incident_start",
+        "nav_thread_atlas_incident_end",
+        "nav_thread_atlas_planning_start",
+        "nav_thread_atlas_planning_end",
         "m034",
-        "m058",
-        "m046",
-        "m055",
-        "m059",
-        "m060",
-        "m056",
-        "m048"
+        "nav_thread_atlas_incident_mid",
+        "nav_thread_atlas_planning_mid",
+        "m058"
       ],
       "expected_ids": [
         "m049",
@@ -1483,8 +1634,8 @@
       ],
       "notes": "'Atlas is down' substring of m049. Baseline gets m049; worker-pool cause m052, recovery m056, postmortem m058 need meaning. m059 'feeling down' same-word distractor. (overlap: Atlas is down)",
       "recall_at_1": 0.25,
-      "recall_at_5": 0.5,
-      "recall_at_10": 0.75,
+      "recall_at_5": 0.25,
+      "recall_at_10": 0.5,
       "reciprocal_rank": 1.0
     },
     {
@@ -1492,6 +1643,8 @@
       "query": "other apartments",
       "query_type": "cross_thread",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1523,6 +1676,8 @@
       "query": "authentication module",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1553,6 +1708,8 @@
       "query": "payment processor",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1584,6 +1741,8 @@
       "query": "Blue Ridge hike",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1591,12 +1750,12 @@
         "m061",
         "m069",
         "m077",
+        "nav_thread_weekend_hike_start",
         "m076",
+        "nav_thread_weekend_hike_mid",
+        "nav_thread_weekend_hike_end",
         "m079",
-        "m074",
-        "m062",
-        "m071",
-        "m067"
+        "m074"
       ],
       "expected_ids": [
         "m061",
@@ -1616,19 +1775,21 @@
       "query": "dinner",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m084",
+        "nav_thread_weekend_dinner_end",
         "m080",
+        "nav_thread_weekend_dinner_start",
+        "nav_thread_weekend_dinner_mid",
         "m091",
         "m090",
         "m083",
         "m088",
-        "m085",
-        "m087",
-        "m093",
-        "m092"
+        "m085"
       ],
       "expected_ids": [
         "m080",
@@ -1639,14 +1800,16 @@
       "notes": "'dinner' substring of m080/m087. Baseline gets those; Luigi's name m081, reservation m085 need meaning. Marco's m092 distractor.",
       "recall_at_1": 0.0,
       "recall_at_5": 0.25,
-      "recall_at_10": 0.75,
-      "reciprocal_rank": 0.5
+      "recall_at_10": 0.5,
+      "reciprocal_rank": 0.3333333333333333
     },
     {
       "case_id": "GC55",
       "query": "latency",
       "query_type": "topic_recall",
       "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1678,6 +1841,8 @@
       "query": "feels equal",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1709,6 +1874,8 @@
       "query": "Belem tower",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1720,8 +1887,8 @@
         "m161",
         "m156",
         "m163",
-        "m157",
-        "m166"
+        "nav_thread_travel_itinerary_start",
+        "nav_thread_travel_itinerary_mid"
       ],
       "expected_ids": [
         "m156",
@@ -1740,19 +1907,21 @@
       "query": "gym membership",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m210",
         "m201",
+        "nav_thread_fitness_gym_start",
+        "nav_thread_fitness_gym_end",
+        "nav_thread_fitness_gym_mid",
         "m202",
         "m207",
         "m206",
         "m203",
-        "m205",
-        "m208",
-        "m204",
-        "m211"
+        "m205"
       ],
       "expected_ids": [
         "m201",
@@ -1762,7 +1931,7 @@
       ],
       "notes": "'gym membership' substring of m201 (+m210 media). Baseline gets those; schedule m205/m206 needs meaning. Split m211 distractor.",
       "recall_at_1": 0.25,
-      "recall_at_5": 0.75,
+      "recall_at_5": 0.5,
       "recall_at_10": 1.0,
       "reciprocal_rank": 1.0
     },
@@ -1771,19 +1940,21 @@
       "query": "Atlas launch",
       "query_type": "topic_recall",
       "scope": "topic",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m034",
+        "nav_thread_atlas_planning_start",
         "m049",
+        "nav_thread_atlas_incident_start",
+        "nav_thread_atlas_planning_end",
+        "nav_thread_atlas_planning_mid",
+        "nav_thread_atlas_incident_end",
+        "nav_thread_atlas_incident_mid",
         "m044",
-        "m046",
-        "m059",
-        "m058",
-        "m048",
-        "m052",
-        "m055",
-        "m037"
+        "m046"
       ],
       "expected_ids": [
         "m034",
@@ -1793,7 +1964,7 @@
       ],
       "notes": "'Atlas launch' substring of m034. Baseline gets m034; deadline/burnout/slip m042/m044/m045 need meaning.",
       "recall_at_1": 0.25,
-      "recall_at_5": 0.5,
+      "recall_at_5": 0.25,
       "recall_at_10": 0.5,
       "reciprocal_rank": 1.0
     },
@@ -1802,6 +1973,8 @@
       "query": "beta rollout",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1809,12 +1982,12 @@
         "m185",
         "m183",
         "m188",
+        "nav_thread_orion_rollout_end",
+        "nav_thread_orion_rollout_start",
+        "nav_thread_orion_rollout_mid",
         "m187",
         "m181",
-        "m182",
-        "m186",
-        "m180",
-        "m184"
+        "m182"
       ],
       "expected_ids": [
         "m179",
@@ -1825,7 +1998,7 @@
       "notes": "'beta rollout' substring of m179. Baseline gets m179; ramp plan m180/m182 and runbook m185 need meaning. Ad-campaign m188 distractor.",
       "recall_at_1": 0.25,
       "recall_at_5": 0.5,
-      "recall_at_10": 1.0,
+      "recall_at_10": 0.75,
       "reciprocal_rank": 1.0
     },
     {
@@ -1833,19 +2006,21 @@
       "query": "call the landlord",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
         "m134",
         "m139",
         "m138",
+        "nav_thread_house_repairs_start",
+        "nav_thread_house_repairs_end",
         "m133",
+        "nav_thread_house_repairs_mid",
         "m137",
         "m135",
-        "m144",
-        "m142",
-        "m143",
-        "m136"
+        "m144"
       ],
       "expected_ids": [
         "m133",
@@ -1855,7 +2030,7 @@
       ],
       "notes": "'landlord' substring of m134 (a neighbor) and m138. The broken items m133/m135/m137 are described without 'landlord' — need meaning. Data-leak m143 distractor.",
       "recall_at_1": 0.0,
-      "recall_at_5": 0.75,
+      "recall_at_5": 0.25,
       "recall_at_10": 1.0,
       "reciprocal_rank": 0.3333333333333333
     },
@@ -1864,6 +2039,8 @@
       "query": "half marathon training",
       "query_type": "topic_recall",
       "scope": "thread",
+      "fairness": "either",
+      "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 10,
       "ranked_ids": [
@@ -1875,8 +2052,8 @@
         "m196",
         "m193",
         "m200",
-        "m198",
-        "m199"
+        "nav_thread_fitness_running_start",
+        "nav_thread_fitness_running_mid"
       ],
       "expected_ids": [
         "m190",
@@ -1889,7 +2066,249 @@
       "recall_at_5": 1.0,
       "recall_at_10": 1.0,
       "reciprocal_rank": 0.5
+    },
+    {
+      "case_id": "GC63",
+      "query": "sprint review",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m002",
+        "m011",
+        "m017",
+        "m024",
+        "m181",
+        "m078",
+        "m085",
+        "m186",
+        "m120",
+        "m197"
+      ],
+      "expected_ids": [
+        "m002"
+      ],
+      "notes": "'sprint review' substring of m002 ('latest sprint review'). Terse keyword query.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC64",
+      "query": "first aid kit",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m070",
+        "m073",
+        "m119",
+        "m109",
+        "m124",
+        "nav_thread_house_repairs_start",
+        "m163",
+        "m089",
+        "m134",
+        "m072"
+      ],
+      "expected_ids": [
+        "m070"
+      ],
+      "notes": "'first aid kit' substring of m070. Realistic context-dependent lookup.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC65",
+      "query": "design doc",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m048",
+        "nav_thread_orion_design_start",
+        "m120",
+        "m115",
+        "nav_thread_orion_design_end",
+        "m001",
+        "m140",
+        "nav_thread_orion_design_mid",
+        "m003",
+        "m185"
+      ],
+      "expected_ids": [
+        "m048"
+      ],
+      "notes": "'design doc' substring of m048. Short terse query shape.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC66",
+      "query": "moving quotes",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m128",
+        "m005",
+        "nav_thread_house_move_mid",
+        "nav_thread_house_move_start",
+        "nav_thread_house_move_end",
+        "m127",
+        "m063",
+        "nav_thread_travel_flights_mid",
+        "m122",
+        "nav_thread_travel_flights_start"
+      ],
+      "expected_ids": [
+        "m128"
+      ],
+      "notes": "'moving quotes' substring of m128. Quick move-planning lookup.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC67",
+      "query": "monthly budget",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m115",
+        "m120",
+        "m210",
+        "m113",
+        "m125",
+        "m106",
+        "m110",
+        "m122",
+        "m108",
+        "m192"
+      ],
+      "expected_ids": [
+        "m115"
+      ],
+      "notes": "'monthly budget' substring of m115. Personal finance keyword.",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC68",
+      "query": "audit trail",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 1,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m078",
+        "m218",
+        "m221",
+        "m185",
+        "m219",
+        "m074",
+        "m203",
+        "m178",
+        "m061",
+        "m076"
+      ],
+      "expected_ids": [
+        "m078"
+      ],
+      "notes": "'audit trail' substring of m078 (a cross-topic lexical trap — 'trail' is hiking but 'audit trail' is work).",
+      "recall_at_1": 1.0,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
+    },
+    {
+      "case_id": "GC69",
+      "query": "dishwasher",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 2,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m124",
+        "m125",
+        "m130",
+        "m098",
+        "m094",
+        "m096",
+        "m097",
+        "m063",
+        "nav_thread_weekend_dinner_start",
+        "m133"
+      ],
+      "expected_ids": [
+        "m123",
+        "m130"
+      ],
+      "notes": "'dishwasher' substring of m123 and m130 (media). Both are in the house_move thread.",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.5,
+      "recall_at_10": 0.5,
+      "reciprocal_rank": 0.3333333333333333
+    },
+    {
+      "case_id": "GC70",
+      "query": "feature flags",
+      "query_type": "verbatim_quote",
+      "scope": "all",
+      "fairness": "keyword_favored",
+      "difficulty": "easy",
+      "expected_count": 2,
+      "retrieved_count": 10,
+      "ranked_ids": [
+        "m179",
+        "m180",
+        "m184",
+        "m089",
+        "m138",
+        "m189",
+        "m136",
+        "m079",
+        "m112",
+        "m140"
+      ],
+      "expected_ids": [
+        "m179",
+        "m180"
+      ],
+      "notes": "'feature flags' substring of m179; 'Flags' in m180. Orion rollout thread.",
+      "recall_at_1": 0.5,
+      "recall_at_5": 1.0,
+      "recall_at_10": 1.0,
+      "reciprocal_rank": 1.0
     }
   ],
-  "generated_at": "2026-05-30T02:00:21.540830+00:00"
+  "generated_at": "2026-05-30T03:51:21.583965+00:00"
 }

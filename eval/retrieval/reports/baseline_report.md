@@ -1,20 +1,20 @@
 # Retrieval Evaluation Report
 
 - **Adapter:** IlikeBaselineRetriever
-- **Corpus:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/corpus.yaml
-- **Golden Set:** /Users/peteromalley/Documents/Veas/.claude/worktrees/agent-aae9b9820205716dc/eval/retrieval/golden_set.yaml
-- **Generated:** 2026-05-30T01:59:05.960598+00:00
-- **Cases:** 62
+- **Corpus:** /Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml
+- **Golden Set:** /Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml
+- **Generated:** 2026-05-30T03:48:22.466778+00:00
+- **Cases:** 70
 
 ## Overall Metrics
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.6210 |
-| recall@1 | 0.2691 |
-| recall@10 | 0.4626 |
-| recall@5 | 0.4535 |
-| n         | 62 |
+| mrr | 0.6600 |
+| recall@1 | 0.3383 |
+| recall@10 | 0.5098 |
+| recall@5 | 0.5017 |
+| n         | 70 |
 
 ## Per Query-Type Metrics
 
@@ -88,7 +88,7 @@
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.6042 |
+| mrr | 0.5792 |
 | recall@1 | 0.1278 |
 | recall@10 | 0.2806 |
 | recall@5 | 0.2806 |
@@ -101,7 +101,7 @@
 | GC51 | authentication module | topic | 3 | 2 | 0.3333 | 0.6667 | 0.6667 | 1.0000 |
 | GC52 | payment processor | topic | 4 | 3 | 0.0000 | 0.5000 | 0.5000 | 0.5000 |
 | GC53 | Blue Ridge hike | thread | 5 | 1 | 0.2000 | 0.2000 | 0.2000 | 1.0000 |
-| GC54 | dinner | thread | 4 | 2 | 0.0000 | 0.2500 | 0.2500 | 0.5000 |
+| GC54 | dinner | thread | 4 | 5 | 0.0000 | 0.2500 | 0.2500 | 0.2000 |
 | GC55 | latency | all | 4 | 5 | 0.0000 | 0.5000 | 0.5000 | 0.2500 |
 | GC56 | feels equal | topic | 4 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 | GC57 | Belem tower | thread | 4 | 1 | 0.2500 | 0.2500 | 0.2500 | 1.0000 |
@@ -115,11 +115,11 @@
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.8750 |
-| recall@1 | 0.4405 |
-| recall@10 | 0.9286 |
-| recall@5 | 0.9167 |
-| n         | 14 |
+| mrr | 0.9205 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9091 |
+| recall@5 | 0.9015 |
+| n         | 22 |
 
 #### Cases
 
@@ -139,3 +139,85 @@
 | GC12 | Lisbon flights | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
 | GC13 | running shoes | all | 2 | 2 | 0.5000 | 1.0000 | 1.0000 | 1.0000 |
 | GC14 | sure | thread | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC63 | sprint review | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC64 | first aid kit | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC65 | design doc | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC66 | moving quotes | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC67 | monthly budget | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC68 | audit trail | all | 1 | 1 | 1.0000 | 1.0000 | 1.0000 | 1.0000 |
+| GC69 | dishwasher | all | 2 | 3 | 0.5000 | 0.5000 | 0.5000 | 1.0000 |
+| GC70 | feature flags | all | 2 | 1 | 0.5000 | 0.5000 | 0.5000 | 1.0000 |
+
+## Per Fairness Metrics
+
+### adversarial
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 5 |
+
+### either
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.6179 |
+| recall@1 | 0.2504 |
+| recall@10 | 0.3734 |
+| recall@5 | 0.3639 |
+| n         | 42 |
+
+### keyword_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.9205 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9091 |
+| recall@5 | 0.9015 |
+| n         | 22 |
+
+### semantic_favored
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 1 |
+
+## Per Difficulty Metrics
+
+### easy
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.9205 |
+| recall@1 | 0.5985 |
+| recall@10 | 0.9091 |
+| recall@5 | 0.9015 |
+| n         | 22 |
+
+### hard
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 6 |
+
+### medium
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.6179 |
+| recall@1 | 0.2504 |
+| recall@10 | 0.3734 |
+| recall@5 | 0.3639 |
+| n         | 42 |

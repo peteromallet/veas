@@ -407,3 +407,63 @@ def test_hybrid_respects_scope():
     assert all(
         corpus.messages[int(r[1:]) - 1].topic_id == "topic_y" for r in results
     )
+
+
+# ---------------------------------------------------------------------------
+# DbBackedRetriever tests (T12)
+# ---------------------------------------------------------------------------
+
+
+def test_db_retriever_requires_env_var():
+    """DbBackedRetriever raises ValueError without DIRECT_DATABASE_URL."""
+    import os
+
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    corpus = _make_test_corpus()
+    # Ensure the env var is NOT set for this test.
+    old = os.environ.pop("DIRECT_DATABASE_URL", None)
+    try:
+        with pytest.raises(ValueError) as exc_info:
+            DbBackedRetriever(corpus)
+        assert "DIRECT_DATABASE_URL" in str(exc_info.value)
+    finally:
+        if old is not None:
+            os.environ["DIRECT_DATABASE_URL"] = old
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("DIRECT_DATABASE_URL"),
+    reason="DIRECT_DATABASE_URL not set — skipping live DB test",
+)
+def test_db_retriever_construction_succeeds_with_env():
+    """DbBackedRetriever constructs successfully when env var is set."""
+    import os
+
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    corpus = _make_test_corpus()
+    # Should not raise.
+    retriever = DbBackedRetriever(corpus)
+    assert retriever is not None
+
+
+@pytest.mark.skipif(
+    not __import__("os").environ.get("DIRECT_DATABASE_URL"),
+    reason="DIRECT_DATABASE_URL not set — skipping live DB test",
+)
+def test_db_retriever_retrieve_returns_results():
+    """DbBackedRetriever.retrieve() returns ids on a simple query."""
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    corpus = _make_test_corpus()
+    retriever = DbBackedRetriever(corpus)
+    # A query that should find something in the real db.
+    results = retriever.retrieve(
+        "test", scope="all", limit=5
+    )
+    # Results should be a list of strings (message ids).
+    assert isinstance(results, list)
+    if results:
+        assert all(isinstance(r, str) for r in results)
+        assert len(results) <= 5

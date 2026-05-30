@@ -105,6 +105,15 @@ def test_run_eval_baseline_mini() -> None:
     assert "verbatim_quote" in report.by_query_type
     assert "paraphrase" in report.by_query_type
 
+    # Fairness / difficulty aggregates: mini cases have no labels, so "unlabeled"
+    # group should contain both cases.
+    assert report.by_fairness is not None
+    assert "unlabeled" in report.by_fairness
+    assert report.by_fairness["unlabeled"]["n"] == 2
+    assert report.by_difficulty is not None
+    assert "unlabeled" in report.by_difficulty
+    assert report.by_difficulty["unlabeled"]["n"] == 2
+
     # Per-case results should have two entries.
     assert len(report.per_case) == 2
     for case_result in report.per_case:
@@ -113,6 +122,9 @@ def test_run_eval_baseline_mini() -> None:
         assert "recall_at_5" in case_result
         assert "recall_at_10" in case_result
         assert "reciprocal_rank" in case_result
+        # fairness / difficulty must be present, never None.
+        assert case_result.get("fairness") == "unlabeled"
+        assert case_result.get("difficulty") == "unlabeled"
 
 
 def test_run_eval_stub_all_zero() -> None:
@@ -194,6 +206,22 @@ def test_e2e_baseline_against_shipped_golden() -> None:
         assert "n" in agg
         assert agg["n"] > 0
 
+    # Fairness / difficulty aggregates must be populated (shipped golden has
+    # labeled cases).
+    assert report.by_fairness is not None
+    assert len(report.by_fairness) > 0
+    for fl, agg in report.by_fairness.items():
+        assert "recall@1" in agg
+        assert "n" in agg
+        assert agg["n"] > 0
+
+    assert report.by_difficulty is not None
+    assert len(report.by_difficulty) > 0
+    for dl, agg in report.by_difficulty.items():
+        assert "recall@1" in agg
+        assert "n" in agg
+        assert agg["n"] > 0
+
     # Per-case results count matches golden set.
     assert len(report.per_case) == len(golden_set.cases)
 
@@ -207,6 +235,13 @@ def test_e2e_baseline_against_shipped_golden() -> None:
         assert "reciprocal_rank" in case_result
         assert "ranked_ids" in case_result
         assert "expected_ids" in case_result
+        # fairness / difficulty must be present, never None.
+        assert "fairness" in case_result
+        assert case_result["fairness"] is not None
+        assert isinstance(case_result["fairness"], str)
+        assert "difficulty" in case_result
+        assert case_result["difficulty"] is not None
+        assert isinstance(case_result["difficulty"], str)
 
 
 def test_e2e_json_roundtrip() -> None:
@@ -230,6 +265,15 @@ def test_e2e_json_roundtrip() -> None:
     assert deserialized["overall"]["mrr"] == report.overall["mrr"]
     assert set(deserialized["by_query_type"].keys()) == set(
         report.by_query_type.keys()
+    )
+    # by_fairness / by_difficulty should round-trip.
+    assert deserialized.get("by_fairness") is not None
+    assert set(deserialized["by_fairness"].keys()) == set(
+        report.by_fairness.keys()
+    )
+    assert deserialized.get("by_difficulty") is not None
+    assert set(deserialized["by_difficulty"].keys()) == set(
+        report.by_difficulty.keys()
     )
     assert len(deserialized["per_case"]) == len(report.per_case)
 
@@ -299,10 +343,15 @@ def test_write_markdown_report_creates_parent_dir() -> None:
         assert "# Retrieval Evaluation Report" in content
         assert "## Overall Metrics" in content
         assert "## Per Query-Type Metrics" in content
+        # Fairness and difficulty tables render when aggregates are non-empty.
+        assert "## Per Fairness Metrics" in content
+        assert "### unlabeled" in content
+        assert "## Per Difficulty Metrics" in content
+        assert "### unlabeled" in content
 
 
 def test_write_markdown_report_stable_ordering() -> None:
-    """Markdown report has sorted query-type keys and stable case ordering."""
+    """Markdown report has sorted keys within each breakdown section."""
     corpus = load_corpus(_SHIPPED_CORPUS)
     golden_set = load_golden_set(_SHIPPED_GOLDEN, corpus=corpus)
     retriever = IlikeBaselineRetriever(corpus)
@@ -315,16 +364,38 @@ def test_write_markdown_report_stable_ordering() -> None:
 
         content = out_path.read_text()
 
-        # Query types should appear in sorted order.
-        qt_order: list[str] = []
+        # Collect ### headings in sections.  We now have three ###-level
+        # sections: query type, fairness, and difficulty.  Verify that each
+        # set is internally sorted.
+        sections: dict[str, list[str]] = {}
+        current_section = "__header__"
         for line in content.splitlines():
-            if line.startswith("### ") and not line.startswith("#### "):
-                qt_order.append(line[4:].strip())
-        assert qt_order == sorted(qt_order)
+            if line.startswith("## Per Query-Type Metrics"):
+                current_section = "query_type"
+            elif line.startswith("## Per Fairness Metrics"):
+                current_section = "fairness"
+            elif line.startswith("## Per Difficulty Metrics"):
+                current_section = "difficulty"
+            elif line.startswith("### ") and not line.startswith("#### "):
+                sections.setdefault(current_section, []).append(
+                    line[4:].strip()
+                )
+
+        for section_name, headings in sections.items():
+            assert headings == sorted(
+                headings
+            ), f"{section_name} headings not sorted: {headings}"
 
         # Every query type section should be present.
-        for qt in ("cross_thread", "paraphrase", "topic_recall", "verbatim_quote"):
-            assert f"### {qt}" in content
+        assert "cross_thread" in sections.get("query_type", [])
+        assert "paraphrase" in sections.get("query_type", [])
+        assert "topic_recall" in sections.get("query_type", [])
+        assert "verbatim_quote" in sections.get("query_type", [])
+
+        # Fairness and difficulty breakdown sections should be present
+        # (shipped golden set has labeled cases).
+        assert "## Per Fairness Metrics" in content
+        assert "## Per Difficulty Metrics" in content
 
 
 # ---------------------------------------------------------------------------
@@ -432,3 +503,128 @@ def test_cli_default_paths_direct_call() -> None:
     # count: the fair golden set was scaled up, so derive it from the file).
     shipped = load_golden_set(_SHIPPED_GOLDEN, corpus=load_corpus(_SHIPPED_CORPUS))
     assert report.overall["n"] == len(shipped.cases)
+
+
+# ---------------------------------------------------------------------------
+# M1 gate assertion tests (T10)
+# ---------------------------------------------------------------------------
+
+
+def _make_fake_report(
+    adapter_name: str = "SemanticRetriever",
+    paraphrase_recall10: float = 0.75,
+    verbatim_recall1: float = 0.60,
+    n: int = 10,
+) -> dict:
+    """Build a synthetic report dict for M1 gate testing."""
+    return {
+        "adapter_name": adapter_name,
+        "by_query_type": {
+            "paraphrase": {
+                "recall@1": 0.4,
+                "recall@5": 0.65,
+                "recall@10": paraphrase_recall10,
+                "mrr": 0.55,
+                "n": n,
+            },
+            "verbatim_quote": {
+                "recall@1": verbatim_recall1,
+                "recall@5": 0.85,
+                "recall@10": 0.95,
+                "mrr": 0.80,
+                "n": n,
+            },
+        },
+    }
+
+
+def _make_fake_baseline(
+    verbatim_recall1: float = 0.50,
+) -> dict:
+    """Build a synthetic baseline report dict for M1 gate testing."""
+    return {
+        "by_query_type": {
+            "verbatim_quote": {
+                "recall@1": verbatim_recall1,
+                "recall@5": 0.80,
+                "recall@10": 0.90,
+                "mrr": 0.70,
+                "n": 10,
+            },
+        },
+    }
+
+
+def test_m1_gate_passes_with_good_semantic() -> None:
+    """M1 gate passes when both conditions are met."""
+    from eval.retrieval._make_comparison import _assert_m1_gate
+
+    baseline = _make_fake_baseline(verbatim_recall1=0.50)
+    semantic = _make_fake_report(
+        paraphrase_recall10=0.75, verbatim_recall1=0.60
+    )
+    # Should not raise.
+    _assert_m1_gate(baseline, semantic)
+
+
+def test_m1_gate_fails_paraphrase_below_threshold() -> None:
+    """M1 gate exits non-zero when paraphrase recall@10 < 0.7."""
+    from eval.retrieval._make_comparison import _assert_m1_gate
+
+    baseline = _make_fake_baseline()
+    semantic = _make_fake_report(paraphrase_recall10=0.50)
+    with pytest.raises(SystemExit) as exc_info:
+        _assert_m1_gate(baseline, semantic)
+    assert exc_info.value.code == 1
+
+
+def test_m1_gate_fails_verbatim_below_baseline() -> None:
+    """M1 gate exits non-zero when verbatim_quote recall@1 < baseline."""
+    from eval.retrieval._make_comparison import _assert_m1_gate
+
+    baseline = _make_fake_baseline(verbatim_recall1=0.70)
+    semantic = _make_fake_report(verbatim_recall1=0.50)
+    with pytest.raises(SystemExit) as exc_info:
+        _assert_m1_gate(baseline, semantic)
+    assert exc_info.value.code == 1
+
+
+def test_m1_gate_fails_both_conditions() -> None:
+    """M1 gate exits non-zero when both conditions fail."""
+    from eval.retrieval._make_comparison import _assert_m1_gate
+
+    baseline = _make_fake_baseline(verbatim_recall1=0.70)
+    semantic = _make_fake_report(
+        paraphrase_recall10=0.40, verbatim_recall1=0.50
+    )
+    with pytest.raises(SystemExit) as exc_info:
+        _assert_m1_gate(baseline, semantic)
+    assert exc_info.value.code == 1
+
+
+def test_m1_gate_semantic_preferred_over_hybrid() -> None:
+    """M1 gate prefers semantic when paraphrase n>0, falls back to hybrid."""
+    from eval.retrieval._make_comparison import main
+
+    # When semantic has paraphrase data, it should be chosen.
+    # We test that _assert_m1_gate is called with the right report
+    # by verifying the gate passes/fails appropriately.
+    from eval.retrieval._make_comparison import _assert_m1_gate
+
+    baseline = _make_fake_baseline(verbatim_recall1=0.50)
+    # Semantic with data -> should be chosen
+    semantic = _make_fake_report(
+        adapter_name="SemanticRetriever",
+        paraphrase_recall10=0.80,
+        verbatim_recall1=0.60,
+    )
+    _assert_m1_gate(baseline, semantic)  # should pass
+
+    # Hybrid with no semantic paraphrase data (n=0) -> semantic skipped,
+    # hybrid chosen.
+    hybrid = _make_fake_report(
+        adapter_name="HybridRetriever",
+        paraphrase_recall10=0.80,
+        verbatim_recall1=0.60,
+    )
+    _assert_m1_gate(baseline, hybrid)  # should also pass

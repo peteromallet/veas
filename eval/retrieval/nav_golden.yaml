@@ -1,0 +1,251 @@
+# Navigation golden set for retrieval eval harness.
+# Generated manually — DO NOT hand-edit corpus refs without re-validating.
+# Covers all seven nav ops with >=1 case per op, 2+ for most-used.
+
+cases:
+# =========================================================================
+# open_thread — returns all messages in a thread in chronological order.
+# n is ignored for this op.
+# =========================================================================
+- id: NAV01
+  op: open_thread
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m001
+    - nav_thread_nexus_kickoff_start
+    - m002
+    - m003
+    - m004
+    - m005
+    - nav_thread_nexus_kickoff_mid
+    - m006
+    - m007
+    - m008
+    - m009
+    - m010
+    - m011
+    - m012
+    - m013
+    - m014
+    - m015
+    - m016
+    - m017
+    - nav_thread_nexus_kickoff_end
+    - m018
+  notes: 'Full thread in chronological order (21 msgs). n ignored.'
+
+- id: NAV02
+  op: open_thread
+  scope: thread
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  expected_ids_in_order:
+    - m049
+    - nav_thread_atlas_incident_start
+    - m050
+    - m051
+    - nav_thread_atlas_incident_mid
+    - m052
+    - m053
+    - m054
+    - m055
+    - m056
+    - m057
+    - m058
+    - m059
+    - nav_thread_atlas_incident_end
+    - m060
+  notes: 'Full Atlas-incident thread in chronological order (15 msgs). n ignored.'
+
+# =========================================================================
+# messages_before — returns n messages BEFORE anchor (exclusive).
+# n is REQUIRED.
+# =========================================================================
+- id: NAV03
+  op: messages_before
+  anchor: nav_thread_nexus_kickoff_mid
+  n: 3
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m003
+    - m004
+    - m005
+  notes: '3 msgs before midpoint anchor in kickoff thread.'
+
+- id: NAV04
+  op: messages_before
+  anchor: nav_thread_weekend_hike_end
+  n: 5
+  scope: thread
+  thread_id: thread_weekend_hike
+  topic_id: topic_weekend_plans
+  expected_ids_in_order:
+    - m074
+    - m075
+    - m076
+    - m077
+    - m078
+  notes: '5 msgs before recent_end anchor in hike thread.'
+
+# =========================================================================
+# messages_after — returns n messages AFTER anchor (exclusive).
+# n is REQUIRED.
+# =========================================================================
+- id: NAV05
+  op: messages_after
+  anchor: nav_thread_nexus_kickoff_start
+  n: 4
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m002
+    - m003
+    - m004
+    - m005
+  notes: '4 msgs after start anchor in kickoff thread.'
+
+- id: NAV06
+  op: messages_after
+  anchor: nav_thread_friction_chores_mid
+  n: 2
+  scope: thread
+  thread_id: thread_friction_chores
+  topic_id: topic_relationship_friction
+  expected_ids_in_order:
+    - m098
+    - m099
+  notes: '2 msgs after midpoint anchor in chores thread.'
+
+# =========================================================================
+# scroll — returns n messages centered around anchor.
+# n is REQUIRED.
+# =========================================================================
+- id: NAV07
+  op: scroll
+  anchor: nav_thread_nexus_kickoff_mid
+  n: 5
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m004
+    - m005
+    - nav_thread_nexus_kickoff_mid
+    - m006
+    - m007
+  notes: 'Scroll window of 5 centered on midpoint anchor (2 before + anchor + 2 after).'
+
+- id: NAV08
+  op: scroll
+  anchor: nav_thread_weekend_dinner_mid
+  n: 7
+  scope: thread
+  thread_id: thread_weekend_dinner
+  topic_id: topic_weekend_plans
+  expected_ids_in_order:
+    - m082
+    - m083
+    - nav_thread_weekend_dinner_mid
+    - m084
+    - m085
+    - m086
+    - m087
+  notes: 'Scroll window of 7 centered on midpoint anchor (3 before + anchor + 3 after).'
+
+# =========================================================================
+# topic_recent — returns n most recent messages across a topic.
+# n defaults to 20.
+# =========================================================================
+- id: NAV09
+  op: topic_recent
+  n: 6
+  scope: topic
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m217
+    - m218
+    - m219
+    - m220
+    - m221
+    - nav_thread_nexus_security_end
+  notes: '6 most recent msgs in project_nexus topic (covers security thread tail).'
+
+- id: NAV10
+  op: topic_recent
+  n: 4
+  scope: topic
+  topic_id: topic_weekend_plans
+  expected_ids_in_order:
+    - m075
+    - m076
+    - m077
+    - m078
+  notes: '4 most recent msgs in weekend_plans topic (hike thread tail).'
+
+# =========================================================================
+# recent_before_current — returns n most recent msgs up to anchor (exclusive).
+# n defaults to 20.
+# Anchor is a nav anchor message id from T2 (recent_end anchors).
+# =========================================================================
+- id: NAV11
+  op: recent_before_current
+  anchor: nav_thread_nexus_kickoff_end
+  n: 5
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m012
+    - m013
+    - m014
+    - m015
+    - m016
+  notes: '5 most recent msgs before recent_end anchor in kickoff thread.'
+
+- id: NAV12
+  op: recent_before_current
+  anchor: nav_thread_atlas_incident_end
+  n: 4
+  scope: thread
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  expected_ids_in_order:
+    - m055
+    - m056
+    - m057
+    - m058
+  notes: '4 most recent msgs before recent_end anchor in atlas-incident thread.'
+
+# =========================================================================
+# before_message_id — returns n messages before a specific message id (exclusive).
+# n is REQUIRED.
+# =========================================================================
+- id: NAV13
+  op: before_message_id
+  anchor: m010
+  n: 3
+  scope: thread
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  expected_ids_in_order:
+    - m007
+    - m008
+    - m009
+  notes: '3 msgs before message m010 in kickoff thread.'
+
+- id: NAV14
+  op: before_message_id
+  anchor: m055
+  n: 2
+  scope: thread
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  expected_ids_in_order:
+    - m053
+    - m054
+  notes: '2 msgs before message m055 in atlas-incident thread.'

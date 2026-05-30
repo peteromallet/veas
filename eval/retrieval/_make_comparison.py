@@ -6,32 +6,175 @@ Run AFTER:
     python -m eval.retrieval.runner --adapter hybrid
 
 Then:
-    python -m eval.retrieval._make_comparison
+    python -m eval.retrieval._make_comparison [--assert-m1-gate]
 
 Writes eval/retrieval/reports/comparison_report.md.
 """
 
 from __future__ import annotations
 
+import argparse
 import json
+import sys
 from pathlib import Path
 
 REPORTS = Path(__file__).resolve().parent / "reports"
 QTS = ["verbatim_quote", "paraphrase", "cross_thread", "topic_recall"]
+METRICS = [("recall@1", "recall@1"), ("recall@5", "recall@5"),
+           ("recall@10", "recall@10"), ("mrr", "MRR")]
 
 
-def load(name):
+def load(name: str) -> dict:
     return json.load(open(REPORTS / f"{name}_report.json"))
 
 
-def cell(x):
+def cell(x: float) -> str:
     return f"{x:.3f}"
 
 
-def main():
+def _emit_fairness_table(lines: list[str], b: dict, s: dict, h: dict) -> None:
+    """Add fairness-by-tag breakdown tables side-by-side."""
+    A = lines.append
+    # Gather all fairness tags across all three reports.
+    tags: set[str] = set()
+    for report in (b, s, h):
+        fb = report.get("by_fairness") or {}
+        tags.update(fb.keys())
+    if not tags:
+        return
+
+    A("## Per fairness tag — recall@10")
+    A("")
+    A("| Fairness       | n-baseline | Baseline | Semantic | Hybrid |")
+    A("|----------------|-----------:|---------:|---------:|-------:|")
+    for tag in sorted(tags):
+        bn = (b.get("by_fairness") or {}).get(tag, {})
+        sn = (s.get("by_fairness") or {}).get(tag, {})
+        hn = (h.get("by_fairness") or {}).get(tag, {})
+        nb = bn.get("n", 0)
+        A(f"| {tag} | {nb} | {cell(bn.get('recall@10', 0.0))} | "
+          f"{cell(sn.get('recall@10', 0.0))} | {cell(hn.get('recall@10', 0.0))} |")
+    A("")
+
+    A("## Per fairness tag — MRR")
+    A("")
+    A("| Fairness       | n-baseline | Baseline | Semantic | Hybrid |")
+    A("|----------------|-----------:|---------:|---------:|-------:|")
+    for tag in sorted(tags):
+        bn = (b.get("by_fairness") or {}).get(tag, {})
+        sn = (s.get("by_fairness") or {}).get(tag, {})
+        hn = (h.get("by_fairness") or {}).get(tag, {})
+        nb = bn.get("n", 0)
+        A(f"| {tag} | {nb} | {cell(bn.get('mrr', 0.0))} | "
+          f"{cell(sn.get('mrr', 0.0))} | {cell(hn.get('mrr', 0.0))} |")
+    A("")
+
+
+def _emit_difficulty_table(lines: list[str], b: dict, s: dict, h: dict) -> None:
+    """Add difficulty-by-tag breakdown tables side-by-side."""
+    A = lines.append
+    tags: set[str] = set()
+    for report in (b, s, h):
+        db = report.get("by_difficulty") or {}
+        tags.update(db.keys())
+    if not tags:
+        return
+
+    A("## Per difficulty tag — recall@10")
+    A("")
+    A("| Difficulty     | n-baseline | Baseline | Semantic | Hybrid |")
+    A("|----------------|-----------:|---------:|---------:|-------:|")
+    for tag in sorted(tags):
+        bn = (b.get("by_difficulty") or {}).get(tag, {})
+        sn = (s.get("by_difficulty") or {}).get(tag, {})
+        hn = (h.get("by_difficulty") or {}).get(tag, {})
+        nb = bn.get("n", 0)
+        A(f"| {tag} | {nb} | {cell(bn.get('recall@10', 0.0))} | "
+          f"{cell(sn.get('recall@10', 0.0))} | {cell(hn.get('recall@10', 0.0))} |")
+    A("")
+
+    A("## Per difficulty tag — MRR")
+    A("")
+    A("| Difficulty     | n-baseline | Baseline | Semantic | Hybrid |")
+    A("|----------------|-----------:|---------:|---------:|-------:|")
+    for tag in sorted(tags):
+        bn = (b.get("by_difficulty") or {}).get(tag, {})
+        sn = (s.get("by_difficulty") or {}).get(tag, {})
+        hn = (h.get("by_difficulty") or {}).get(tag, {})
+        nb = bn.get("n", 0)
+        A(f"| {tag} | {nb} | {cell(bn.get('mrr', 0.0))} | "
+          f"{cell(sn.get('mrr', 0.0))} | {cell(hn.get('mrr', 0.0))} |")
+    A("")
+
+
+def _assert_m1_gate(baseline_report: dict, semantic_or_hybrid: dict) -> None:
+    """Assert the M1 gate conditions and exit non-zero on failure.
+
+    Conditions:
+      1. (semantic_or_hybrid).by_query_type['paraphrase']['recall@10'] >= 0.7
+      2. (semantic_or_hybrid).by_query_type['verbatim_quote']['recall@1']
+         >= baseline.by_query_type['verbatim_quote']['recall@1']
+    """
+    failures: list[str] = []
+
+    # Condition 1: paraphrase recall@10 >= 0.7
+    para = semantic_or_hybrid.get("by_query_type", {}).get("paraphrase", {})
+    para_r10 = para.get("recall@10", 0.0)
+    if para_r10 < 0.7:
+        failures.append(
+            f"paraphrase recall@10 ({para_r10:.4f}) < 0.7"
+        )
+
+    # Condition 2: verbatim_quote recall@1 >= baseline
+    vb_sem = semantic_or_hybrid.get("by_query_type", {}).get("verbatim_quote", {})
+    vb_bl = baseline_report.get("by_query_type", {}).get("verbatim_quote", {})
+    vb_sem_r1 = vb_sem.get("recall@1", 0.0)
+    vb_bl_r1 = vb_bl.get("recall@1", 0.0)
+    if vb_sem_r1 < vb_bl_r1:
+        failures.append(
+            f"verbatim_quote recall@1 ({vb_sem_r1:.4f}) < "
+            f"baseline ({vb_bl_r1:.4f})"
+        )
+
+    if failures:
+        adapter_name = semantic_or_hybrid.get("adapter_name", "semantic_or_hybrid")
+        print(f"M1 gate FAILED for {adapter_name}:", file=sys.stderr)
+        for f in failures:
+            print(f"  - {f}", file=sys.stderr)
+        sys.exit(1)
+
+    print("M1 gate PASSED")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(
+        description="Build FAIR retrieval comparison report."
+    )
+    parser.add_argument(
+        "--assert-m1-gate",
+        action="store_true",
+        help=(
+            "Load baseline and semantic-or-hybrid reports and assert M1 "
+            "gate conditions. Prefers semantic, falls back to hybrid."
+        ),
+    )
+    args = parser.parse_args(argv)
+
     b, s, h = load("baseline"), load("semantic"), load("hybrid")
+
+    if args.assert_m1_gate:
+        # Prefer semantic, fall back to hybrid.
+        # If semantic by_query_type has paraphrase key with n>0, use it.
+        sem_para = s.get("by_query_type", {}).get("paraphrase", {})
+        if sem_para.get("n", 0) > 0:
+            chosen = s
+        else:
+            chosen = h
+        _assert_m1_gate(b, chosen)
+        return
+
     n = b["overall"]["n"]
-    lines = []
+    lines: list[str] = []
     A = lines.append
 
     A("# FAIR Retrieval Comparison — Baseline vs Semantic vs Hybrid")
@@ -60,8 +203,7 @@ def main():
     A("")
     A("| Metric    | Baseline (ILIKE) | Semantic | Hybrid (RRF) |")
     A("|-----------|-----------------:|---------:|-------------:|")
-    for key, label in [("recall@1", "recall@1"), ("recall@5", "recall@5"),
-                       ("recall@10", "recall@10"), ("mrr", "MRR")]:
+    for key, label in METRICS:
         A(f"| {label} | {cell(b['overall'][key])} | "
           f"{cell(s['overall'][key])} | {cell(h['overall'][key])} |")
     A("")
@@ -89,6 +231,12 @@ def main():
           f"{cell(s['by_query_type'][qt]['mrr'])} | "
           f"{cell(h['by_query_type'][qt]['mrr'])} |")
     A("")
+
+    # Fairness breakdown tables (new).
+    _emit_fairness_table(lines, b, s, h)
+
+    # Difficulty breakdown tables (new).
+    _emit_difficulty_table(lines, b, s, h)
 
     # Verdict — computed deltas
     r10_b, r10_s = b["overall"]["recall@10"], s["overall"]["recall@10"]
@@ -130,21 +278,23 @@ def main():
     out.write_text("\n".join(lines), encoding="utf-8")
     print(f"wrote {out}")
     # also echo the tables for convenience
-    print("\n".join(lines[: lines.index("## Verdict")]))
+    verdict_idx = lines.index("## Verdict") if "## Verdict" in lines else -1
+    if verdict_idx > 0:
+        print("\n".join(lines[:verdict_idx]))
 
 
-def _corpus_size():
+def _corpus_size() -> int:
     from eval.retrieval.loader import load_corpus
     return len(load_corpus(Path(__file__).resolve().parent / "corpus.yaml").messages)
 
 
-def _topic_count():
+def _topic_count() -> int:
     from eval.retrieval.loader import load_corpus
     c = load_corpus(Path(__file__).resolve().parent / "corpus.yaml")
     return len({m.topic_id for m in c.messages})
 
 
-def _thread_count():
+def _thread_count() -> int:
     from eval.retrieval.loader import load_corpus
     c = load_corpus(Path(__file__).resolve().parent / "corpus.yaml")
     return len({m.thread_id for m in c.messages})

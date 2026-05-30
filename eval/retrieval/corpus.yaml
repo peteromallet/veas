@@ -11,98 +11,112 @@ messages:
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:00:00Z'
+  sent_at: '2025-11-01T08:01:00Z'
   content: Hey Bob, can we discuss the Nexus project timeline?
+- id: nav_thread_nexus_kickoff_start
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:01:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_kickoff start]'
 - id: m002
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:01:00Z'
+  sent_at: '2025-11-01T08:02:00Z'
   content: Sure, I've got the latest sprint review ready.
 - id: m003
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:02:00Z'
+  sent_at: '2025-11-01T08:03:00Z'
   content: Great. How's the authentication module coming along?
 - id: m004
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:03:00Z'
+  sent_at: '2025-11-01T08:04:00Z'
   content: The OAuth2 login integration is mostly done. Just need to handle token refresh edge cases.
 - id: m005
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:04:00Z'
+  sent_at: '2025-11-01T08:05:00Z'
   content: What about the database migration scripts?
+- id: nav_thread_nexus_kickoff_mid
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:05:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_kickoff midpoint]'
 - id: m006
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:05:00Z'
+  sent_at: '2025-11-01T08:06:00Z'
   content: The migration scripts are blocked on the schema review. Jenkins flagged three compatibility issues.
 - id: m007
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:06:00Z'
+  sent_at: '2025-11-01T08:07:00Z'
   content: fine.
 - id: m008
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:07:00Z'
+  sent_at: '2025-11-01T08:08:00Z'
   content: I've been thinking about the caching layer. A Redis cluster might be overkill for our scale.
 - id: m009
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:08:00Z'
+  sent_at: '2025-11-01T08:09:00Z'
   content: We should benchmark the cache first. I asked DevOps to provision a test environment.
 - id: m010
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:09:00Z'
+  sent_at: '2025-11-01T08:10:00Z'
   content: The API rate limiting is causing issues in staging. Users hitting 429s during peak.
 - id: m011
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:10:00Z'
+  sent_at: '2025-11-01T08:11:00Z'
   content: That's the same rate limit thing Sarah reported last sprint. Did we ever raise the burst limit?
 - id: m012
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:11:00Z'
+  sent_at: '2025-11-01T08:12:00Z'
   content: I bumped the rate limit from 50 to 75 requests per minute. Should be enough.
 - id: m013
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:12:00Z'
+  sent_at: '2025-11-01T08:13:00Z'
   content: I told you so.
 - id: m014
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:13:00Z'
+  sent_at: '2025-11-01T08:14:00Z'
   content: Check this out
   media_analysis:
     explanation: Screenshot of a null pointer exception in the Nexus authentication module at line 342 of AuthService.java during the 2PM load test
@@ -111,14 +125,14 @@ messages:
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:14:00Z'
+  sent_at: '2025-11-01T08:15:00Z'
   content: The null pointer from earlier - fixed it. Was a missing null guard on the session factory injection path.
 - id: m016
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:15:00Z'
+  sent_at: '2025-11-01T08:16:00Z'
   content: CI pipeline is green again. The migration scripts passed schema review.
   media_analysis:
     explanation: 'Jenkins build #1847 passed all three compatibility checks after the PostGIS extension version was bumped to 3.4'
@@ -127,119 +141,147 @@ messages:
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:16:00Z'
+  sent_at: '2025-11-01T08:17:00Z'
   content: By the way, the customer satisfaction rate jumped after the new onboarding flow.
+- id: nav_thread_nexus_kickoff_end
+  thread_id: thread_nexus_kickoff
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:17:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_kickoff recent_end]'
 - id: m018
   thread_id: thread_nexus_kickoff
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:17:00Z'
+  sent_at: '2025-11-01T08:18:00Z'
   content: I left a little thank-you token on your desk for covering my on-call.
 - id: m019
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:18:00Z'
+  sent_at: '2025-11-01T08:19:00Z'
   content: Found a regression in the payment processor. It's duplicating transaction IDs since the last deploy.
+- id: nav_thread_nexus_bugs_start
+  thread_id: thread_nexus_bugs
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:19:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_bugs start]'
 - id: m020
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:19:00Z'
+  sent_at: '2025-11-01T08:20:00Z'
   content: That's bad. Is it affecting production?
 - id: m021
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:20:00Z'
+  sent_at: '2025-11-01T08:21:00Z'
   content: Only staging so far. The idempotency key check is failing under concurrent requests.
 - id: m022
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:21:00Z'
+  sent_at: '2025-11-01T08:22:00Z'
   content: Same root cause as the session token bug from March?
+- id: nav_thread_nexus_bugs_mid
+  thread_id: thread_nexus_bugs
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:22:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_bugs midpoint]'
 - id: m023
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:22:00Z'
+  sent_at: '2025-11-01T08:23:00Z'
   content: Related but not identical. This one's in the PostgreSQL advisory lock layer.
 - id: m024
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:23:00Z'
+  sent_at: '2025-11-01T08:24:00Z'
   content: Push a hotfix for the payment bug. I'll review when I'm back from lunch.
 - id: m025
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:24:00Z'
+  sent_at: '2025-11-01T08:25:00Z'
   content: The payment processor is duplicating transaction IDs after the deploy. Root cause is an idempotency key collision.
 - id: m026
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:25:00Z'
+  sent_at: '2025-11-01T08:26:00Z'
   content: We already discussed the duplicate transactions. Did you push the hotfix?
 - id: m027
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:26:00Z'
+  sent_at: '2025-11-01T08:27:00Z'
   content: sure
 - id: m028
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:27:00Z'
+  sent_at: '2025-11-01T08:28:00Z'
   content: Hotfix deployed. Monitoring the payment processor error rate now.
 - id: m029
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:28:00Z'
+  sent_at: '2025-11-01T08:29:00Z'
   content: Rate limiting tweak helped. 429 count dropped 80% in the last hour.
 - id: m030
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:29:00Z'
+  sent_at: '2025-11-01T08:30:00Z'
   content: 'Separate issue: the notification service is duplicating emails to users on retry. Not the payment one.'
 - id: m031
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:30:00Z'
+  sent_at: '2025-11-01T08:31:00Z'
   content: Right, the email duplication is the retry queue, totally different from the transaction dup.
 - id: m032
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T08:31:00Z'
+  sent_at: '2025-11-01T08:32:00Z'
   content: The mobile app crashes on startup if the auth token is expired. Stack trace attached.
+- id: nav_thread_nexus_bugs_end
+  thread_id: thread_nexus_bugs
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T08:32:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_bugs recent_end]'
 - id: m033
   thread_id: thread_nexus_bugs
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T08:32:00Z'
+  sent_at: '2025-11-01T08:33:00Z'
   content: here
   media_analysis:
     summary: 'Crash report: NullPointerException in TokenManager.refresh() on cold start when the cached refresh token is null'
@@ -248,91 +290,105 @@ messages:
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:33:00Z'
+  sent_at: '2025-11-01T08:34:00Z'
   content: Maya here. Are we still targeting the Atlas launch for end of quarter?
+- id: nav_thread_atlas_planning_start
+  thread_id: thread_atlas_planning
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:34:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_planning start]'
 - id: m035
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:34:00Z'
+  sent_at: '2025-11-01T08:35:00Z'
   content: Yeah, but the data pipeline rewrite is the long pole. Ingestion is slower than spec.
 - id: m036
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:35:00Z'
+  sent_at: '2025-11-01T08:36:00Z'
   content: How slow? We promised sub-second query latency to the customer.
 - id: m037
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:36:00Z'
+  sent_at: '2025-11-01T08:37:00Z'
   content: Right now p95 latency is around 4 seconds under load. The join on the events table is the bottleneck.
+- id: nav_thread_atlas_planning_mid
+  thread_id: thread_atlas_planning
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:37:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_planning midpoint]'
 - id: m038
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:37:00Z'
+  sent_at: '2025-11-01T08:38:00Z'
   content: Can we add an index on the events table to speed up that join?
 - id: m039
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:38:00Z'
+  sent_at: '2025-11-01T08:39:00Z'
   content: Already tried. The index helped reads but writes got slower. Classic tradeoff.
 - id: m040
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:39:00Z'
+  sent_at: '2025-11-01T08:40:00Z'
   content: What about partitioning the events table by day?
 - id: m041
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:40:00Z'
+  sent_at: '2025-11-01T08:41:00Z'
   content: Daily partitioning is promising. I'll prototype it this week.
 - id: m042
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:41:00Z'
+  sent_at: '2025-11-01T08:42:00Z'
   content: Good. Latency under a second is the hard requirement, everything else can slip.
 - id: m043
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:42:00Z'
+  sent_at: '2025-11-01T08:43:00Z'
   content: ok
 - id: m044
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:43:00Z'
+  sent_at: '2025-11-01T08:44:00Z'
   content: Honestly the team is burnt out. Three weekends in a row on Atlas is not sustainable.
 - id: m045
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:44:00Z'
+  sent_at: '2025-11-01T08:45:00Z'
   content: I hear you. Let me push the deadline conversation up with leadership.
 - id: m046
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:45:00Z'
+  sent_at: '2025-11-01T08:46:00Z'
   content: look at this
   media_analysis:
     description: Grafana dashboard screenshot showing Atlas query p95 latency spiking to 6.2 seconds at 14:00 during the nightly batch ingestion window
@@ -341,84 +397,105 @@ messages:
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:46:00Z'
+  sent_at: '2025-11-01T08:47:00Z'
   content: 'Side note: the video call latency in standups is awful, audio keeps dropping.'
+- id: nav_thread_atlas_planning_end
+  thread_id: thread_atlas_planning
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:47:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_planning recent_end]'
 - id: m048
   thread_id: thread_atlas_planning
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:47:00Z'
+  sent_at: '2025-11-01T08:48:00Z'
   content: Unrelated, did you finish the index for the design doc? The appendix references are off.
 - id: m049
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:48:00Z'
+  sent_at: '2025-11-01T08:49:00Z'
   content: Atlas is down. Customers are getting 503s on the dashboard.
+- id: nav_thread_atlas_incident_start
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:49:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_incident start]'
 - id: m050
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:49:00Z'
+  sent_at: '2025-11-01T08:50:00Z'
   content: On it. Looks like the ingestion worker pool is saturated again.
 - id: m051
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:50:00Z'
+  sent_at: '2025-11-01T08:51:00Z'
   content: Is this the same outage as last Tuesday or a new one?
+- id: nav_thread_atlas_incident_mid
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:51:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_incident midpoint]'
 - id: m052
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:51:00Z'
+  sent_at: '2025-11-01T08:52:00Z'
   content: New one. Last Tuesday was a bad deploy; this is the worker pool exhausting connections.
 - id: m053
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:52:00Z'
+  sent_at: '2025-11-01T08:53:00Z'
   content: Roll back or scale up?
 - id: m054
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:53:00Z'
+  sent_at: '2025-11-01T08:54:00Z'
   content: Scaling the worker pool up to 12 now. Should relieve the connection pressure.
 - id: m055
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:54:00Z'
+  sent_at: '2025-11-01T08:55:00Z'
   content: Status?
 - id: m056
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:55:00Z'
+  sent_at: '2025-11-01T08:56:00Z'
   content: Recovering. 503 rate down to near zero. Postmortem tomorrow.
 - id: m057
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:56:00Z'
+  sent_at: '2025-11-01T08:57:00Z'
   content: Thanks. That was stressful.
 - id: m058
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:57:00Z'
+  sent_at: '2025-11-01T08:58:00Z'
   content: incident timeline
   media_analysis:
     summary: 'Atlas outage postmortem: the ingestion worker pool exhausted the database connection pool at 09:14, causing cascading 503 errors for 22 minutes until the pool was scaled from 6 to 12 workers'
@@ -427,133 +504,154 @@ messages:
   topic_id: topic_project_atlas
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T08:58:00Z'
+  sent_at: '2025-11-01T08:59:00Z'
   content: Honestly after that outage I'm feeling pretty down about this whole launch.
+- id: nav_thread_atlas_incident_end
+  thread_id: thread_atlas_incident
+  topic_id: topic_project_atlas
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T08:59:30Z'
+  content: '[NAV_ANCHOR: thread_atlas_incident recent_end]'
 - id: m060
   thread_id: thread_atlas_incident
   topic_id: topic_project_atlas
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T08:59:00Z'
+  sent_at: '2025-11-01T09:00:00Z'
   content: Quick heads up, my home internet connection keeps dropping, might miss the sync.
 - id: m061
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:00:00Z'
+  sent_at: '2025-11-01T09:01:00Z'
   content: Want to do the Blue Ridge trail this Saturday?
+- id: nav_thread_weekend_hike_start
+  thread_id: thread_weekend_hike
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:01:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_hike start]'
 - id: m062
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:01:00Z'
+  sent_at: '2025-11-01T09:02:00Z'
   content: Weather looks good. 72 and sunny according to the forecast.
 - id: m063
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:02:00Z'
+  sent_at: '2025-11-01T09:03:00Z'
   content: I'll pack the sandwiches. You bring the water filters.
 - id: m064
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:03:00Z'
+  sent_at: '2025-11-01T09:04:00Z'
   content: Deal. What time should we start?
 - id: m065
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:04:00Z'
+  sent_at: '2025-11-01T09:05:00Z'
   content: 6 AM. Beat the crowds and the heat.
+- id: nav_thread_weekend_hike_mid
+  thread_id: thread_weekend_hike
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:05:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_hike midpoint]'
 - id: m066
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:05:00Z'
+  sent_at: '2025-11-01T09:06:00Z'
   content: Oof. That's early. But fine.
 - id: m067
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:06:00Z'
+  sent_at: '2025-11-01T09:07:00Z'
   content: Don't forget your sunscreen this time. Remember the sunburn at Shenandoah.
 - id: m068
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:07:00Z'
+  sent_at: '2025-11-01T09:08:00Z'
   content: How could I forget. I looked like a tomato for a week.
 - id: m069
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:08:00Z'
+  sent_at: '2025-11-01T09:09:00Z'
   content: Blue Ridge trailhead, 6 AM Saturday, I'll bring food you bring water.
 - id: m070
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:09:00Z'
+  sent_at: '2025-11-01T09:10:00Z'
   content: Got it. I'll also bring the first aid kit just in case.
 - id: m071
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:10:00Z'
+  sent_at: '2025-11-01T09:11:00Z'
   content: Good call. I almost forgot about that twisted ankle last time.
 - id: m072
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:11:00Z'
+  sent_at: '2025-11-01T09:12:00Z'
   content: Yeah that was scary. Took us two hours to get back to the car.
 - id: m073
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:12:00Z'
+  sent_at: '2025-11-01T09:13:00Z'
   content: So for the Blue Ridge hike - I'll handle food, you handle water and first aid. 6 AM sharp.
 - id: m074
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:13:00Z'
+  sent_at: '2025-11-01T09:14:00Z'
   content: Confirmed. I threw in some trail mix too.
 - id: m075
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:14:00Z'
+  sent_at: '2025-11-01T09:15:00Z'
   content: Forecast updated - slight chance of rain Saturday morning. Should I bring ponchos?
 - id: m076
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:15:00Z'
+  sent_at: '2025-11-01T09:16:00Z'
   content: Yes, ponchos are smart. The trail gets muddy near the second ridge.
 - id: m077
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:16:00Z'
+  sent_at: '2025-11-01T09:17:00Z'
   content: See attached
   media_analysis:
     explanation: Photo of the Blue Ridge trailhead parking lot completely full with cars spilling onto the highway shoulder at 6:45 AM on Saturday
@@ -562,91 +660,112 @@ messages:
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:17:00Z'
+  sent_at: '2025-11-01T09:18:00Z'
   content: 'Random work thought: we should add an audit trail to the Nexus login flow.'
+- id: nav_thread_weekend_hike_end
+  thread_id: thread_weekend_hike
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:18:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_hike recent_end]'
 - id: m079
   thread_id: thread_weekend_hike
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:18:00Z'
+  sent_at: '2025-11-01T09:19:00Z'
   content: Or we could do the Whitetail Ridge loop instead, it's shorter and dog-friendly.
 - id: m080
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:19:00Z'
+  sent_at: '2025-11-01T09:20:00Z'
   content: After the hike, want to grab dinner at that new Italian place?
+- id: nav_thread_weekend_dinner_start
+  thread_id: thread_weekend_dinner
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:20:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_dinner start]'
 - id: m081
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:20:00Z'
+  sent_at: '2025-11-01T09:21:00Z'
   content: Luigi's? I heard their osso buco is incredible.
 - id: m082
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:21:00Z'
+  sent_at: '2025-11-01T09:22:00Z'
   content: Yes! And they have that rooftop seating. Perfect for sunset.
 - id: m083
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:22:00Z'
+  sent_at: '2025-11-01T09:23:00Z'
   content: Should we invite Carol? She's been wanting to try it.
+- id: nav_thread_weekend_dinner_mid
+  thread_id: thread_weekend_dinner
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:23:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_dinner midpoint]'
 - id: m084
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:23:00Z'
+  sent_at: '2025-11-01T09:24:00Z'
   content: Maybe next time. I want to keep this dinner just us.
 - id: m085
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:24:00Z'
+  sent_at: '2025-11-01T09:25:00Z'
   content: Reservation is for 7:30 PM. They said the rooftop fills up fast.
 - id: m086
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:25:00Z'
+  sent_at: '2025-11-01T09:26:00Z'
   content: Perfect timing. We should be back from Blue Ridge by 4 PM latest.
 - id: m087
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:26:00Z'
+  sent_at: '2025-11-01T09:27:00Z'
   content: Osso buco at Luigi's. Rooftop at 7:30. After the Blue Ridge hike.
 - id: m088
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:27:00Z'
+  sent_at: '2025-11-01T09:28:00Z'
   content: Don't forget a jacket. The rooftop gets chilly after dark.
 - id: m089
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:28:00Z'
+  sent_at: '2025-11-01T09:29:00Z'
   content: Already on my checklist. Along with the water filters for the morning hike.
 - id: m090
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:29:00Z'
+  sent_at: '2025-11-01T09:30:00Z'
   content: Look at the menu
   media_analysis:
     description: PDF menu for Luigi's Ristorante showing the osso buco is a Thursday special, not available on Saturday, with a handwritten note that the mushroom risotto is the chef's recommendation
@@ -655,280 +774,343 @@ messages:
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:30:00Z'
+  sent_at: '2025-11-01T09:31:00Z'
   content: Just saw the menu you sent. If the osso buco isn't available Saturday, the mushroom risotto looks amazing.
 - id: m092
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T09:31:00Z'
+  sent_at: '2025-11-01T09:32:00Z'
   content: There's also Marco's on 5th, their lasagna is supposed to be great, but no rooftop.
+- id: nav_thread_weekend_dinner_end
+  thread_id: thread_weekend_dinner
+  topic_id: topic_weekend_plans
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T09:32:30Z'
+  content: '[NAV_ANCHOR: thread_weekend_dinner recent_end]'
 - id: m093
   thread_id: thread_weekend_dinner
   topic_id: topic_weekend_plans
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T09:32:00Z'
+  sent_at: '2025-11-01T09:33:00Z'
   content: Honestly I have some reservations about inviting the whole group, it gets loud.
 - id: m094
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:33:00Z'
+  sent_at: '2025-11-01T09:34:00Z'
   content: You said you'd do the dishes last night and they're still in the sink.
+- id: nav_thread_friction_chores_start
+  thread_id: thread_friction_chores
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:34:30Z'
+  content: '[NAV_ANCHOR: thread_friction_chores start]'
 - id: m095
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:34:00Z'
+  sent_at: '2025-11-01T09:35:00Z'
   content: I was exhausted after work. I'll do them now.
 - id: m096
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:35:00Z'
+  sent_at: '2025-11-01T09:36:00Z'
   content: It's always 'now'. I'm tired of being the only one who cleans up.
 - id: m097
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:36:00Z'
+  sent_at: '2025-11-01T09:37:00Z'
   content: That's not fair. I took out the trash and did the laundry this week.
+- id: nav_thread_friction_chores_mid
+  thread_id: thread_friction_chores
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:37:30Z'
+  content: '[NAV_ANCHOR: thread_friction_chores midpoint]'
 - id: m098
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:37:00Z'
+  sent_at: '2025-11-01T09:38:00Z'
   content: Laundry once doesn't balance dishes every single day, Sam.
 - id: m099
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:38:00Z'
+  sent_at: '2025-11-01T09:39:00Z'
   content: Fine. I get it. I'll set a reminder so you stop having to ask.
 - id: m100
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:39:00Z'
+  sent_at: '2025-11-01T09:40:00Z'
   content: I don't want to nag. I just want it to feel equal.
 - id: m101
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:40:00Z'
+  sent_at: '2025-11-01T09:41:00Z'
   content: It will. I promise I'll pull my weight on the housework.
 - id: m102
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:41:00Z'
+  sent_at: '2025-11-01T09:42:00Z'
   content: whatever.
 - id: m103
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:42:00Z'
+  sent_at: '2025-11-01T09:43:00Z'
   content: Don't shut down on me. Can we actually talk about this?
 - id: m104
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:43:00Z'
+  sent_at: '2025-11-01T09:44:00Z'
   content: I'm not shutting down. I'm just hurt that it took a fight to be heard.
 - id: m105
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:44:00Z'
+  sent_at: '2025-11-01T09:45:00Z'
   content: I'm sorry. I really am. The chores split has been lopsided and that's on me.
 - id: m106
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:45:00Z'
+  sent_at: '2025-11-01T09:46:00Z'
   content: Separately, did you check the account balance? Rent comes out tomorrow.
+- id: nav_thread_friction_chores_end
+  thread_id: thread_friction_chores
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:46:30Z'
+  content: '[NAV_ANCHOR: thread_friction_chores recent_end]'
 - id: m107
   thread_id: thread_friction_chores
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:46:00Z'
+  sent_at: '2025-11-01T09:47:00Z'
   content: And honestly your mom calling every day is its own separate thing we need to discuss.
 - id: m108
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:47:00Z'
+  sent_at: '2025-11-01T09:48:00Z'
   content: We need to talk about the credit card bill. It's higher than we agreed.
+- id: nav_thread_friction_money_start
+  thread_id: thread_friction_money
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:48:30Z'
+  content: '[NAV_ANCHOR: thread_friction_money start]'
 - id: m109
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:48:00Z'
+  sent_at: '2025-11-01T09:49:00Z'
   content: I know. The car repair was unexpected, I didn't plan for it.
 - id: m110
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:49:00Z'
+  sent_at: '2025-11-01T09:50:00Z'
   content: Twelve hundred dollars unexpected? You didn't think to tell me?
+- id: nav_thread_friction_money_mid
+  thread_id: thread_friction_money
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:50:30Z'
+  content: '[NAV_ANCHOR: thread_friction_money midpoint]'
 - id: m111
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:50:00Z'
+  sent_at: '2025-11-01T09:51:00Z'
   content: I was going to. I just didn't want you to stress about money again.
 - id: m112
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:51:00Z'
+  sent_at: '2025-11-01T09:52:00Z'
   content: Hiding it makes me stress more, not less.
 - id: m113
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:52:00Z'
+  sent_at: '2025-11-01T09:53:00Z'
   content: You're right. No more surprise expenses without a conversation first.
 - id: m114
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:53:00Z'
+  sent_at: '2025-11-01T09:54:00Z'
   content: I'm not trying to control you. I just want us on the same page financially.
 - id: m115
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:54:00Z'
+  sent_at: '2025-11-01T09:55:00Z'
   content: Same page. Got it. Let's set a monthly budget this weekend.
 - id: m116
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:55:00Z'
+  sent_at: '2025-11-01T09:56:00Z'
   content: ok.
 - id: m117
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:56:00Z'
+  sent_at: '2025-11-01T09:57:00Z'
   content: Thank you for not blowing up about the car this time.
 - id: m118
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:57:00Z'
+  sent_at: '2025-11-01T09:58:00Z'
   content: I'm trying. The repair wasn't your fault, I just hate surprises.
 - id: m119
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T09:58:00Z'
+  sent_at: '2025-11-01T09:59:00Z'
   content: Reminder the medical bill from the ER visit is also due, separate from the card.
+- id: nav_thread_friction_money_end
+  thread_id: thread_friction_money
+  topic_id: topic_relationship_friction
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T09:59:30Z'
+  content: '[NAV_ANCHOR: thread_friction_money recent_end]'
 - id: m120
   thread_id: thread_friction_money
   topic_id: topic_relationship_friction
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T09:59:00Z'
+  sent_at: '2025-11-01T10:00:00Z'
   content: On a lighter note, I lost interest in that budgeting app, the UI is awful.
 - id: m121
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:00:00Z'
+  sent_at: '2025-11-01T10:01:00Z'
   content: The lease is up in March. Are we renewing or finding a new place?
+- id: nav_thread_house_move_start
+  thread_id: thread_house_move
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:01:30Z'
+  content: '[NAV_ANCHOR: thread_house_move start]'
 - id: m122
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:01:00Z'
+  sent_at: '2025-11-01T10:02:00Z'
   content: Rent's going up 8%. I think we should look at other apartments.
 - id: m123
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:02:00Z'
+  sent_at: '2025-11-01T10:03:00Z'
   content: Agreed. I want a second bathroom this time, the morning queue is brutal.
+- id: nav_thread_house_move_mid
+  thread_id: thread_house_move
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:03:30Z'
+  content: '[NAV_ANCHOR: thread_house_move midpoint]'
 - id: m124
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:03:00Z'
+  sent_at: '2025-11-01T10:04:00Z'
   content: And a dishwasher. Non-negotiable for me.
 - id: m125
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:04:00Z'
+  sent_at: '2025-11-01T10:05:00Z'
   content: Two bed, two bath, dishwasher, under our current budget plus the increase. Doable?
 - id: m126
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:05:00Z'
+  sent_at: '2025-11-01T10:06:00Z'
   content: Tight but doable if we go one neighborhood further out.
 - id: m127
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:06:00Z'
+  sent_at: '2025-11-01T10:07:00Z'
   content: I can handle the apartment search if you handle the movers.
 - id: m128
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:07:00Z'
+  sent_at: '2025-11-01T10:08:00Z'
   content: Deal. I'll get three moving quotes by Friday.
 - id: m129
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:08:00Z'
+  sent_at: '2025-11-01T10:09:00Z'
   content: ok
 - id: m130
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:09:00Z'
+  sent_at: '2025-11-01T10:10:00Z'
   content: found one
   media_analysis:
     description: Listing photos of a 2-bed 2-bath apartment with in-unit dishwasher and washer-dryer, 1100 sq ft, listed at the top of our budget, 20 minutes further from downtown
@@ -937,84 +1119,105 @@ messages:
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:10:00Z'
+  sent_at: '2025-11-01T10:11:00Z'
   content: There's also a 1-bed loft downtown, gorgeous, but only one bathroom and pricey.
+- id: nav_thread_house_move_end
+  thread_id: thread_house_move
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:11:30Z'
+  content: '[NAV_ANCHOR: thread_house_move recent_end]'
 - id: m132
   thread_id: thread_house_move
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:11:00Z'
+  sent_at: '2025-11-01T10:12:00Z'
   content: Unrelated, that was a brilliant move you made in chess last night, I never saw it coming.
 - id: m133
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:12:00Z'
+  sent_at: '2025-11-01T10:13:00Z'
   content: The kitchen faucet is leaking again. Puddle under the sink this morning.
+- id: nav_thread_house_repairs_start
+  thread_id: thread_house_repairs
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:13:30Z'
+  content: '[NAV_ANCHOR: thread_house_repairs start]'
 - id: m134
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:13:00Z'
+  sent_at: '2025-11-01T10:14:00Z'
   content: I'll call the landlord. That's the third leak this year.
 - id: m135
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:14:00Z'
+  sent_at: '2025-11-01T10:15:00Z'
   content: While you're at it, the bathroom fan is loud enough to wake the dead.
+- id: nav_thread_house_repairs_mid
+  thread_id: thread_house_repairs
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:15:30Z'
+  content: '[NAV_ANCHOR: thread_house_repairs midpoint]'
 - id: m136
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:15:00Z'
+  sent_at: '2025-11-01T10:16:00Z'
   content: Adding the noisy fan to the list. Anything else broken I should mention?
 - id: m137
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:16:00Z'
+  sent_at: '2025-11-01T10:17:00Z'
   content: The bedroom window doesn't latch. It's drafty and cold at night.
 - id: m138
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:17:00Z'
+  sent_at: '2025-11-01T10:18:00Z'
   content: Leaky faucet, loud fan, drafty window. I'll send the landlord the whole list.
 - id: m139
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:18:00Z'
+  sent_at: '2025-11-01T10:19:00Z'
   content: Thanks. If they ignore it again we withhold rent until it's fixed.
 - id: m140
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:19:00Z'
+  sent_at: '2025-11-01T10:20:00Z'
   content: Agreed. Documented everything with photos just in case.
 - id: m141
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:20:00Z'
+  sent_at: '2025-11-01T10:21:00Z'
   content: good
 - id: m142
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:21:00Z'
+  sent_at: '2025-11-01T10:22:00Z'
   content: proof
   media_analysis:
     explanation: Photo of water pooling under the kitchen sink cabinet with visible corrosion on the faucet supply line connector
@@ -1023,77 +1226,98 @@ messages:
   topic_id: topic_household_logistics
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T10:22:00Z'
+  sent_at: '2025-11-01T10:23:00Z'
   content: Off topic, did you hear there was a data leak at our old internet provider?
+- id: nav_thread_house_repairs_end
+  thread_id: thread_house_repairs
+  topic_id: topic_household_logistics
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T10:23:30Z'
+  content: '[NAV_ANCHOR: thread_house_repairs recent_end]'
 - id: m144
   thread_id: thread_house_repairs
   topic_id: topic_household_logistics
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T10:23:00Z'
+  sent_at: '2025-11-01T10:24:00Z'
   content: Oh and the bathroom faucet drips too, slower though, not flooding like the kitchen one.
 - id: m145
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:24:00Z'
+  sent_at: '2025-11-01T10:25:00Z'
   content: Should we book the Lisbon flights now or wait for a sale?
+- id: nav_thread_travel_flights_start
+  thread_id: thread_travel_flights
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:25:30Z'
+  content: '[NAV_ANCHOR: thread_travel_flights start]'
 - id: m146
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:25:00Z'
+  sent_at: '2025-11-01T10:26:00Z'
   content: Prices are climbing. I'd book the flights this week to be safe.
 - id: m147
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:26:00Z'
+  sent_at: '2025-11-01T10:27:00Z'
   content: Direct or one stop? The one-stop is 200 dollars cheaper.
+- id: nav_thread_travel_flights_mid
+  thread_id: thread_travel_flights
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:27:30Z'
+  content: '[NAV_ANCHOR: thread_travel_flights midpoint]'
 - id: m148
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:27:00Z'
+  sent_at: '2025-11-01T10:28:00Z'
   content: Direct. The layover in the cheap option is six hours, not worth it.
 - id: m149
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:28:00Z'
+  sent_at: '2025-11-01T10:29:00Z'
   content: Booked. Two direct seats to Lisbon, leaving the 14th, back on the 23rd.
 - id: m150
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:29:00Z'
+  sent_at: '2025-11-01T10:30:00Z'
   content: Window seat for me, you can have the aisle.
 - id: m151
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:30:00Z'
+  sent_at: '2025-11-01T10:31:00Z'
   content: Obviously. You'd make me climb over you every twenty minutes otherwise.
 - id: m152
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:31:00Z'
+  sent_at: '2025-11-01T10:32:00Z'
   content: rude. but accurate.
 - id: m153
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:32:00Z'
+  sent_at: '2025-11-01T10:33:00Z'
   content: confirmation
   media_analysis:
     summary: 'Flight confirmation: two direct round-trip tickets to Lisbon, departing the 14th at 18:40, returning the 23rd, total fare 1840 dollars, seats 12A and 12C'
@@ -1102,175 +1326,224 @@ messages:
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:33:00Z'
+  sent_at: '2025-11-01T10:34:00Z'
   content: Tempting to do Barcelona instead, but we already said Lisbon, let's not flip-flop.
+- id: nav_thread_travel_flights_end
+  thread_id: thread_travel_flights
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:34:30Z'
+  content: '[NAV_ANCHOR: thread_travel_flights recent_end]'
 - id: m155
   thread_id: thread_travel_flights
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:34:00Z'
+  sent_at: '2025-11-01T10:35:00Z'
   content: Random, I finished that book about Lisbon, it made me even more excited to go.
 - id: m156
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:35:00Z'
+  sent_at: '2025-11-01T10:36:00Z'
   content: For Lisbon, do you want a packed itinerary or a relaxed one?
+- id: nav_thread_travel_itinerary_start
+  thread_id: thread_travel_itinerary
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:36:30Z'
+  content: '[NAV_ANCHOR: thread_travel_itinerary start]'
 - id: m157
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:36:00Z'
+  sent_at: '2025-11-01T10:37:00Z'
   content: Relaxed. One big thing a day, lots of wandering and cafes.
 - id: m158
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:37:00Z'
+  sent_at: '2025-11-01T10:38:00Z'
   content: The tram 28 ride and the Belem tower are my two must-dos.
+- id: nav_thread_travel_itinerary_mid
+  thread_id: thread_travel_itinerary
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:38:30Z'
+  content: '[NAV_ANCHOR: thread_travel_itinerary midpoint]'
 - id: m159
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:38:00Z'
+  sent_at: '2025-11-01T10:39:00Z'
   content: Add the pasteis de nata place near Belem. Non-negotiable.
 - id: m160
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:39:00Z'
+  sent_at: '2025-11-01T10:40:00Z'
   content: Day one tram and old town, day two Belem and pastries, day three beach.
 - id: m161
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:40:00Z'
+  sent_at: '2025-11-01T10:41:00Z'
   content: Which beach? Cascais or Costa da Caparica?
 - id: m162
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:41:00Z'
+  sent_at: '2025-11-01T10:42:00Z'
   content: Cascais. Easier train ride and prettier town.
 - id: m163
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:42:00Z'
+  sent_at: '2025-11-01T10:43:00Z'
   content: Perfect. Loose plan, good food, no 6 AM alarms unlike Alice's hikes.
 - id: m164
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:43:00Z'
+  sent_at: '2025-11-01T10:44:00Z'
   content: haha. agreed, this is a real vacation.
 - id: m165
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T10:44:00Z'
+  sent_at: '2025-11-01T10:45:00Z'
   content: Speaking of rides, that roller coaster at the fair last summer almost killed me.
+- id: nav_thread_travel_itinerary_end
+  thread_id: thread_travel_itinerary
+  topic_id: topic_travel_planning
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T10:45:30Z'
+  content: '[NAV_ANCHOR: thread_travel_itinerary recent_end]'
 - id: m166
   thread_id: thread_travel_itinerary
   topic_id: topic_travel_planning
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T10:45:00Z'
+  sent_at: '2025-11-01T10:46:00Z'
   content: I keep thinking about Costa da Caparica though, the surf there is supposed to be better.
 - id: m167
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:46:00Z'
+  sent_at: '2025-11-01T10:47:00Z'
   content: Orion needs an auth system too. Reuse Nexus OAuth2 or build fresh?
+- id: nav_thread_orion_design_start
+  thread_id: thread_orion_design
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T10:47:30Z'
+  content: '[NAV_ANCHOR: thread_orion_design start]'
 - id: m168
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:47:00Z'
+  sent_at: '2025-11-01T10:48:00Z'
   content: Reuse. No reason to build a second login flow from scratch.
 - id: m169
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:48:00Z'
+  sent_at: '2025-11-01T10:49:00Z'
   content: Agreed. Though Orion needs single sign-on, which Nexus never did.
+- id: nav_thread_orion_design_mid
+  thread_id: thread_orion_design
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T10:49:30Z'
+  content: '[NAV_ANCHOR: thread_orion_design midpoint]'
 - id: m170
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:49:00Z'
+  sent_at: '2025-11-01T10:50:00Z'
   content: SSO via SAML then. That's the one real difference from the Nexus auth.
 - id: m171
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:50:00Z'
+  sent_at: '2025-11-01T10:51:00Z'
   content: What about rate limiting? Orion's traffic will be ten times Nexus.
 - id: m172
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:51:00Z'
+  sent_at: '2025-11-01T10:52:00Z'
   content: We'll need a much higher rate limit and probably a distributed token bucket.
 - id: m173
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:52:00Z'
+  sent_at: '2025-11-01T10:53:00Z'
   content: Distributed rate limiting it is. Redis-backed, unlike the in-memory one in Nexus.
 - id: m174
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:53:00Z'
+  sent_at: '2025-11-01T10:54:00Z'
   content: Right, the Nexus rate limiter is single-node and won't scale to Orion.
 - id: m175
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:54:00Z'
+  sent_at: '2025-11-01T10:55:00Z'
   content: noted
 - id: m176
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:55:00Z'
+  sent_at: '2025-11-01T10:56:00Z'
   content: Heads up, Orion's billing module is double-charging cards on retry. Sound familiar?
 - id: m177
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:56:00Z'
+  sent_at: '2025-11-01T10:57:00Z'
   content: Ha, yeah, same shape as the Nexus transaction duplication. Idempotency key again.
+- id: nav_thread_orion_design_end
+  thread_id: thread_orion_design
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T10:57:30Z'
+  content: '[NAV_ANCHOR: thread_orion_design recent_end]'
 - id: m178
   thread_id: thread_orion_design
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:57:00Z'
+  sent_at: '2025-11-01T10:58:00Z'
   content: billing trace
   media_analysis:
     summary: Orion billing logs showing duplicate charge events fired when the payment callback is retried before the idempotency record is committed
@@ -1279,310 +1552,394 @@ messages:
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T10:58:00Z'
+  sent_at: '2025-11-01T10:59:00Z'
   content: Orion beta rollout is Monday. Are the feature flags ready?
+- id: nav_thread_orion_rollout_start
+  thread_id: thread_orion_rollout
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T10:59:30Z'
+  content: '[NAV_ANCHOR: thread_orion_rollout start]'
 - id: m180
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T10:59:00Z'
+  sent_at: '2025-11-01T11:00:00Z'
   content: Flags are wired. We can dark-launch to 5% and ramp from there.
 - id: m181
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T11:00:00Z'
+  sent_at: '2025-11-01T11:01:00Z'
   content: Start at 1%. After the billing scare I don't trust a 5% blast radius.
+- id: nav_thread_orion_rollout_mid
+  thread_id: thread_orion_rollout
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T11:01:30Z'
+  content: '[NAV_ANCHOR: thread_orion_rollout midpoint]'
 - id: m182
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T11:01:00Z'
+  sent_at: '2025-11-01T11:02:00Z'
   content: Fair. 1% Monday, 10% Wednesday if metrics hold.
 - id: m183
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T11:02:00Z'
+  sent_at: '2025-11-01T11:03:00Z'
   content: What's our rollback plan if the SSO login breaks?
 - id: m184
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T11:03:00Z'
+  sent_at: '2025-11-01T11:04:00Z'
   content: Flip the flag off, falls back to the old password login instantly.
 - id: m185
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T11:04:00Z'
+  sent_at: '2025-11-01T11:05:00Z'
   content: Good. Document the rollback steps in the runbook before Monday.
 - id: m186
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T11:05:00Z'
+  sent_at: '2025-11-01T11:06:00Z'
   content: Already drafted. Linking it in the channel now.
 - id: m187
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T11:06:00Z'
+  sent_at: '2025-11-01T11:07:00Z'
   content: perfect
 - id: m188
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Devs
   recipient: Maya
-  sent_at: '2025-11-01T11:07:00Z'
+  sent_at: '2025-11-01T11:08:00Z'
   content: 'Separate thing: marketing wants to roll out the ad campaign the same week, bad idea.'
+- id: nav_thread_orion_rollout_end
+  thread_id: thread_orion_rollout
+  topic_id: topic_project_orion
+  sender: Maya
+  recipient: Devs
+  sent_at: '2025-11-01T11:08:30Z'
+  content: '[NAV_ANCHOR: thread_orion_rollout recent_end]'
 - id: m189
   thread_id: thread_orion_rollout
   topic_id: topic_project_orion
   sender: Maya
   recipient: Devs
-  sent_at: '2025-11-01T11:08:00Z'
+  sent_at: '2025-11-01T11:09:00Z'
   content: Honestly the fact that we're rushing this is a red flag about the whole timeline.
 - id: m190
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:09:00Z'
+  sent_at: '2025-11-01T11:10:00Z'
   content: I signed us up for the half marathon in April. No backing out now.
+- id: nav_thread_fitness_running_start
+  thread_id: thread_fitness_running
+  topic_id: topic_fitness_goals
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T11:10:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_running start]'
 - id: m191
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T11:10:00Z'
+  sent_at: '2025-11-01T11:11:00Z'
   content: Half marathon? I can barely run a 5K without dying.
 - id: m192
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:11:00Z'
+  sent_at: '2025-11-01T11:12:00Z'
   content: That's why we start training now. Twelve week plan, three runs a week.
+- id: nav_thread_fitness_running_mid
+  thread_id: thread_fitness_running
+  topic_id: topic_fitness_goals
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T11:12:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_running midpoint]'
 - id: m193
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T11:12:00Z'
+  sent_at: '2025-11-01T11:13:00Z'
   content: Fine. But the long runs are on Sundays, mornings are sacred during the week.
 - id: m194
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:13:00Z'
+  sent_at: '2025-11-01T11:14:00Z'
   content: Sunday long runs it is. We build from 5K up to 18K before race day.
 - id: m195
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T11:14:00Z'
+  sent_at: '2025-11-01T11:15:00Z'
   content: My knees are already filing a complaint.
 - id: m196
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:15:00Z'
+  sent_at: '2025-11-01T11:16:00Z'
   content: We'll get you proper running shoes this weekend. Cheap ones wrecked your knees last time.
 - id: m197
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T11:16:00Z'
+  sent_at: '2025-11-01T11:17:00Z'
   content: Deal. New running shoes, Sunday long runs, no excuses.
 - id: m198
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:17:00Z'
+  sent_at: '2025-11-01T11:18:00Z'
   content: ok let's actually do it this time.
 - id: m199
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Jordan
   recipient: Sam
-  sent_at: '2025-11-01T11:18:00Z'
+  sent_at: '2025-11-01T11:19:00Z'
   content: Funny, 'run' now means something very different than my work deploys.
+- id: nav_thread_fitness_running_end
+  thread_id: thread_fitness_running
+  topic_id: topic_fitness_goals
+  sender: Sam
+  recipient: Jordan
+  sent_at: '2025-11-01T11:19:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_running recent_end]'
 - id: m200
   thread_id: thread_fitness_running
   topic_id: topic_fitness_goals
   sender: Sam
   recipient: Jordan
-  sent_at: '2025-11-01T11:19:00Z'
+  sent_at: '2025-11-01T11:20:00Z'
   content: There's also a 10K in March if the half feels like too much, just saying.
 - id: m201
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:20:00Z'
+  sent_at: '2025-11-01T11:21:00Z'
   content: Want to split a gym membership? It's cheaper with two.
+- id: nav_thread_fitness_gym_start
+  thread_id: thread_fitness_gym
+  topic_id: topic_fitness_goals
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T11:21:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_gym start]'
 - id: m202
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T11:21:00Z'
+  sent_at: '2025-11-01T11:22:00Z'
   content: Only if we actually go. I have three dead memberships to my name.
 - id: m203
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:22:00Z'
+  sent_at: '2025-11-01T11:23:00Z'
   content: Accountability buddy then. Skip a session, you buy coffee for a week.
+- id: nav_thread_fitness_gym_mid
+  thread_id: thread_fitness_gym
+  topic_id: topic_fitness_goals
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T11:23:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_gym midpoint]'
 - id: m204
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T11:23:00Z'
+  sent_at: '2025-11-01T11:24:00Z'
   content: Brutal. But effective. Deal.
 - id: m205
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:24:00Z'
+  sent_at: '2025-11-01T11:25:00Z'
   content: Mondays and Thursdays, 6 PM, after work before we lose the will.
 - id: m206
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T11:25:00Z'
+  sent_at: '2025-11-01T11:26:00Z'
   content: 6 PM works. Legs Monday, upper body Thursday?
 - id: m207
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:26:00Z'
+  sent_at: '2025-11-01T11:27:00Z'
   content: Yeah. And no skipping leg day, that's how you end up looking ridiculous.
 - id: m208
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T11:27:00Z'
+  sent_at: '2025-11-01T11:28:00Z'
   content: I've seen those guys. Massive arms, tiny chicken legs. Never me.
 - id: m209
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:28:00Z'
+  sent_at: '2025-11-01T11:29:00Z'
   content: ha, agreed
 - id: m210
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Tariq
   recipient: Priya
-  sent_at: '2025-11-01T11:29:00Z'
+  sent_at: '2025-11-01T11:30:00Z'
   content: membership
   media_analysis:
     description: Photo of a gym membership receipt for a shared two-person plan, 64 dollars a month, with unlimited classes and a note about the 6 PM peak hours being crowded
+- id: nav_thread_fitness_gym_end
+  thread_id: thread_fitness_gym
+  topic_id: topic_fitness_goals
+  sender: Priya
+  recipient: Tariq
+  sent_at: '2025-11-01T11:30:30Z'
+  content: '[NAV_ANCHOR: thread_fitness_gym recent_end]'
 - id: m211
   thread_id: thread_fitness_gym
   topic_id: topic_fitness_goals
   sender: Priya
   recipient: Tariq
-  sent_at: '2025-11-01T11:30:00Z'
+  sent_at: '2025-11-01T11:31:00Z'
   content: Off topic, did you hear Sam and Jordan almost split last month? They're fine now.
 - id: m212
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:31:00Z'
+  sent_at: '2025-11-01T11:32:00Z'
   content: Security flagged the Nexus login for storing tokens in local storage. We need to fix that.
+- id: nav_thread_nexus_security_start
+  thread_id: thread_nexus_security
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T11:32:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_security start]'
 - id: m213
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T11:32:00Z'
+  sent_at: '2025-11-01T11:33:00Z'
   content: Move them to httpOnly cookies? That's the standard fix for token theft risk.
 - id: m214
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:33:00Z'
+  sent_at: '2025-11-01T11:34:00Z'
   content: Yes. httpOnly secure cookies, and rotate the refresh token on every use.
+- id: nav_thread_nexus_security_mid
+  thread_id: thread_nexus_security
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T11:34:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_security midpoint]'
 - id: m215
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T11:34:00Z'
+  sent_at: '2025-11-01T11:35:00Z'
   content: Rotating refresh tokens adds complexity but it's the right call for security.
 - id: m216
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:35:00Z'
+  sent_at: '2025-11-01T11:36:00Z'
   content: Also they want rate limiting on the login endpoint to stop brute force attempts.
 - id: m217
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T11:36:00Z'
+  sent_at: '2025-11-01T11:37:00Z'
   content: We already have rate limiting elsewhere, I'll extend it to the auth login route.
 - id: m218
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:37:00Z'
+  sent_at: '2025-11-01T11:38:00Z'
   content: Good. Brute force protection plus httpOnly cookies should close the audit findings.
 - id: m219
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T11:38:00Z'
+  sent_at: '2025-11-01T11:39:00Z'
   content: Pushing the security fixes today. Pen test re-run is scheduled for Friday.
 - id: m220
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:39:00Z'
+  sent_at: '2025-11-01T11:40:00Z'
   content: noted
 - id: m221
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Bob
   recipient: Alice
-  sent_at: '2025-11-01T11:40:00Z'
+  sent_at: '2025-11-01T11:41:00Z'
   content: audit findings
   media_analysis:
     summary: 'Security audit report listing two high findings: auth tokens stored in browser local storage exposing XSS token theft, and no rate limit on the login endpoint enabling credential brute force'
+- id: nav_thread_nexus_security_end
+  thread_id: thread_nexus_security
+  topic_id: topic_project_nexus
+  sender: Alice
+  recipient: Bob
+  sent_at: '2025-11-01T11:41:30Z'
+  content: '[NAV_ANCHOR: thread_nexus_security recent_end]'
 - id: m222
   thread_id: thread_nexus_security
   topic_id: topic_project_nexus
   sender: Alice
   recipient: Bob
-  sent_at: '2025-11-01T11:41:00Z'
+  sent_at: '2025-11-01T11:42:00Z'
   content: Unrelated, building security wants us to stop propping the office door, it's a real risk.

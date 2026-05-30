@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Literal
+from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
@@ -32,9 +32,14 @@ class GoldenCase(BaseModel):
     expected_message_ids: list[str]
     scope: Scope
     query_type: QueryType
+    difficulty: Literal["easy", "medium", "hard"] | None = None
+    fairness: (
+        Literal["keyword_favored", "semantic_favored", "either", "adversarial"] | None
+    ) = None
     thread_id: str | None = None
     topic_id: str | None = None
     notes: str | None = None
+    extra_scope: dict[str, Any] | None = None
 
 
 class GoldenSet(BaseModel):

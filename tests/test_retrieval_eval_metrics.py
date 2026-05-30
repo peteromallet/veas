@@ -12,9 +12,15 @@ import yaml
 from eval.retrieval.loader import load_corpus, load_golden_set
 from eval.retrieval.metrics import (
     aggregate,
+    aggregate_by_group,
     aggregate_by_query_type,
+    aggregate_set_metrics,
+    contiguous_boundary_ok,
+    exact_ordered_match,
     recall_at_k,
     reciprocal_rank,
+    set_precision,
+    set_recall,
 )
 from eval.retrieval.schema import Corpus, CorpusMessage
 
@@ -131,6 +137,250 @@ def test_aggregate_by_query_type_grouping():
     assert vq["recall@10"] == 1.0
     assert vq["mrr"] == (1.0 + 1.0 / 3.0) / 2.0
 
+    pq = grouped["paraphrase"]
+    assert pq["n"] == 1
+    assert pq["recall@1"] == 0.0
+    assert pq["mrr"] == 0.0
+
+
+# ---------------------------------------------------------------------------
+# New metrics unit tests (T4)
+# ---------------------------------------------------------------------------
+
+
+def test_exact_ordered_match_identity():
+    """Identical lists should match."""
+    assert exact_ordered_match(["a", "b", "c"], ["a", "b", "c"]) is True
+
+
+def test_exact_ordered_match_different_order():
+    """Same elements, different order → False."""
+    assert exact_ordered_match(["a", "b", "c"], ["c", "b", "a"]) is False
+
+
+def test_exact_ordered_match_different_elements():
+    """Different elements → False."""
+    assert exact_ordered_match(["a", "b"], ["a", "c"]) is False
+
+
+def test_exact_ordered_match_different_lengths():
+    """Different lengths → False."""
+    assert exact_ordered_match(["a", "b"], ["a", "b", "c"]) is False
+
+
+def test_exact_ordered_match_empty():
+    """Two empty lists are strictly equal."""
+    assert exact_ordered_match([], []) is True
+
+
+def test_exact_ordered_match_empty_vs_nonempty():
+    """Empty vs non-empty → False."""
+    assert exact_ordered_match([], ["a"]) is False
+    assert exact_ordered_match(["a"], []) is False
+
+
+def test_contiguous_boundary_ok_exact_match_in_corpus():
+    """Returned is contiguous in corpus_order with matching boundaries."""
+    corpus_order = ["a", "b", "c", "d", "e"]
+    returned = ["b", "c", "d"]
+    expected = ["b", "X", "d"]  # interior ignored, only boundaries checked
+    assert contiguous_boundary_ok(returned, expected, corpus_order) is True
+
+
+def test_contiguous_boundary_ok_not_contiguous():
+    """Returned is not a contiguous slice of corpus_order → False."""
+    corpus_order = ["a", "b", "c", "d", "e"]
+    returned = ["b", "d"]  # skipped "c"
+    expected = ["b", "d"]
+    assert contiguous_boundary_ok(returned, expected, corpus_order) is False
+
+
+def test_contiguous_boundary_ok_wrong_first():
+    """First element mismatch → False."""
+    corpus_order = ["a", "b", "c"]
+    returned = ["b", "c"]
+    expected = ["a", "c"]
+    assert contiguous_boundary_ok(returned, expected, corpus_order) is False
+
+
+def test_contiguous_boundary_ok_wrong_last():
+    """Last element mismatch → False."""
+    corpus_order = ["a", "b", "c"]
+    returned = ["a", "b"]
+    expected = ["a", "c"]
+    assert contiguous_boundary_ok(returned, expected, corpus_order) is False
+
+
+def test_contiguous_boundary_ok_empty():
+    """Empty returned or expected → False."""
+    corpus_order = ["a", "b"]
+    assert contiguous_boundary_ok([], ["a"], corpus_order) is False
+    assert contiguous_boundary_ok(["a"], [], corpus_order) is False
+    assert contiguous_boundary_ok([], [], corpus_order) is False
+
+
+def test_contiguous_boundary_ok_single_element():
+    """Single-element lists: returned==expected and contiguous in corpus."""
+    corpus_order = ["x", "a", "y"]
+    returned = ["a"]
+    expected = ["a"]
+    assert contiguous_boundary_ok(returned, expected, corpus_order) is True
+
+
+def test_set_precision_perfect():
+    """All returned items are expected → 1.0."""
+    assert set_precision(["a", "b"], ["a", "b", "c"]) == 1.0
+
+
+def test_set_precision_partial():
+    """Some returned items are expected → fractional."""
+    assert set_precision(["a", "x"], ["a", "b", "c"]) == 0.5
+
+
+def test_set_precision_empty_returned():
+    """Empty returned → 1.0 by convention."""
+    assert set_precision([], ["a", "b"]) == 1.0
+
+
+def test_set_precision_empty_expected():
+    """No overlap possible if expected is empty."""
+    assert set_precision(["a"], []) == 0.0
+
+
+def test_set_precision_no_overlap():
+    """Complete mismatch → 0.0."""
+    assert set_precision(["x", "y"], ["a", "b"]) == 0.0
+
+
+def test_set_recall_perfect():
+    """All expected items are returned → 1.0."""
+    assert set_recall(["a", "b", "c"], ["a", "c"]) == 1.0
+
+
+def test_set_recall_partial():
+    """Some expected items are returned → fractional."""
+    assert set_recall(["a", "x"], ["a", "b", "c"]) == 1.0 / 3.0
+
+
+def test_set_recall_empty_returned():
+    """No returned items → 0.0."""
+    assert set_recall([], ["a", "b"]) == 0.0
+
+
+def test_set_recall_empty_expected():
+    """Empty expected → 0.0 by convention."""
+    assert set_recall(["a", "b"], []) == 0.0
+
+
+def test_set_recall_no_overlap():
+    """Complete mismatch → 0.0."""
+    assert set_recall(["x", "y"], ["a", "b"]) == 0.0
+
+
+def test_aggregate_set_metrics_empty():
+    """Empty per_case returns zeros."""
+    result = aggregate_set_metrics([])
+    assert result == {"set_precision": 0.0, "set_recall": 0.0, "f1": 0.0, "n": 0}
+
+
+def test_aggregate_set_metrics_basic():
+    """Two cases, macro-averaged."""
+    per_case = [
+        {"set_precision": 1.0, "set_recall": 0.5},
+        {"set_precision": 0.5, "set_recall": 1.0},
+    ]
+    result = aggregate_set_metrics(per_case)
+    assert result["n"] == 2
+    assert result["set_precision"] == 0.75  # (1.0 + 0.5) / 2
+    assert result["set_recall"] == 0.75  # (0.5 + 1.0) / 2
+    # f1 = 2 * 0.75 * 0.75 / (0.75 + 0.75) = 0.75
+    assert result["f1"] == 0.75
+
+
+def test_aggregate_set_metrics_all_zero():
+    """All zeros → f1 is 0.0."""
+    per_case = [
+        {"set_precision": 0.0, "set_recall": 0.0},
+        {"set_precision": 0.0, "set_recall": 0.0},
+    ]
+    result = aggregate_set_metrics(per_case)
+    assert result["set_precision"] == 0.0
+    assert result["set_recall"] == 0.0
+    assert result["f1"] == 0.0
+    assert result["n"] == 2
+
+
+def test_aggregate_by_group_generic():
+    """aggregate_by_group works with arbitrary group keys."""
+    results = [
+        {
+            "recall_at_1": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0,
+            "difficulty": "easy",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.0,
+            "recall_at_10": 0.0,
+            "reciprocal_rank": 0.0,
+            "difficulty": "hard",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0 / 3.0,
+            "difficulty": "easy",
+        },
+    ]
+    grouped = aggregate_by_group(results, "difficulty")
+    assert set(grouped.keys()) == {"easy", "hard"}
+    assert grouped["easy"]["n"] == 2
+    assert grouped["easy"]["recall@1"] == 0.5
+    assert grouped["hard"]["n"] == 1
+    assert grouped["hard"]["recall@1"] == 0.0
+
+
+def test_aggregate_by_group_empty():
+    """Empty results → empty dict."""
+    assert aggregate_by_group([], "any_key") == {}
+
+
+def test_aggregate_by_query_type_delegates_to_aggregate_by_group():
+    """aggregate_by_query_type still works and produces same output shape."""
+    results = [
+        {
+            "recall_at_1": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0,
+            "query_type": "verbatim_quote",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.0,
+            "recall_at_10": 0.0,
+            "reciprocal_rank": 0.0,
+            "query_type": "paraphrase",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0 / 3.0,
+            "query_type": "verbatim_quote",
+        },
+    ]
+    grouped = aggregate_by_query_type(results)
+    assert set(grouped.keys()) == {"verbatim_quote", "paraphrase"}
+    vq = grouped["verbatim_quote"]
+    assert vq["n"] == 2
+    assert vq["recall@1"] == 0.5
+    assert vq["recall@5"] == 1.0
+    assert vq["recall@10"] == 1.0
+    assert vq["mrr"] == (1.0 + 1.0 / 3.0) / 2.0
     pq = grouped["paraphrase"]
     assert pq["n"] == 1
     assert pq["recall@1"] == 0.0
