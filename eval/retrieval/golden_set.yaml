@@ -1,0 +1,476 @@
+# =============================================================================
+# Golden Set for Retrieval Evaluation Harness
+# =============================================================================
+#
+# Methodology:
+#
+# This golden set defines 28 hand-crafted retrieval test cases spanning all
+# four query_type values (topic_recall, verbatim_quote, paraphrase, cross_thread).
+# Every expected_message_ids list references real message ids from corpus.yaml
+# and is non-empty (enforced by the loader per SD6 / correctness-4).
+#
+# SCOPE CONSISTENCY:
+# - scope='thread' cases supply thread_id (required by loader per correctness-3).
+# - scope='topic' cases supply topic_id (required by loader per correctness-3).
+# - scope='all' cases supply neither (omitted from YAML, defaulting to null).
+#
+# WHY PARAPHRASE/CROSS_THREAD CASES LOOK LIKE BASELINE FAILURES:
+#
+# The ILIKE baseline retriever does case-insensitive substring matching against
+# message content and media_analysis fields. Paraphrase cases in this golden set
+# use queries whose individual words share NO character-level substrings with the
+# target message content (and the target messages have no media_analysis that
+# could bridge the gap). Since ILIKE is purely lexical, it will return an empty
+# list (recall=0) for these cases. This is the harness's reason to exist: the
+# ILIKE baseline establishes the floor, and a semantic retriever (or future
+# embedding-based system) must beat that floor by recovering the paraphrase cases
+# that the baseline cannot touch.
+#
+# Cross-thread cases stress the scope model: a topic-scoped query must surface
+# messages from ALL threads that share that topic_id. The ILIKE baseline will
+# find messages containing the query substring regardless of thread, but the
+# scope filter constrains which subset is returned, making scope correctness
+# testable independently of lexical recall. A topic-scoped query about weekend
+# plans must return messages from both thread_weekend_hike and thread_weekend_dinner.
+#
+# CASE DISTRIBUTION:
+#   topic_recall:   6 cases (GC01-GC06)
+#   verbatim_quote: 8 cases (GC07-GC14)
+#   paraphrase:    10 cases (GC15-GC24) - all with zero keyword overlap
+#   cross_thread:   4 cases (GC25-GC28)
+#   TOTAL:         28 cases
+# =============================================================================
+
+cases:
+  # ===========================================================================
+  # TOPIC_RECALL cases - query describes a topic/sub-topic; retriever must
+  # find messages semantically relevant to that topic.
+  # ===========================================================================
+
+  - id: GC01
+    query: "What's the status of the Nexus project authentication module?"
+    expected_message_ids:
+      - m003
+      - m004
+      - m047
+    scope: topic
+    query_type: topic_recall
+    topic_id: topic_project_nexus
+    notes: >
+      Topic-scoped recall for auth module discussions. m003 asks about auth
+      module, m004 describes OAuth2 token refresh edge cases, m047 shows null
+      pointer exception in AuthService.java (media_analysis-only signal).
+
+  - id: GC02
+    query: "What bugs have been reported in the Nexus project?"
+    expected_message_ids:
+      - m010
+      - m014
+      - m016
+      - m020
+      - m052
+      - m053
+      - m058
+    scope: topic
+    query_type: topic_recall
+    topic_id: topic_project_nexus
+    notes: >
+      Topic-scoped bug recall across both nexus threads. Rate limiting (m010),
+      payment processor duplication (m014/m016/m020), null pointer fix (m052),
+      hotfix deployment (m053), rate-limit improvement followup (m058).
+
+  - id: GC03
+    query: "What's the plan for the Saturday hike?"
+    expected_message_ids:
+      - m023
+      - m025
+      - m027
+      - m031
+      - m032
+      - m035
+      - m036
+      - m054
+      - m055
+    scope: thread
+    query_type: topic_recall
+    thread_id: thread_weekend_hike
+    notes: >
+      Thread-scoped recall of hike planning messages. Excludes dinner-thread
+      messages despite shared topic_weekend_plans. Includes weather updates
+      (m054 rain forecast, m055 ponchos/mud).
+
+  - id: GC04
+    query: "Where are we eating dinner Saturday night?"
+    expected_message_ids:
+      - m037
+      - m038
+      - m039
+      - m042
+      - m044
+      - m056
+    scope: thread
+    query_type: topic_recall
+    thread_id: thread_weekend_dinner
+    notes: >
+      Thread-scoped dinner plans. m051 excluded because its bare content
+      ('Look at the menu') carries no restaurant signal without media_analysis
+      interpretation by a semantic retriever.
+
+  - id: GC05
+    query: "What are our weekend plans?"
+    expected_message_ids:
+      - m023
+      - m025
+      - m027
+      - m031
+      - m037
+      - m038
+      - m042
+      - m044
+    scope: topic
+    query_type: topic_recall
+    topic_id: topic_weekend_plans
+    notes: >
+      Topic-scoped recall across both weekend threads (hike + dinner). Must
+      return messages from thread_weekend_hike and thread_weekend_dinner.
+
+  - id: GC06
+    query: "Has anyone mentioned performance problems or scaling concerns?"
+    expected_message_ids:
+      - m006
+      - m008
+      - m009
+      - m010
+      - m011
+      - m012
+      - m058
+    scope: all
+    query_type: topic_recall
+    notes: >
+      Corpus-wide recall for performance/scaling. Schema review blockers (m006),
+      caching architecture discussion (m008), benchmarking proposal (m009),
+      rate limiting issues and resolution (m010/m011/m012/m058).
+
+  # ===========================================================================
+  # VERBATIM_QUOTE cases - query contains an exact substring (case-insensitive)
+  # of the target message content. ILIKE baseline should achieve high recall.
+  # These validate that the baseline works for its designed use case.
+  # ===========================================================================
+
+  - id: GC07
+    query: "I told you so"
+    expected_message_ids:
+      - m013
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim terse reply. Exact match on full message content. Tests
+      retrieval of emotionally-loaded short messages.
+
+  - id: GC08
+    query: "fine."
+    expected_message_ids:
+      - m007
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim one-word reply. Tests that low-signal messages are retrievable
+      by exact substring match.
+
+  - id: GC09
+    query: "sure"
+    expected_message_ids:
+      - m022
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim one-word reply confirming a hotfix was pushed. m002 also contains
+      'Sure' (about sprint review) but the intended target is the hotfix
+      confirmation context. Tight expected set tests semantic precision.
+
+  - id: GC10
+    query: "osso buco"
+    expected_message_ids:
+      - m038
+      - m044
+      - m051
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim substring across threads. m038 and m044 in thread_weekend_dinner
+      content, m051 in media_analysis.description (Luigi's PDF menu). Tests
+      media_analysis fallback in baseline adapter.
+
+  - id: GC11
+    query: "Blue Ridge"
+    expected_message_ids:
+      - m023
+      - m031
+      - m035
+      - m043
+      - m044
+      - m050
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim substring across threads. Appears in both weekend hike and dinner
+      threads. m050 ('See attached') has Blue Ridge only in
+      media_analysis.explanation (trailhead parking photo).
+
+  - id: GC12
+    query: "CI pipeline is green"
+    expected_message_ids:
+      - m057
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim match against multi-word phrase. Also has media_analysis with
+      Jenkins build #1847 details and PostGIS extension version bump.
+
+  - id: GC13
+    query: "idempotency key"
+    expected_message_ids:
+      - m016
+      - m020
+    scope: all
+    query_type: verbatim_quote
+    notes: >
+      Verbatim match against near-duplicate incident pair. Both m016 and m020
+      describe the same payment processor bug with overlapping wording.
+
+  - id: GC14
+    query: "rate limiting"
+    expected_message_ids:
+      - m010
+      - m011
+      - m012
+    scope: thread
+    query_type: verbatim_quote
+    thread_id: thread_nexus_kickoff
+    notes: >
+      Verbatim match within thread scope. m010 introduces rate limiting issue,
+      m011 references Sarah's prior report, m012 describes the burst limit fix.
+      m058 (rate limiting followup in thread_nexus_bugs) excluded by scope.
+
+  # ===========================================================================
+  # PARAPHRASE cases - query describes the same concept as the target message
+  # but uses completely different words. ILIKE baseline is expected to return
+  # an empty list (recall=0) for these cases because the query substrings do
+  # not appear in the target message content or media_analysis fields.
+  #
+  # These are the cases the harness exists to measure: they quantify the gap
+  # between lexical matching and semantic understanding. Every paraphrase case
+  # below has been verified to share NO character-level substrings between the
+  # query and target message content, and the target messages have no
+  # media_analysis that could bridge the lexical gap.
+  # ===========================================================================
+
+  - id: GC15
+    query: "login system status"
+    expected_message_ids:
+      - m004
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (login,
+      system, status) do not appear in m004 content ('The OAuth2 integration
+      is mostly done. Just need to handle token refresh edge cases.'). No
+      media_analysis. ILIKE baseline returns [].
+
+  - id: GC16
+    query: "migration scripts delayed"
+    expected_message_ids:
+      - m006
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (migration,
+      scripts, delayed) do not appear in m006 content ('Those are blocked on
+      the schema review. Jenkins flagged three compatibility issues.'). No
+      media_analysis. ILIKE returns [].
+
+  - id: GC17
+    query: "UV protection reminder"
+    expected_message_ids:
+      - m029
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (UV,
+      protection, reminder) do not appear in m029 content ('Don't forget
+      sunscreen this time. Remember what happened at Shenandoah.'). Uses 'UV'
+      instead of 'sun' because 'sun' would match inside 'sunscreen' as ILIKE
+      substring. No media_analysis. ILIKE returns [].
+
+  - id: GC18
+    query: "in-memory cache architecture"
+    expected_message_ids:
+      - m008
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (in-memory,
+      cache, architecture) do not appear in m008 content ('I've been thinking
+      about the caching layer. Redis cluster might be overkill for our
+      scale.'). Neither 'in-memory' nor 'architecture' appear as substrings
+      in the content. No media_analysis. ILIKE returns [].
+
+  - id: GC19
+    query: "meal beverage planning"
+    expected_message_ids:
+      - m025
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (meal,
+      beverage, planning) do not appear in m025 content ('I'll pack
+      sandwiches. You bring the water filters.'). Note: original query used
+      'food and drink logistics' but 'and' appears inside 'sandwiches' as
+      ILIKE substring. No media_analysis. ILIKE returns [].
+
+  - id: GC20
+    query: "schedule coordination"
+    expected_message_ids:
+      - m043
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (schedule,
+      coordination) do not appear in m043 content ('Perfect timing. We should
+      be back from Blue Ridge by 4 PM latest.'). No media_analysis. ILIKE
+      returns [].
+
+  - id: GC21
+    query: "NPE resolution"
+    expected_message_ids:
+      - m052
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (NPE,
+      resolution) do not appear in m052 content ('The null pointer from
+      earlier - fixed it. Was a missing null guard on the session factory
+      injection path.'). No media_analysis. ILIKE returns [].
+
+  - id: GC22
+    query: "test environment throttle"
+    expected_message_ids:
+      - m010
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (test,
+      environment, throttle) do not appear in m010 content ('The API rate
+      limiting is causing issues in staging. Users hitting 429s during
+      peak.'). No media_analysis. ILIKE returns [].
+
+  - id: GC23
+    query: "sunburn story"
+    expected_message_ids:
+      - m030
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (sunburn,
+      story) do not appear in m030 content ('How could I forget? I looked
+      like a tomato for a week.'). Message describes sunburn via metaphor
+      (tomato). No media_analysis. ILIKE returns [].
+
+  - id: GC24
+    query: "weekend logistics"
+    expected_message_ids:
+      - m046
+    scope: all
+    query_type: paraphrase
+    notes: >
+      PARAPHRASE (ILIKE MISS): Zero keyword overlap. Query words (weekend,
+      logistics) do not appear in m046 content ('Already on my checklist.
+      Along with the water filters for the morning hike.'). No
+      media_analysis. ILIKE returns [].
+
+  # ===========================================================================
+  # CROSS_THREAD cases - topic-scoped query where the correct answer spans
+  # messages from multiple threads sharing the same topic_id. The ILIKE
+  # baseline will find messages across threads via substring match, but the
+  # scope filter is the key differentiator: a thread-scoped query would miss
+  # relevant messages in the other thread, while a topic-scoped query must
+  # return from both.
+  # ===========================================================================
+
+  - id: GC25
+    query: "What are the weekend plans for food?"
+    expected_message_ids:
+      - m025
+      - m037
+      - m038
+      - m039
+      - m042
+      - m044
+      - m051
+      - m056
+    scope: topic
+    query_type: cross_thread
+    topic_id: topic_weekend_plans
+    notes: >
+      CROSS_THREAD: Query targets topic_weekend_plans which spans
+      thread_weekend_hike (hike food logistics: m025) and thread_weekend_dinner
+      (dinner plans: m037-m056). Topic-scoped retrieval must return messages
+      from BOTH threads. m051 is media_analysis-only (Luigi's menu PDF).
+
+  - id: GC26
+    query: "What deployment issues have come up?"
+    expected_message_ids:
+      - m006
+      - m010
+      - m014
+      - m016
+      - m019
+      - m020
+      - m053
+      - m057
+      - m058
+    scope: topic
+    query_type: cross_thread
+    topic_id: topic_project_nexus
+    notes: >
+      CROSS_THREAD: Deployment issues span thread_nexus_kickoff (schema review
+      blockers m006, rate limiting m010, CI pipeline m057) and thread_nexus_bugs
+      (payment processor duplication m014/m016/m020, hotfix deployment m019/m053,
+      rate-limit followup m058). Topic scope must cover both threads.
+
+  - id: GC27
+    query: "performance and scaling discussions"
+    expected_message_ids:
+      - m008
+      - m009
+      - m010
+      - m011
+      - m012
+      - m058
+    scope: topic
+    query_type: cross_thread
+    topic_id: topic_project_nexus
+    notes: >
+      CROSS_THREAD: Performance discussions appear in both nexus threads.
+      Caching and benchmarking (m008/m009) in kickoff thread, rate limiting
+      (m010/m011/m012) in kickoff, rate-limit followup (m058) in bugs thread.
+
+  - id: GC28
+    query: "Saturday morning plans"
+    expected_message_ids:
+      - m023
+      - m026
+      - m027
+      - m028
+      - m031
+      - m035
+      - m054
+      - m055
+    scope: topic
+    query_type: cross_thread
+    topic_id: topic_weekend_plans
+    notes: >
+      CROSS_THREAD: Saturday morning references across both weekend threads.
+      Hike thread has trail planning and timing (m023/m026/m027/m028/m031/m035),
+      plus weather updates (m054 rain forecast, m055 ponchos). Dinner thread
+      messages linked via timing references.

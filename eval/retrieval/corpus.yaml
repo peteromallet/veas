@@ -1,0 +1,553 @@
+# =============================================================================
+# Synthetic Retrieval Evaluation Corpus
+# =============================================================================
+#
+# Hard-case design methodology:
+#
+# 1. TERSE REPLIES (one-word or very short replies):
+#    Messages like "fine.", "sure", "I told you so." test whether retrievers
+#    can surface low-signal messages that carry conversational state. ILIKE
+#    will match these if the query contains the exact word, but a retrieval
+#    system that dismisses short messages will fail.
+#
+# 2. PARAPHRASE PAIRS:
+#    Target messages use wording that deliberately DIVERGES from what a
+#    natural query would phrase. For example, "the idempotency key check is
+#    failing under concurrent requests" vs a query like "transaction duplicate
+#    bug". These are the cases ILIKE MUST miss because the substring does not
+#    overlap. A semantic retriever should catch them.
+#
+# 3. CROSS-THREAD CONTINUATIONS:
+#    The same topic_id (e.g., topic_weekend_plans) is referenced in two
+#    different thread_ids (thread_weekend_hike and thread_weekend_dinner).
+#    A topic-scoped query should return messages from ALL threads sharing
+#    that topic. A thread-scoped query should isolate to one thread.
+#
+# 4. NEAR-DUPLICATE INCIDENTS:
+#    Two messages describe the same event (e.g., a payment processor bug)
+#    with wording that differs by one detail. These exercise deduplication
+#    and ranking stability — both should surface for the same query, and
+#    their relative order should be deterministic.
+#
+# 5. MEDIA-ANALYSIS-ONLY SIGNAL:
+#    Several messages have generic content ("Check this out", "See attached",
+#    "Here's the thing I mentioned") where ALL the semantically relevant
+#    information lives in media_analysis.explanation, media_analysis.description,
+#    or media_analysis.summary. ILIKE baseline matches these fields, but
+#    only if the query substring appears there.
+#
+# DESIGN NOTES:
+# - ALL sent_at values are strictly unique across the entire corpus.
+#   This guarantees deterministic ordering under (sent_at DESC, id DESC)
+#   per SD3 / callers-3. No two messages share a timestamp.
+# - Message ids use stable ASCII m001..m060 format.
+# - Two topics: topic_project_nexus (work), topic_weekend_plans (personal).
+# - Four threads: thread_nexus_kickoff, thread_nexus_bugs (project_nexus);
+#   thread_weekend_hike, thread_weekend_dinner (weekend_plans).
+# - Single dyad: Alice <-> Bob.
+# =============================================================================
+
+messages:
+  # =========================================================================
+  # THREAD: thread_nexus_kickoff (topic: topic_project_nexus)
+  # =========================================================================
+
+  - id: m001
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:00:00Z"
+    content: "Hey Bob, can we discuss the Nexus project timeline?"
+
+  - id: m002
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:01:00Z"
+    content: "Sure, I've got the latest sprint review ready."
+
+  - id: m003
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:02:30Z"
+    content: "Great. How's the authentication module coming along?"
+
+  - id: m004
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:03:15Z"
+    content: "The OAuth2 integration is mostly done. Just need to handle token refresh edge cases."
+
+  - id: m005
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:04:00Z"
+    content: "What about the database migration scripts?"
+
+  - id: m006
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:04:45Z"
+    content: "Those are blocked on the schema review. Jenkins flagged three compatibility issues."
+
+  - id: m007
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:05:10Z"
+    content: "fine."
+
+  - id: m008
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:06:00Z"
+    content: "I've been thinking about the caching layer. Redis cluster might be overkill for our scale."
+
+  - id: m009
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:07:30Z"
+    content: "We should benchmark first. I asked DevOps to provision a test environment."
+
+  - id: m010
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:08:00Z"
+    content: "The API rate limiting is causing issues in staging. Users hitting 429s during peak."
+
+  - id: m011
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:09:00Z"
+    content: "That's the same thing Sarah reported last sprint. Did we ever increase the burst limit?"
+
+  - id: m012
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-03T09:10:00Z"
+    content: "I bumped it from 50 to 75 requests per minute. Should be enough."
+
+  - id: m013
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-03T09:11:00Z"
+    content: "I told you so."
+
+  # =========================================================================
+  # THREAD: thread_nexus_bugs (topic: topic_project_nexus)
+  # =========================================================================
+
+  - id: m014
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T08:30:00Z"
+    content: "Found a regression in the payment processor. It's duplicating transaction IDs since the last deploy."
+
+  - id: m015
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T08:31:00Z"
+    content: "That's bad. Is it affecting production?"
+
+  - id: m016
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T08:32:00Z"
+    content: "Only staging so far. The idempotency key check is failing under concurrent requests."
+
+  - id: m017
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T08:33:00Z"
+    content: "Same root cause as the session token bug from March?"
+
+  - id: m018
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T08:34:00Z"
+    content: "Related but not identical. This one's in the PostgreSQL advisory lock layer."
+
+  - id: m019
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T08:35:00Z"
+    content: "Push a hotfix. I'll review when I'm back from lunch."
+
+  - id: m020
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T08:36:00Z"
+    content: "The payment processor is duplicating transaction IDs after the deploy. Root cause is idempotency key collision."
+
+  - id: m021
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T08:37:00Z"
+    content: "We already discussed this. Did you push the hotfix?"
+
+  - id: m022
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T08:38:00Z"
+    content: "sure"
+
+  # =========================================================================
+  # THREAD: thread_weekend_hike (topic: topic_weekend_plans)
+  # =========================================================================
+
+  - id: m023
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:00:00Z"
+    content: "Want to do the Blue Ridge trail this Saturday?"
+
+  - id: m024
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:01:00Z"
+    content: "Weather looks good. 72 and sunny according to the forecast."
+
+  - id: m025
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:02:00Z"
+    content: "I'll pack sandwiches. You bring the water filters."
+
+  - id: m026
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:03:00Z"
+    content: "Deal. What time should we start?"
+
+  - id: m027
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:04:00Z"
+    content: "6 AM. Beat the crowds and the heat."
+
+  - id: m028
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:05:00Z"
+    content: "Oof. That's early. But fine."
+
+  - id: m029
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:06:00Z"
+    content: "Don't forget sunscreen this time. Remember what happened at Shenandoah."
+
+  - id: m030
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:07:00Z"
+    content: "How could I forget? I looked like a tomato for a week."
+
+  - id: m031
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:08:00Z"
+    content: "Blue Ridge trailhead, 6 AM Saturday, I'll bring food you bring water."
+
+  - id: m032
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:09:00Z"
+    content: "Got it. I'll also bring the first aid kit just in case."
+
+  - id: m033
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:10:00Z"
+    content: "Good call. I almost forgot about that twisted ankle last time."
+
+  - id: m034
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:11:00Z"
+    content: "Yeah that was scary. Took us two hours to get back to the car."
+
+  - id: m035
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T18:12:00Z"
+    content: "So for the Blue Ridge hike - I'll handle food, you handle water and first aid. 6 AM sharp."
+
+  - id: m036
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T18:13:00Z"
+    content: "Confirmed. I threw in some trail mix too."
+
+  # =========================================================================
+  # THREAD: thread_weekend_dinner (topic: topic_weekend_plans)
+  # Cross-thread: same topic_id as thread_weekend_hike
+  # =========================================================================
+
+  - id: m037
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T19:00:00Z"
+    content: "After the hike, want to grab dinner at that new Italian place?"
+
+  - id: m038
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T19:01:00Z"
+    content: "Luigi's? I heard their osso buco is incredible."
+
+  - id: m039
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T19:02:00Z"
+    content: "Yes! And they have that rooftop seating. Perfect for sunset."
+
+  - id: m040
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T19:03:00Z"
+    content: "Should we invite Carol? She's been wanting to try it."
+
+  - id: m041
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T19:04:00Z"
+    content: "Maybe next time. I want to keep this one just us."
+
+  - id: m042
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T19:05:00Z"
+    content: "Reservation is for 7:30 PM. They said the rooftop fills up fast."
+
+  - id: m043
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T19:06:00Z"
+    content: "Perfect timing. We should be back from Blue Ridge by 4 PM latest."
+
+  - id: m044
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T19:07:00Z"
+    content: "Osso buco at Luigi's. Rooftop at 7:30. After Blue Ridge hike."
+
+  - id: m045
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T19:08:00Z"
+    content: "Don't forget - we need to bring a jacket. Rooftop gets chilly after dark."
+
+  - id: m046
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T19:09:00Z"
+    content: "Already on my checklist. Along with the water filters for the morning hike."
+
+  # =========================================================================
+  # MEDIA-ANALYSIS-ONLY SIGNAL MESSAGES
+  # Content is generic/vague; all semantically relevant information is in
+  # media_analysis fields. ILIKE will only match these if the query substring
+  # appears in explanation, description, or summary.
+  # =========================================================================
+
+  - id: m047
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T14:00:00Z"
+    content: "Check this out"
+    media_analysis:
+      explanation: "Screenshot showing a null pointer exception in the Nexus authentication module at line 342 of AuthService.java during the 2PM load test"
+
+  - id: m048
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T14:01:00Z"
+    content: "What am I looking at?"
+    media_analysis:
+      description: "Log trace showing cascading 503 errors from the load balancer during the Saturday morning traffic spike that took down the checkout flow for 17 minutes"
+
+  - id: m049
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T14:02:00Z"
+    content: "Here's the thing I mentioned"
+    media_analysis:
+      summary: "Voice transcription of a standup call discussing the decision to migrate from PostgreSQL 14 to 16 for the Nexus project, citing JSONB performance improvements and the new MERGE statement syntax"
+
+  - id: m050
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-06T07:00:00Z"
+    content: "See attached"
+    media_analysis:
+      explanation: "Photo of the Blue Ridge trailhead parking lot showing it's completely full with cars spilling onto the highway shoulder at 6:45 AM on Saturday"
+
+  - id: m051
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-06T12:00:00Z"
+    content: "Look at the menu"
+    media_analysis:
+      description: "PDF menu for Luigi's Ristorante showing the osso buco is a Thursday special, not available on Saturday, with a handwritten note about the mushroom risotto being the chef's recommendation"
+
+  # =========================================================================
+  # ADDITIONAL MESSAGES for coverage depth
+  # =========================================================================
+
+  - id: m052
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-04T15:00:00Z"
+    content: "The null pointer from earlier - fixed it. Was a missing null guard on the session factory injection path."
+
+  - id: m053
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-04T16:00:00Z"
+    content: "Hotfix deployed. Monitoring the payment processor error rate now."
+
+  - id: m054
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-06T18:00:00Z"
+    content: "Forecast updated - slight chance of rain Saturday morning. Should I bring ponchos?"
+
+  - id: m055
+    thread_id: thread_weekend_hike
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-06T18:05:00Z"
+    content: "Yes, ponchos are smart. The trail gets muddy near the second ridge."
+
+  - id: m056
+    thread_id: thread_weekend_dinner
+    topic_id: topic_weekend_plans
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-06T18:10:00Z"
+    content: "Just saw the menu you sent. If osso buco isn't available Saturday, the mushroom risotto looks amazing."
+
+  - id: m057
+    thread_id: thread_nexus_kickoff
+    topic_id: topic_project_nexus
+    sender: Alice
+    recipient: Bob
+    sent_at: "2025-11-05T10:00:00Z"
+    content: "CI pipeline is green again. The migration scripts passed schema review."
+    media_analysis:
+      explanation: "Jenkins build #1847 passed all three compatibility checks after the PostGIS extension version was bumped to 3.4"
+
+  - id: m058
+    thread_id: thread_nexus_bugs
+    topic_id: topic_project_nexus
+    sender: Bob
+    recipient: Alice
+    sent_at: "2025-11-05T10:30:00Z"
+    content: "Rate limiting tweak helped. 429 count dropped 80% in the last hour."

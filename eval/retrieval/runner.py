@@ -1,0 +1,329 @@
+"""
+Retrieval evaluation runner.
+
+Wires the loader, metrics, and retriever adapters into a single evaluation
+pipeline, producing structured JSON and Markdown reports.
+
+Usage:
+    python -m eval.retrieval.runner --adapter {baseline,stub}
+        [--corpus PATH] [--golden PATH] [--out-dir PATH]
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from datetime import datetime, timezone
+from pathlib import Path
+from typing import Any
+
+from pydantic import BaseModel, Field
+
+from eval.retrieval.adapters import IlikeBaselineRetriever, Retriever, StubSemanticRetriever
+from eval.retrieval.loader import load_corpus, load_golden_set
+from eval.retrieval.metrics import (
+    aggregate,
+    aggregate_by_query_type,
+    recall_at_k,
+    reciprocal_rank,
+)
+from eval.retrieval.schema import Corpus, GoldenSet
+
+
+# ---------------------------------------------------------------------------
+# Report model
+# ---------------------------------------------------------------------------
+
+
+class EvalReport(BaseModel):
+    """Structured evaluation report for a single adapter run."""
+
+    adapter_name: str
+    corpus_path: str
+    golden_set_path: str
+    overall: dict[str, float | int]
+    by_query_type: dict[str, dict[str, float | int]]
+    per_case: list[dict[str, Any]]
+    generated_at: str = Field(default_factory=lambda: datetime.now(timezone.utc).isoformat())
+
+
+# ---------------------------------------------------------------------------
+# Core runner
+# ---------------------------------------------------------------------------
+
+
+def run_eval(
+    retriever: Retriever,
+    corpus: Corpus,
+    golden_set: GoldenSet,
+    *,
+    ks: tuple[int, ...] = (1, 5, 10),
+) -> EvalReport:
+    """Run a full evaluation of a retriever against a golden set.
+
+    Args:
+        retriever: Any object satisfying the Retriever protocol.
+        corpus: The corpus of messages to search over.
+        golden_set: The golden test cases.
+        ks: Recall cutoffs to compute. If empty, limit=0 and no metrics
+            are computed (per-case results will have no recall keys).
+
+    Returns:
+        EvalReport with overall and per-query-type aggregates.
+    """
+    # Defensive: handle empty ks (callers-2).
+    limit = max(ks) if ks else 0
+
+    per_case_results: list[dict[str, Any]] = []
+
+    for case in golden_set.cases:
+        ranked_ids = retriever.retrieve(
+            query=case.query,
+            scope=case.scope,
+            thread_id=case.thread_id,
+            topic_id=case.topic_id,
+            limit=limit,
+        )
+
+        case_result: dict[str, Any] = {
+            "case_id": case.id,
+            "query": case.query,
+            "query_type": case.query_type,
+            "scope": case.scope,
+            "expected_count": len(case.expected_message_ids),
+            "retrieved_count": len(ranked_ids),
+            "ranked_ids": ranked_ids,
+            "expected_ids": case.expected_message_ids,
+            "notes": case.notes,
+        }
+
+        # Compute metrics only if ks is non-empty.
+        if ks:
+            for k in ks:
+                case_result[f"recall_at_{k}"] = recall_at_k(
+                    ranked_ids, case.expected_message_ids, k
+                )
+            case_result["reciprocal_rank"] = reciprocal_rank(
+                ranked_ids, case.expected_message_ids
+            )
+
+        per_case_results.append(case_result)
+
+    if ks and per_case_results:
+        overall = aggregate(per_case_results)
+        by_query_type = aggregate_by_query_type(per_case_results)
+    else:
+        overall = {
+            "recall@1": 0.0,
+            "recall@5": 0.0,
+            "recall@10": 0.0,
+            "mrr": 0.0,
+            "n": len(golden_set.cases),
+        }
+        by_query_type = {}
+
+    return EvalReport(
+        adapter_name=getattr(retriever, "__class__", type(retriever)).__name__,
+        corpus_path="",  # Filled by CLI wrapper or caller
+        golden_set_path="",  # Filled by CLI wrapper or caller
+        overall=overall,
+        by_query_type=by_query_type,
+        per_case=per_case_results,
+    )
+
+
+# ---------------------------------------------------------------------------
+# Report writers
+# ---------------------------------------------------------------------------
+
+
+def write_json_report(report: EvalReport, path: Path) -> None:
+    """Write the evaluation report as JSON.
+
+    Per SD5 / all_locations-2: creates parent directories if missing.
+
+    Args:
+        report: The EvalReport to serialize.
+        path: Destination file path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(report.model_dump_json(indent=2), encoding="utf-8")
+
+
+def write_markdown_report(report: EvalReport, path: Path) -> None:
+    """Write the evaluation report as Markdown.
+
+    Contains an overall table and a per-query-type table with sorted keys
+    and stable case ordering.
+
+    Per SD5 / all_locations-2: creates parent directories if missing.
+
+    Args:
+        report: The EvalReport to serialize.
+        path: Destination file path.
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+    lines: list[str] = []
+
+    lines.append(f"# Retrieval Evaluation Report")
+    lines.append(f"")
+    lines.append(f"- **Adapter:** {report.adapter_name}")
+    lines.append(f"- **Corpus:** {report.corpus_path}")
+    lines.append(f"- **Golden Set:** {report.golden_set_path}")
+    lines.append(f"- **Generated:** {report.generated_at}")
+    lines.append(f"- **Cases:** {report.overall.get('n', 0)}")
+    lines.append(f"")
+
+    # Overall table
+    lines.append(f"## Overall Metrics")
+    lines.append(f"")
+    lines.append(f"| Metric    | Value |")
+    lines.append(f"|-----------|-------|")
+    metric_keys = sorted(k for k in report.overall if k != "n")
+    for key in metric_keys:
+        val = report.overall[key]
+        lines.append(f"| {key} | {val:.4f} |")
+    lines.append(f"| n         | {report.overall.get('n', 0)} |")
+    lines.append(f"")
+
+    # Per query-type tables (sorted keys, stable case ordering)
+    if report.by_query_type:
+        lines.append(f"## Per Query-Type Metrics")
+        lines.append(f"")
+        for qt in sorted(report.by_query_type.keys()):
+            qt_data = report.by_query_type[qt]
+            lines.append(f"### {qt}")
+            lines.append(f"")
+            lines.append(f"| Metric    | Value |")
+            lines.append(f"|-----------|-------|")
+            for mkey in sorted(k for k in qt_data if k != "n"):
+                lines.append(f"| {mkey} | {qt_data[mkey]:.4f} |")
+            lines.append(f"| n         | {qt_data.get('n', 0)} |")
+            lines.append(f"")
+
+            # Case listing for this query type
+            matching_cases = [c for c in report.per_case if c.get("query_type") == qt]
+            if matching_cases:
+                lines.append(f"#### Cases")
+                lines.append(f"")
+                lines.append(
+                    f"| Case ID | Query | Scope | Expected | Retrieved | "
+                    f"Recall@1 | Recall@5 | Recall@10 | MRR |"
+                )
+                lines.append(
+                    f"|---------|-------|-------|----------|-----------|"
+                    f"----------|----------|-----------|-----|"
+                )
+                for c in matching_cases:
+                    lines.append(
+                        f"| {c.get('case_id', '')} "
+                        f"| {c.get('query', '')} "
+                        f"| {c.get('scope', '')} "
+                        f"| {c.get('expected_count', 0)} "
+                        f"| {c.get('retrieved_count', 0)} "
+                        f"| {c.get('recall_at_1', 0):.4f} "
+                        f"| {c.get('recall_at_5', 0):.4f} "
+                        f"| {c.get('recall_at_10', 0):.4f} "
+                        f"| {c.get('reciprocal_rank', 0):.4f} |"
+                    )
+                lines.append(f"")
+
+    path.write_text("\n".join(lines), encoding="utf-8")
+
+
+# ---------------------------------------------------------------------------
+# CLI entrypoint
+# ---------------------------------------------------------------------------
+
+
+def _build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        description="Run retrieval evaluation harness against an adapter."
+    )
+    parser.add_argument(
+        "--adapter",
+        choices=["baseline", "stub"],
+        required=True,
+        help="Retriever adapter to evaluate.",
+    )
+    parser.add_argument(
+        "--corpus",
+        type=Path,
+        default=None,
+        help="Path to corpus YAML (default: eval/retrieval/corpus.yaml).",
+    )
+    parser.add_argument(
+        "--golden",
+        type=Path,
+        default=None,
+        help="Path to golden set YAML (default: eval/retrieval/golden_set.yaml).",
+    )
+    parser.add_argument(
+        "--out-dir",
+        type=Path,
+        default=None,
+        help="Directory for output reports (default: eval/retrieval/reports/).",
+    )
+    return parser
+
+
+def _default_path(relative: str) -> Path:
+    """Resolve a relative path against the project root (parent of eval/)."""
+    base = Path(__file__).resolve().parent.parent.parent
+    return base / relative
+
+
+def main(argv: list[str] | None = None) -> EvalReport:
+    """CLI entrypoint.
+
+    Args:
+        argv: Command-line arguments (defaults to sys.argv[1:]).
+
+    Returns:
+        The resulting EvalReport (also written to disk).
+    """
+    parser = _build_parser()
+    args = parser.parse_args(argv)
+
+    # Resolve default paths relative to project root.
+    corpus_path: Path = args.corpus or _default_path("eval/retrieval/corpus.yaml")
+    golden_path: Path = args.golden or _default_path("eval/retrieval/golden_set.yaml")
+    out_dir: Path = args.out_dir or _default_path("eval/retrieval/reports/")
+
+    # Load data.
+    corpus = load_corpus(corpus_path)
+    golden_set = load_golden_set(golden_path, corpus=corpus)
+
+    # Build retriever.
+    adapter_name = args.adapter
+    retriever: Retriever
+    if adapter_name == "baseline":
+        retriever = IlikeBaselineRetriever(corpus)
+    elif adapter_name == "stub":
+        retriever = StubSemanticRetriever(corpus)
+    else:
+        raise ValueError(f"Unknown adapter: {adapter_name}")
+
+    # Run evaluation.
+    report = run_eval(retriever, corpus, golden_set)
+
+    # Stamp paths into report.
+    report.corpus_path = str(corpus_path)
+    report.golden_set_path = str(golden_path)
+
+    # Write reports.
+    json_path = out_dir / f"{adapter_name}_report.json"
+    md_path = out_dir / f"{adapter_name}_report.md"
+    write_json_report(report, json_path)
+    write_markdown_report(report, md_path)
+
+    print(f"Reports written to {out_dir.resolve()}")
+    print(f"  JSON: {json_path.name}")
+    print(f"  MD:   {md_path.name}")
+
+    return report
+
+
+if __name__ == "__main__":
+    main()
