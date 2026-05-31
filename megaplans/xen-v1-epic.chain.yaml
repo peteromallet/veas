@@ -63,3 +63,4 @@ driver:
   auto_approve: true
   max_iterations: 80
   poll_sleep: 8.0
+  phase_timeout: 14400        # 4h execute ceiling — the prior epic's execute died at the 3600s default
