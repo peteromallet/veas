@@ -25,8 +25,17 @@ from app.services.partner_sharing import (
 from app.services.vision import explain_stored_image
 from app.services.messaging import send_outbound, _append_turn_reasoning, _call_oob_hook
 from app.services.message_embedding_lifecycle import (
+    enqueue_content_embed,
+    enqueue_content_embedding_drop,
+    enqueue_content_reembed,
     enqueue_message_embedding_drop,
     enqueue_message_reembed,
+)
+from app.services.embeddings import (
+    canonical_distillation_embedding_text,
+    canonical_memory_embedding_text,
+    canonical_observation_embedding_text,
+    content_hash,
 )
 from app.services import discord, scoring
 from app.services.templates import TemplateCall
@@ -149,6 +158,202 @@ from tool_schemas import (
 from app.services.live.plan_markdown import markdown_to_agenda, agenda_to_display
 
 logger = logging.getLogger(__name__)
+
+
+def _memory_is_searchable(row: Any | None) -> bool:
+    if row is None:
+        return False
+    return (
+        row.get("status") == "active"
+        and (row.get("visibility") or "private") == "private"
+        and bool(canonical_memory_embedding_text(row.get("content")))
+    )
+
+
+def _memory_content_hash(row: Any) -> str:
+    return content_hash(canonical_memory_embedding_text(row.get("content")))
+
+
+async def _fetch_memory_embedding_state(pool: Any, memory_id: Any) -> Any | None:
+    return await pool.fetchrow(
+        """
+        SELECT id, content, status, visibility
+        FROM memories
+        WHERE id = $1
+        """,
+        memory_id,
+    )
+
+
+async def _sync_memory_embedding_after_create(ctx: TurnContext, memory_id: Any) -> None:
+    row = await _fetch_memory_embedding_state(ctx.pool, memory_id)
+    if _memory_is_searchable(row):
+        await enqueue_content_embed(
+            ctx.pool,
+            source_type="memory",
+            source_id=row["id"],
+            content_hash=_memory_content_hash(row),
+        )
+
+
+async def _sync_memory_embedding_after_update(ctx: TurnContext, memory_id: Any) -> None:
+    row = await _fetch_memory_embedding_state(ctx.pool, memory_id)
+    if _memory_is_searchable(row):
+        await enqueue_content_reembed(
+            ctx.pool,
+            source_type="memory",
+            source_id=row["id"],
+            content_hash=_memory_content_hash(row),
+        )
+    else:
+        await enqueue_content_embedding_drop(
+            ctx.pool,
+            source_type="memory",
+            source_id=memory_id,
+        )
+
+
+async def _sync_memory_embedding_after_supersede(
+    ctx: TurnContext, *, old_memory_id: Any, new_memory_id: Any
+) -> None:
+    await enqueue_content_embedding_drop(
+        ctx.pool,
+        source_type="memory",
+        source_id=old_memory_id,
+    )
+    await _sync_memory_embedding_after_create(ctx, new_memory_id)
+
+
+def _observation_is_searchable(row: Any | None) -> bool:
+    if row is None:
+        return False
+    return (
+        row.get("status") == "active"
+        and (row.get("significance") or 0) >= 3
+        and bool(canonical_observation_embedding_text(row.get("content")))
+    )
+
+
+def _observation_content_hash(row: Any) -> str:
+    return content_hash(canonical_observation_embedding_text(row.get("content")))
+
+
+async def _fetch_observation_embedding_state(pool: Any, observation_id: Any) -> Any | None:
+    return await pool.fetchrow(
+        """
+        SELECT id, content, status, significance
+        FROM observations
+        WHERE id = $1
+        """,
+        observation_id,
+    )
+
+
+async def _sync_observation_embedding_after_create(
+    ctx: TurnContext, observation_id: Any
+) -> None:
+    row = await _fetch_observation_embedding_state(ctx.pool, observation_id)
+    if _observation_is_searchable(row):
+        await enqueue_content_embed(
+            ctx.pool,
+            source_type="observation",
+            source_id=row["id"],
+            content_hash=_observation_content_hash(row),
+        )
+
+
+async def _sync_observation_embedding_after_update(
+    ctx: TurnContext, observation_id: Any
+) -> None:
+    row = await _fetch_observation_embedding_state(ctx.pool, observation_id)
+    if _observation_is_searchable(row):
+        await enqueue_content_reembed(
+            ctx.pool,
+            source_type="observation",
+            source_id=row["id"],
+            content_hash=_observation_content_hash(row),
+        )
+    else:
+        await enqueue_content_embedding_drop(
+            ctx.pool,
+            source_type="observation",
+            source_id=observation_id,
+        )
+
+
+def _distillation_is_searchable(row: Any | None) -> bool:
+    if row is None:
+        return False
+    return (
+        row.get("status") == "active"
+        and (row.get("visibility") or "private") == "private"
+        and row.get("superseded_by_distillation_id") is None
+        and row.get("retired_at") is None
+        and row.get("revised_at") is None
+        and bool(canonical_distillation_embedding_text(row.get("content")))
+    )
+
+
+def _distillation_content_hash(row: Any) -> str:
+    return content_hash(canonical_distillation_embedding_text(row.get("content")))
+
+
+async def _fetch_distillation_embedding_state(
+    pool: Any, distillation_id: Any
+) -> Any | None:
+    return await pool.fetchrow(
+        """
+        SELECT
+            id, content, status, visibility, superseded_by_distillation_id,
+            revised_at, retired_at
+        FROM distillations
+        WHERE id = $1
+        """,
+        distillation_id,
+    )
+
+
+async def _sync_distillation_embedding_after_create(
+    ctx: TurnContext, distillation_id: Any
+) -> None:
+    row = await _fetch_distillation_embedding_state(ctx.pool, distillation_id)
+    if _distillation_is_searchable(row):
+        await enqueue_content_embed(
+            ctx.pool,
+            source_type="distillation",
+            source_id=row["id"],
+            content_hash=_distillation_content_hash(row),
+        )
+
+
+async def _sync_distillation_embedding_after_update(
+    ctx: TurnContext, distillation_id: Any
+) -> None:
+    row = await _fetch_distillation_embedding_state(ctx.pool, distillation_id)
+    if _distillation_is_searchable(row):
+        await enqueue_content_reembed(
+            ctx.pool,
+            source_type="distillation",
+            source_id=row["id"],
+            content_hash=_distillation_content_hash(row),
+        )
+    else:
+        await enqueue_content_embedding_drop(
+            ctx.pool,
+            source_type="distillation",
+            source_id=distillation_id,
+        )
+
+
+async def _sync_distillation_embedding_after_revise(
+    ctx: TurnContext, *, old_distillation_id: Any, new_distillation_id: Any
+) -> None:
+    await enqueue_content_embedding_drop(
+        ctx.pool,
+        source_type="distillation",
+        source_id=old_distillation_id,
+    )
+    await _sync_distillation_embedding_after_create(ctx, new_distillation_id)
 
 SCORING_PROMPT_VERSION = scoring.SCORING_PROMPT_VERSION
 _BRIDGE_RESOLVED_STATUSES = {"sent", "declined", "blocked", "addressed", "expired"}
@@ -935,6 +1140,7 @@ async def add_memory(ctx: TurnContext, args: AddMemoryInput) -> AddMemoryOutput:
         args.reason,
     )
     result = AddMemoryOutput(id=row["id"])
+    await _sync_memory_embedding_after_create(ctx, row["id"])
     await _log_tool_call(ctx, "add_memory", args, started, result)
     return result
 
@@ -972,6 +1178,7 @@ async def update_memory(
         *params,
     )
     result = UpdateMemoryOutput(id=row["id"])
+    await _sync_memory_embedding_after_update(ctx, row["id"])
     await _log_tool_call(ctx, "update_memory", args, started, result)
     return result
 
@@ -1015,6 +1222,11 @@ async def supersede_memory(
         ctx.primary_topic_id,
     )
     result = SupersedeMemoryOutput(new_id=row["new_id"], old_id=row["old_id"])
+    await _sync_memory_embedding_after_supersede(
+        ctx,
+        old_memory_id=row["old_id"],
+        new_memory_id=row["new_id"],
+    )
     await _log_tool_call(ctx, "supersede_memory", args, started, result)
     return result
 
@@ -1250,6 +1462,7 @@ async def log_observation(
         args.reason,
     )
     result = LogObservationOutput(id=row["id"])
+    await _sync_observation_embedding_after_create(ctx, row["id"])
     await _log_tool_call(ctx, "log_observation", logged_args, started, result)
     return result
 
@@ -1271,7 +1484,7 @@ async def update_observation(
     started = _start()
     sets = ["last_reinforced_at=now()"]
     params: list[Any] = []
-    for field in ("content", "confidence", "status", "related_theme_ids"):
+    for field in ("content", "confidence", "significance", "status", "related_theme_ids"):
         value = getattr(args, field)
         if value is not None:
             params.append(value.value if hasattr(value, "value") else value)
@@ -1285,6 +1498,7 @@ async def update_observation(
         *params,
     )
     result = UpdateObservationOutput(id=row["id"])
+    await _sync_observation_embedding_after_update(ctx, row["id"])
     await _log_tool_call(ctx, "update_observation", args, started, result)
     return result
 
@@ -1370,6 +1584,7 @@ async def add_distillation(
         args.reason,
     )
     result = AddDistillationOutput(id=row["id"])
+    await _sync_distillation_embedding_after_create(ctx, row["id"])
     await _log_tool_call(ctx, "add_distillation", logged_args, started, result)
     return result
 
@@ -1430,6 +1645,7 @@ async def update_distillation(
         *params,
     )
     result = UpdateDistillationOutput(id=row["id"])
+    await _sync_distillation_embedding_after_update(ctx, row["id"])
     await _log_tool_call(ctx, "update_distillation", args, started, result)
     return result
 
@@ -1549,6 +1765,11 @@ async def revise_distillation(
         await _log_tool_call(ctx, "revise_distillation", logged_args, started, result)
         raise ToolCallRejected(result)
     result = ReviseDistillationOutput(new_id=row["new_id"], old_id=row["old_id"])
+    await _sync_distillation_embedding_after_revise(
+        ctx,
+        old_distillation_id=row["old_id"],
+        new_distillation_id=row["new_id"],
+    )
     await _log_tool_call(ctx, "revise_distillation", logged_args, started, result)
     return result
 

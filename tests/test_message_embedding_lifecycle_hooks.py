@@ -4,8 +4,11 @@ from uuid import uuid4
 import pytest
 
 from app.models.user import User
-from app.services.embeddings import canonical_content_hash
+from app.services.embeddings import canonical_content_hash, content_hash
 from app.services import hooks
+from app.services import message_embedding_lifecycle as lifecycle
+from app.services.live import artifacts as live_artifacts
+from app.services.live import provenance as live_provenance
 from app.services.inbound import process_inbound
 from app.services.messaging import send_outbound
 from app.services.scope import InboundScope
@@ -13,10 +16,18 @@ from app.services.tools import read_tools
 from app.services.tools import write_tools
 from app.services.turn_context import TurnContext
 from tool_schemas import (
+    AddDistillationInput,
+    AddMemoryInput,
     DeleteOutboundMessageInput,
     EditOutboundMessageInput,
+    LogObservationInput,
     ExplainMediaItemInput,
     SearchMessagesInput,
+    SupersedeMemoryInput,
+    ReviseDistillationInput,
+    UpdateDistillationInput,
+    UpdateObservationInput,
+    UpdateMemoryInput,
 )
 
 
@@ -129,6 +140,60 @@ def _payload(sender: str, wa_id: str, content: str) -> dict:
     }
 
 
+class _ArtifactConn:
+    def __init__(self) -> None:
+        self.artifact_id = uuid4()
+        self.commands: list[tuple[str, tuple[object, ...]]] = []
+
+    async def execute(self, sql: str, *args):
+        self.commands.append((sql, args))
+        compact = " ".join(sql.split())
+        if compact.startswith("UPDATE mediator.conversation_artifacts"):
+            return "UPDATE 1"
+        if compact.startswith("UPDATE mediator.artifact_links"):
+            return "UPDATE 1"
+        return "OK"
+
+    async def fetchrow(self, sql: str, *args):
+        self.commands.append((sql, args))
+        compact = " ".join(sql.split())
+        if compact.startswith("INSERT INTO mediator.conversation_artifacts"):
+            return {
+                "id": self.artifact_id,
+                "conversation_id": args[0],
+                "bot_id": args[1],
+                "user_id": args[2],
+                "artifact_type": args[3],
+                "payload": args[4],
+                "payload_version": args[5],
+                "revision_number": 1,
+                "created_by_turn_id": args[6],
+                "deleted_at": None,
+                "expires_at": args[7],
+                "created_at": datetime.now(UTC),
+            }
+        if compact.startswith("UPDATE mediator.conversation_artifacts"):
+            return {
+                "id": args[0],
+                "conversation_id": str(uuid4()),
+                "bot_id": "mediator",
+                "user_id": str(uuid4()),
+                "artifact_type": "live_debrief",
+                "payload": args[1],
+                "payload_version": 2,
+                "revision_number": 1,
+                "created_by_turn_id": "turn-1",
+                "deleted_at": None,
+                "expires_at": None,
+                "created_at": datetime.now(UTC),
+            }
+        raise AssertionError(f"unexpected fetchrow: {compact}")
+
+    async def fetch(self, sql: str, *args):
+        self.commands.append((sql, args))
+        return [{"id": self.artifact_id}]
+
+
 def _edit_payload(sender: str, target_wa_id: str, content: str) -> dict:
     payload = _payload(sender, f"edit.{target_wa_id}", content)
     payload["entry"][0]["changes"][0]["value"]["messages"][0]["context"] = {"message_id": target_wa_id}
@@ -160,16 +225,158 @@ def _delete_payload(sender: str, target_wa_id: str) -> dict:
     }
 
 
+async def test_content_lifecycle_wrappers_enqueue_by_source_identity(monkeypatch, app_env) -> None:
+    source_id = uuid4()
+    calls: list[tuple[str, str, object, str | None, str]] = []
+
+    async def record_embed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        calls.append(("embed", source_type, source_id, message_id, content_hash))
+
+    async def record_reembed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        calls.append(("reembed", source_type, source_id, message_id, content_hash))
+
+    async def record_drop_job(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_type, source_id, message_id, ""))
+
+    monkeypatch.setattr(lifecycle, "enqueue_embed_job", record_embed_job)
+    monkeypatch.setattr(lifecycle, "enqueue_reembed_job", record_reembed_job)
+    monkeypatch.setattr(lifecycle, "enqueue_drop_embedding_job", record_drop_job)
+
+    await lifecycle.enqueue_content_embed(
+        object(),
+        source_type="memory",
+        source_id=source_id,
+        content_hash=canonical_content_hash("memory text"),
+    )
+    await lifecycle.enqueue_content_reembed(
+        object(),
+        source_type="memory",
+        source_id=source_id,
+        content_hash=canonical_content_hash("changed memory text"),
+    )
+    await lifecycle.enqueue_content_embedding_drop(object(), source_type="memory", source_id=source_id)
+
+    assert calls == [
+        ("embed", "memory", source_id, None, canonical_content_hash("memory text")),
+        ("reembed", "memory", source_id, None, canonical_content_hash("changed memory text")),
+        ("drop", "memory", source_id, None, ""),
+    ]
+
+
+async def test_content_lifecycle_wrappers_log_and_swallow_enqueue_failures(
+    monkeypatch,
+    caplog,
+    app_env,
+) -> None:
+    async def fail_enqueue(*args, **kwargs):
+        raise RuntimeError("queue unavailable")
+
+    monkeypatch.setattr(lifecycle, "enqueue_embed_job", fail_enqueue)
+    with caplog.at_level("ERROR", logger="app.services.message_embedding_lifecycle"):
+        await lifecycle.enqueue_content_embed(
+            object(),
+            source_type="observation",
+            source_id=uuid4(),
+            content_hash=canonical_content_hash("observation text"),
+        )
+
+    assert "failed to enqueue embed job for source_type=observation" in caplog.text
+
+
+async def test_artifact_create_enqueue_embed_for_non_empty_canonical_text(monkeypatch, app_env) -> None:
+    conn = _ArtifactConn()
+    calls: list[tuple[str, object, str]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append((source_type, source_id, content_hash))
+
+    monkeypatch.setattr(live_artifacts, "enqueue_content_embed", record_embed)
+    _forbid_provider_calls(monkeypatch)
+
+    artifact = await live_artifacts.create_artifact(
+        conn,
+        conversation_id=str(uuid4()),
+        bot_id="mediator",
+        user_id=str(uuid4()),
+        artifact_type="review_summary",
+        payload={"review_summary": "Clear summary."},
+        created_by_turn_id=str(uuid4()),
+    )
+
+    assert calls == [("artifact", artifact.id, content_hash("Clear summary."))]
+
+
+async def test_artifact_create_skips_empty_canonical_text(monkeypatch, app_env) -> None:
+    conn = _ArtifactConn()
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("empty artifact canonical text must not enqueue embed")
+
+    monkeypatch.setattr(live_artifacts, "enqueue_content_embed", fail_embed)
+    _forbid_provider_calls(monkeypatch)
+
+    await live_artifacts.create_artifact(
+        conn,
+        conversation_id=str(uuid4()),
+        bot_id="mediator",
+        user_id=str(uuid4()),
+        artifact_type="live_debrief",
+        payload={"status": "provisional"},
+        created_by_turn_id=str(uuid4()),
+    )
+
+
+async def test_artifact_finalize_and_failure_enqueue_reembed_and_drop(monkeypatch, app_env) -> None:
+    conn = _ArtifactConn()
+    artifact_id = uuid4()
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_id, None))
+
+    monkeypatch.setattr(live_provenance, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(live_provenance, "enqueue_content_embedding_drop", record_drop)
+    _forbid_provider_calls(monkeypatch)
+
+    await live_provenance.finalize_live_debrief_artifact(
+        conn,
+        artifact_id=str(artifact_id),
+        content={"review_summary": "Debrief summary."},
+        created_by_turn_id=str(uuid4()),
+    )
+    await live_provenance.mark_live_debrief_artifact_failed(
+        conn,
+        artifact_id=str(artifact_id),
+        reason="failed",
+    )
+    await live_provenance._tombstone_stale_provisionals(conn, str(uuid4()))
+
+    assert calls == [
+        ("reembed", str(artifact_id), content_hash("Debrief summary.")),
+        ("drop", str(artifact_id), None),
+        ("drop", conn.artifact_id, None),
+    ]
+
+
 async def test_inbound_insert_edit_and_delete_enqueue_lifecycle_jobs(fake_pool, monkeypatch, app_env) -> None:
     calls: list[tuple[str, object, str | None, str | None]] = []
 
-    async def record_embed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_embed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("embed", message_id, content_hash, None))
 
-    async def record_reembed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_reembed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("reembed", message_id, content_hash, None))
 
-    async def record_drop_job(pool, *, message_id):
+    async def record_drop_job(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("drop", message_id, None, None))
 
     monkeypatch.setattr("app.services.message_embedding_lifecycle.enqueue_embed_job", record_embed_job)
@@ -252,7 +459,9 @@ async def test_send_outbound_preserves_oob_return_shape_and_enqueues_after_row_c
     }
     calls: list[tuple[object, str | None, str | None]] = []
 
-    async def record_embed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_embed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append((message_id, content_hash, None))
 
     async def block_oob(*args, **kwargs):
@@ -279,6 +488,339 @@ async def test_send_outbound_preserves_oob_return_shape_and_enqueues_after_row_c
     assert fake_pool.messages[result["message_id"]]["processing_state"] == "withheld"
 
 
+async def test_memory_create_update_supersede_enqueue_from_post_write_state(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "memory"
+        calls.append(("embed", source_id, content_hash))
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "memory"
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "memory"
+        calls.append(("drop", source_id, None))
+
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    created = await write_tools.add_memory(
+        ctx,
+        AddMemoryInput(about_user_id=user.id, content="private memory"),
+    )
+
+    await write_tools.update_memory(
+        ctx,
+        UpdateMemoryInput(memory_id=created.id, content="changed memory"),
+    )
+
+    superseded = await write_tools.supersede_memory(
+        ctx,
+        SupersedeMemoryInput(old_memory_id=created.id, new_content="replacement memory"),
+    )
+
+    assert calls == [
+        ("embed", created.id, content_hash("private memory")),
+        ("reembed", created.id, content_hash("changed memory")),
+        ("drop", created.id, None),
+        ("embed", superseded.new_id, content_hash("replacement memory")),
+    ]
+
+
+async def test_memory_update_drops_when_post_write_state_leaves_searchable_content(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    memory_id = uuid4()
+    states = [
+        {"id": memory_id, "content": "inactive", "status": "inactive", "visibility": "private"},
+        {"id": memory_id, "content": "shared", "status": "active", "visibility": "dyad_shareable"},
+    ]
+    calls: list[tuple[str, object]] = []
+
+    async def fetch_state(pool, memory_id):
+        return states.pop(0)
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "memory"
+        calls.append(("drop", source_id))
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("ineligible memory rows must enqueue drops, not reembeds")
+
+    monkeypatch.setattr(write_tools, "_fetch_memory_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_memory_embedding_after_update(ctx, memory_id)
+    await write_tools._sync_memory_embedding_after_update(ctx, memory_id)
+
+    assert calls == [("drop", memory_id), ("drop", memory_id)]
+
+
+async def test_observation_create_and_threshold_crossings_enqueue_from_post_write_state(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "observation"
+        calls.append(("embed", source_id, content_hash))
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "observation"
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "observation"
+        calls.append(("drop", source_id, None))
+
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    created = await write_tools.log_observation(
+        ctx,
+        LogObservationInput(
+            about_user_id=user.id,
+            content="important observation",
+            confidence="medium",
+            significance=4,
+        ),
+    )
+
+    await write_tools.update_observation(
+        ctx,
+        UpdateObservationInput(observation_id=created.id, significance=2),
+    )
+
+    await write_tools.update_observation(
+        ctx,
+        UpdateObservationInput(
+            observation_id=created.id,
+            content="important observation revised",
+            significance=5,
+        ),
+    )
+
+    await write_tools.update_observation(
+        ctx,
+        UpdateObservationInput(observation_id=created.id, status="contradicted"),
+    )
+
+    assert calls == [
+        ("embed", created.id, content_hash("important observation")),
+        ("drop", created.id, None),
+        ("reembed", created.id, content_hash("important observation revised")),
+        ("drop", created.id, None),
+    ]
+
+
+async def test_observation_create_and_update_skip_or_drop_when_not_searchable(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    observation_id = uuid4()
+    fake_pool.observations[observation_id] = {
+        "id": observation_id,
+        "content": "low-signal observation",
+        "about_user_id": user.id,
+        "confidence": "medium",
+        "significance": 1,
+        "status": "active",
+    }
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "observation"
+        calls.append(("drop", source_id))
+
+    async def fail_enqueue(*args, **kwargs):
+        raise AssertionError("non-searchable observations must not enqueue embeds/reembeds")
+
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_enqueue)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_enqueue)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_observation_embedding_after_create(ctx, observation_id)
+
+    fake_pool.observations[observation_id]["status"] = "stale"
+    await write_tools.update_observation(
+        ctx,
+        UpdateObservationInput(observation_id=observation_id, status="stale"),
+    )
+
+    assert calls == [("drop", observation_id)]
+
+
+async def test_distillation_create_update_and_revise_enqueue_from_post_write_state(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    ctx.triggering_message_ids = [uuid4()]
+    fake_pool.messages[ctx.triggering_message_ids[0]] = {
+        "id": ctx.triggering_message_ids[0],
+        "direction": "inbound",
+        "sender_id": user.id,
+        "recipient_id": partner.id,
+        "content": "supporting message",
+        "processing_state": "processed",
+        "sent_at": datetime.now(UTC),
+        "whatsapp_message_id": "distillation-support-1",
+        "deleted_at": None,
+        "bot_id": ctx.bot_id,
+        "topic_id": ctx.primary_topic_id,
+    }
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "distillation"
+        calls.append(("embed", source_id, content_hash))
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "distillation"
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "distillation"
+        calls.append(("drop", source_id, None))
+
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    created = await write_tools.add_distillation(
+        ctx,
+        AddDistillationInput(
+            content="private distillation",
+            source_user_ids=[user.id],
+            supporting_message_ids=[ctx.triggering_message_ids[0]],
+        ),
+    )
+
+    await write_tools.update_distillation(
+        ctx,
+        UpdateDistillationInput(
+            distillation_id=created.id,
+            content="private distillation revised in place",
+        ),
+    )
+
+    revised = await write_tools.revise_distillation(
+        ctx,
+        ReviseDistillationInput(
+            old_distillation_id=created.id,
+            new_content="replacement distillation",
+            source_user_ids=[user.id],
+            supporting_message_ids=[ctx.triggering_message_ids[0]],
+            revision_note="newer evidence",
+        ),
+    )
+
+    assert calls == [
+        ("embed", created.id, content_hash("private distillation")),
+        ("reembed", created.id, content_hash("private distillation revised in place")),
+        ("drop", created.id, None),
+        ("embed", revised.new_id, content_hash("replacement distillation")),
+    ]
+
+
+async def test_distillation_update_drops_when_post_write_state_leaves_searchable_content(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    supporting_message_id = uuid4()
+    fake_pool.messages[supporting_message_id] = {
+        "id": supporting_message_id,
+        "direction": "inbound",
+        "sender_id": user.id,
+        "recipient_id": partner.id,
+        "content": "supporting message",
+        "processing_state": "processed",
+        "sent_at": datetime.now(UTC),
+        "whatsapp_message_id": "distillation-support-2",
+        "deleted_at": None,
+        "bot_id": ctx.bot_id,
+        "topic_id": ctx.primary_topic_id,
+    }
+    calls: list[tuple[str, object]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "distillation"
+        calls.append(("embed", source_id))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "distillation"
+        calls.append(("drop", source_id))
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("non-searchable distillations must enqueue drops, not reembeds")
+
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    created = await write_tools.add_distillation(
+        ctx,
+        AddDistillationInput(
+            content="private now, shared later",
+            source_user_ids=[user.id],
+            supporting_message_ids=[supporting_message_id],
+        ),
+    )
+
+    await write_tools.update_distillation(
+        ctx,
+        UpdateDistillationInput(
+            distillation_id=created.id,
+            visibility="dyad_shareable",
+            shareable_summary="partner-safe wording",
+        ),
+    )
+
+    await write_tools.update_distillation(
+        ctx,
+        UpdateDistillationInput(distillation_id=created.id, status="retired"),
+    )
+
+    assert calls == [
+        ("embed", created.id),
+        ("drop", created.id),
+        ("drop", created.id),
+    ]
+
+
 async def test_tool_outbound_edit_delete_and_media_explanation_enqueue_lifecycle_jobs(
     fake_pool,
     monkeypatch,
@@ -297,10 +839,14 @@ async def test_tool_outbound_edit_delete_and_media_explanation_enqueue_lifecycle
 
     calls: list[tuple[str, object, str | None]] = []
 
-    async def record_reembed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_reembed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("reembed", message_id, content_hash))
 
-    async def record_drop_job(pool, *, message_id):
+    async def record_drop_job(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("drop", message_id, None))
 
     async def fake_edit_text(*args, **kwargs):
@@ -367,13 +913,19 @@ async def test_cross_path_enqueue_and_search_suppression_contract(
     ctx.primary_topic_id = topic_id
     calls: list[tuple[str, object, str | None]] = []
 
-    async def record_embed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_embed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("embed", message_id, content_hash))
 
-    async def record_reembed_job(pool, *, message_id, content_hash, model, dimension):
+    async def record_reembed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("reembed", message_id, content_hash))
 
-    async def record_drop_job(pool, *, message_id):
+    async def record_drop_job(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "message"
+        assert message_id == source_id
         calls.append(("drop", message_id, None))
 
     async def classify_charge(pool, content):

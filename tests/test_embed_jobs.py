@@ -7,6 +7,9 @@ import pytest
 
 from app.services.embed_jobs import (
     enqueue_drop_embedding_job,
+    enqueue_message_drop_embedding_job,
+    enqueue_message_embed_job,
+    enqueue_message_reembed_job,
     enqueue_embed_job,
     enqueue_reembed_job,
 )
@@ -24,10 +27,11 @@ class FakeEmbedJobsConn:
         compact = " ".join(sql.split())
         affected = 0
         if "superseded by drop job" in compact:
-            message_id, now = args
+            source_type, source_id, now = args
             for job in self.jobs:
                 if (
-                    job["message_id"] == message_id
+                    job.get("source_type", "message") == source_type
+                    and job.get("source_id", job["message_id"]) == source_id
                     and job["job_kind"] in {"embed", "reembed"}
                     and job["status"] == "pending"
                 ):
@@ -41,10 +45,11 @@ class FakeEmbedJobsConn:
                     )
                     affected += 1
         elif "superseded by newer content hash" in compact:
-            message_id, content_hash, now = args
+            source_type, source_id, content_hash, now = args
             for job in self.jobs:
                 if (
-                    job["message_id"] == message_id
+                    job.get("source_type", "message") == source_type
+                    and job.get("source_id", job["message_id"]) == source_id
                     and job["job_kind"] in {"embed", "reembed"}
                     and job["status"] == "pending"
                     and job["content_hash"] != content_hash
@@ -65,21 +70,29 @@ class FakeEmbedJobsConn:
     async def fetchrow(self, sql: str, *args):
         self.executed_sql.append(sql)
         compact = " ".join(sql.split())
-        if compact.startswith("SELECT id, message_id, job_kind"):
-            message_id, job_kind, content_hash = args
+        if compact.startswith("SELECT id, source_type, source_id, message_id, job_kind"):
+            source_type, source_id, job_kind, content_hash = args
             matches = [
                 job
                 for job in self.jobs
-                if job["message_id"] == message_id
+                if job.get("source_type", "message") == source_type
+                and job.get("source_id", job["message_id"]) == source_id
                 and job["job_kind"] == job_kind
                 and job["status"] in {"pending", "processing"}
                 and job["content_hash"] == content_hash
             ]
-            return sorted(matches, key=lambda row: (row["created_at"], str(row["id"])))[0] if matches else None
+            if not matches:
+                return None
+            row = sorted(matches, key=lambda row: (row["created_at"], str(row["id"])))[0]
+            row.setdefault("source_type", "message")
+            row.setdefault("source_id", row["message_id"])
+            return row
         if compact.startswith("INSERT INTO mediator.embed_jobs"):
-            message_id, job_kind, model, dimension, content_hash, now = args
+            source_type, source_id, message_id, job_kind, model, dimension, content_hash, now = args
             row = {
                 "id": uuid4(),
+                "source_type": source_type,
+                "source_id": source_id,
                 "message_id": message_id,
                 "job_kind": job_kind,
                 "status": "pending",
@@ -132,7 +145,7 @@ async def test_enqueue_embed_job_is_idempotent_for_same_hash():
     message_id = uuid4()
     now = datetime(2026, 6, 1, 12, tzinfo=UTC)
 
-    first = await enqueue_embed_job(
+    first = await enqueue_message_embed_job(
         conn,
         message_id=message_id,
         content_hash=_hash(),
@@ -140,7 +153,7 @@ async def test_enqueue_embed_job_is_idempotent_for_same_hash():
         dimension=1536,
         now=now,
     )
-    second = await enqueue_embed_job(
+    second = await enqueue_message_embed_job(
         conn,
         message_id=message_id,
         content_hash=_hash(),
@@ -157,6 +170,99 @@ async def test_enqueue_embed_job_is_idempotent_for_same_hash():
     assert conn.jobs[0]["last_error"] is None
     assert conn.jobs[0]["locked_at"] is None
     assert conn.jobs[0]["next_attempt_at"] == now
+
+
+async def test_same_source_id_across_source_types_does_not_collide():
+    conn = FakeEmbedJobsConn()
+    source_id = uuid4()
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+    message = await enqueue_embed_job(
+        conn,
+        source_type="message",
+        source_id=source_id,
+        message_id=source_id,
+        content_hash=_hash(),
+        model="text-embedding-3-small",
+        dimension=1536,
+        now=now,
+    )
+    memory = await enqueue_embed_job(
+        conn,
+        source_type="memory",
+        source_id=source_id,
+        content_hash=_hash(),
+        model="text-embedding-3-small",
+        dimension=1536,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert message.action == "created"
+    assert memory.action == "created"
+    assert message.job.id != memory.job.id
+    assert message.job.message_id == source_id
+    assert memory.job.message_id is None
+    assert {job["source_type"] for job in conn.jobs} == {"message", "memory"}
+
+
+async def test_new_content_hash_supersede_is_scoped_by_source_type_and_id():
+    conn = FakeEmbedJobsConn()
+    shared_id = uuid4()
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+    conn.jobs.append(
+        {
+            "id": uuid4(),
+            "source_type": "memory",
+            "source_id": shared_id,
+            "message_id": None,
+            "job_kind": "embed",
+            "status": "pending",
+            "model": "text-embedding-3-small",
+            "dimension": 1536,
+            "content_hash": _hash("a"),
+            "attempts": 0,
+            "last_error": None,
+            "next_attempt_at": now,
+            "locked_at": None,
+            "locked_by": None,
+            "created_at": now,
+            "updated_at": now,
+            "completed_at": None,
+        }
+    )
+
+    result = await enqueue_embed_job(
+        conn,
+        source_type="message",
+        source_id=shared_id,
+        message_id=shared_id,
+        content_hash=_hash("b"),
+        model="text-embedding-3-small",
+        dimension=1536,
+        now=now + timedelta(minutes=1),
+    )
+
+    assert result.action == "created"
+    assert result.superseded_pending == 0
+    assert conn.jobs[0]["status"] == "pending"
+
+
+async def test_message_wrappers_populate_message_id_compatibility_column():
+    conn = FakeEmbedJobsConn()
+    message_id = uuid4()
+
+    result = await enqueue_message_embed_job(
+        conn,
+        message_id=message_id,
+        content_hash=_hash(),
+        model="text-embedding-3-small",
+        dimension=1536,
+    )
+
+    assert result.job.source_type == "message"
+    assert result.job.source_id == message_id
+    assert result.job.message_id == message_id
+    assert conn.jobs[0]["message_id"] == message_id
 
 
 async def test_new_content_hash_supersedes_pending_embed_and_reembed_jobs():
@@ -221,7 +327,7 @@ async def test_new_content_hash_supersedes_pending_embed_and_reembed_jobs():
         ]
     )
 
-    result = await enqueue_reembed_job(
+    result = await enqueue_message_reembed_job(
         conn,
         message_id=message_id,
         content_hash=new_hash,
@@ -264,7 +370,7 @@ async def test_matching_processing_job_is_reused_with_retry_metadata_unchanged()
     }
     conn.jobs.append(processing_job)
 
-    result = await enqueue_embed_job(
+    result = await enqueue_message_embed_job(
         conn,
         message_id=message_id,
         content_hash=_hash(),
@@ -305,8 +411,8 @@ async def test_drop_job_cancels_pending_embed_work_and_is_idempotent():
         }
     )
 
-    first = await enqueue_drop_embedding_job(conn, message_id=message_id, now=now)
-    second = await enqueue_drop_embedding_job(conn, message_id=message_id, now=now + timedelta(minutes=5))
+    first = await enqueue_message_drop_embedding_job(conn, message_id=message_id, now=now)
+    second = await enqueue_message_drop_embedding_job(conn, message_id=message_id, now=now + timedelta(minutes=5))
 
     assert first.action == "created"
     assert second.action == "existing"
@@ -379,7 +485,7 @@ async def test_drop_job_cancels_pending_embed_and_reembed_but_not_processing_job
         ]
     )
 
-    result = await enqueue_drop_embedding_job(conn, message_id=message_id, now=now)
+    result = await enqueue_message_drop_embedding_job(conn, message_id=message_id, now=now)
 
     assert result.action == "created"
     assert result.superseded_pending == 2
@@ -393,7 +499,7 @@ async def test_enqueue_write_succeeds_even_when_provider_is_unavailable():
     conn = ProviderUnavailableConn()
     now = datetime(2026, 6, 1, 12, tzinfo=UTC)
 
-    result = await enqueue_embed_job(
+    result = await enqueue_message_embed_job(
         conn,
         message_id=uuid4(),
         content_hash=_hash(),
@@ -411,7 +517,7 @@ async def test_enqueue_validates_hash_model_and_dimension():
     conn = FakeEmbedJobsConn()
 
     with pytest.raises(ValueError, match="content_hash"):
-        await enqueue_embed_job(
+        await enqueue_message_embed_job(
             conn,
             message_id=uuid4(),
             content_hash="not-a-hash",
@@ -419,9 +525,9 @@ async def test_enqueue_validates_hash_model_and_dimension():
             dimension=1536,
         )
     with pytest.raises(ValueError, match="model"):
-        await enqueue_reembed_job(conn, message_id=uuid4(), content_hash=_hash(), model="", dimension=1536)
+        await enqueue_message_reembed_job(conn, message_id=uuid4(), content_hash=_hash(), model="", dimension=1536)
     with pytest.raises(ValueError, match="dimension"):
-        await enqueue_embed_job(
+        await enqueue_message_embed_job(
             conn,
             message_id=uuid4(),
             content_hash=_hash(),

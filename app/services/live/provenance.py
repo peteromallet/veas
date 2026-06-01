@@ -27,6 +27,11 @@ from app.services.live.artifacts import (
     ArtifactRow,
     create_artifact,
 )
+from app.services.embeddings import canonical_artifact_embedding_text, content_hash
+from app.services.message_embedding_lifecycle import (
+    enqueue_content_embedding_drop,
+    enqueue_content_reembed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -324,11 +329,20 @@ async def finalize_live_debrief_artifact(
             f"finalize_live_debrief_artifact: no active artifact found "
             f"for artifact_id={artifact_id} type={PROVISIONAL_ARTIFACT_TYPE}"
         )
+    artifact = ArtifactRow.from_record(row)
+    canonical_text = canonical_artifact_embedding_text(artifact.artifact_type, artifact.payload)
+    if canonical_text:
+        await enqueue_content_reembed(
+            conn,
+            source_type="artifact",
+            source_id=artifact.id,
+            content_hash=content_hash(canonical_text),
+        )
     logger.info(
         "finalize_live_debrief_artifact: artifact_id=%s finalized turn_id=%s",
         artifact_id, created_by_turn_id,
     )
-    return ArtifactRow.from_record(row)
+    return artifact
 
 
 async def mark_live_debrief_artifact_failed(
@@ -384,6 +398,11 @@ async def mark_live_debrief_artifact_failed(
             "deleted or does not exist", artifact_id,
         )
     else:
+        await enqueue_content_embedding_drop(
+            conn,
+            source_type="artifact",
+            source_id=artifact_id,
+        )
         logger.info(
             "mark_live_debrief_artifact_failed: artifact_id=%s reason=%r "
             "soft_deleted_links=%s",
@@ -448,6 +467,11 @@ async def _tombstone_stale_provisionals(
             "UPDATE mediator.conversation_artifacts SET deleted_at = $2 "
             "WHERE id = $1 AND deleted_at IS NULL",
             aid, now,
+        )
+        await enqueue_content_embedding_drop(
+            conn,
+            source_type="artifact",
+            source_id=aid,
         )
         logger.debug("_tombstone_stale_provisionals: tombstoned artifact_id=%s", aid)
 

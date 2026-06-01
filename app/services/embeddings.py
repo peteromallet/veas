@@ -21,6 +21,7 @@ DEFAULT_OPENAI_EMBEDDING_DIMENSION = 1536
 LOCAL_BGE_SMALL_DIMENSION = 384
 
 _CANONICAL_MEDIA_FIELDS = ("explanation", "description", "summary")
+_ARTIFACT_AGENDA_ITEM_FIELDS = ("title", "intent", "ask", "done_when")
 
 
 class EmbeddingError(RuntimeError):
@@ -64,6 +65,160 @@ def canonical_embedding_text(
     fields = [_coerce_text(content)]
     fields.extend(_coerce_text(media.get(field)) for field in _CANONICAL_MEDIA_FIELDS)
     return "\n".join(fields)
+
+
+def canonical_raw_content_text(content: Any | None = None) -> str:
+    """Return canonical text for raw-content non-message rows.
+
+    M1 embeds eligible memory, observation, and private-only distillation rows
+    from their raw ``content`` column. Missing content returns an empty string
+    so callers can skip/drop without special-case exception handling.
+    """
+
+    return _coerce_text(content)
+
+
+def canonical_memory_embedding_text(content: Any | None = None) -> str:
+    """Return M1 canonical text for an eligible memory row."""
+
+    return canonical_raw_content_text(content)
+
+
+def canonical_observation_embedding_text(content: Any | None = None) -> str:
+    """Return M1 canonical text for an eligible observation row."""
+
+    return canonical_raw_content_text(content)
+
+
+def canonical_distillation_embedding_text(content: Any | None = None) -> str:
+    """Return M1 canonical text for an eligible private distillation row.
+
+    Distillation eligibility is enforced by the SQL/search lifecycle: M1 only
+    indexes active private distillations, not dyad-shareable summaries.
+    """
+
+    return canonical_raw_content_text(content)
+
+
+def _payload_text_at(payload: Mapping[str, Any], path: Sequence[str]) -> str | None:
+    value: Any = payload
+    for key in path:
+        if not isinstance(value, Mapping) or key not in value:
+            return None
+        value = value[key]
+    if value is None:
+        return None
+    return _coerce_text(value)
+
+
+def _payload_text_or_lines(value: Any) -> str | None:
+    if value is None:
+        return None
+    if isinstance(value, list):
+        lines = [_coerce_text(item) for item in value if item is not None]
+        return "\n".join(lines) if lines else None
+    return _coerce_text(value)
+
+
+def _agenda_items_text(items: Any) -> str | None:
+    if not isinstance(items, list):
+        return None
+
+    rendered: list[str] = []
+    for item in items:
+        if not isinstance(item, Mapping):
+            continue
+        fields = [
+            _coerce_text(item[field])
+            for field in _ARTIFACT_AGENDA_ITEM_FIELDS
+            if item.get(field) is not None
+        ]
+        if fields:
+            rendered.append("\n".join(fields))
+    return "\n".join(rendered) if rendered else None
+
+
+def _join_artifact_fields(values: Sequence[str | None]) -> str:
+    return "\n".join(value for value in values if value is not None).strip()
+
+
+def canonical_artifact_embedding_text(
+    artifact_type: str | None,
+    payload: Mapping[str, Any] | None,
+) -> str:
+    """Return M1 canonical text for a conversation artifact payload.
+
+    Extraction is intentionally type-aware and limited to human-readable fields.
+    Structural fields such as ids, revision metadata, evidence references, and
+    turn bookkeeping are ignored so artifact hashes track searchable prose.
+    Unknown artifact types fall back to the same approved prose paths used by
+    ``mediator.v_searchable_content``.
+    """
+
+    if not isinstance(payload, Mapping):
+        return ""
+
+    agenda = payload.get("agenda")
+    agenda_payload = agenda if isinstance(agenda, Mapping) else {}
+    fallback_values = [
+        _payload_text_at(payload, ("summary",)),
+        _payload_text_at(payload, ("title",)),
+        _payload_text_at(payload, ("notes",)),
+        _payload_text_at(payload, ("review_summary",)),
+        _payload_text_at(payload, ("live_debrief", "review_summary")),
+        _payload_text_at(payload, ("prep_summary",)),
+        _payload_text_at(agenda_payload, ("prep_summary",)),
+        _payload_text_or_lines(payload.get("transcript_reflection")),
+        _payload_text_or_lines(payload.get("what_heard")),
+        _payload_text_or_lines(payload.get("what_decided")),
+        _payload_text_or_lines(payload.get("still_open")),
+        _payload_text_or_lines(payload.get("what_to_remember")),
+        _payload_text_or_lines(payload.get("durable_write_summary")),
+        _payload_text_or_lines(payload.get("open_questions")),
+        _agenda_items_text(agenda_payload.get("items")),
+        _agenda_items_text(payload.get("items")),
+    ]
+
+    if artifact_type == "live_prep_brief":
+        return _join_artifact_fields([
+            _payload_text_at(agenda_payload, ("prep_summary",)),
+            _payload_text_at(payload, ("notes",)),
+            _agenda_items_text(agenda_payload.get("items")),
+        ])
+    if artifact_type == "live_debrief":
+        return _join_artifact_fields([
+            _payload_text_at(payload, ("review_summary",)),
+            _payload_text_at(payload, ("live_debrief", "review_summary")),
+            _payload_text_or_lines(payload.get("what_heard")),
+            _payload_text_or_lines(payload.get("what_decided")),
+            _payload_text_or_lines(payload.get("still_open")),
+            _payload_text_or_lines(payload.get("what_to_remember")),
+            _payload_text_or_lines(payload.get("durable_write_summary")),
+            _payload_text_or_lines(payload.get("open_questions")),
+        ])
+    if artifact_type == "review_summary":
+        return _join_artifact_fields([
+            _payload_text_at(payload, ("review_summary",)),
+            _payload_text_at(payload, ("summary",)),
+            _payload_text_at(payload, ("live_debrief", "review_summary")),
+            _payload_text_at(payload, ("review", "summary")),
+        ])
+    if artifact_type == "agenda_revision":
+        return _join_artifact_fields([
+            _payload_text_at(payload, ("prep_summary",)),
+            _payload_text_at(agenda_payload, ("prep_summary",)),
+            _payload_text_at(payload, ("summary",)),
+            _payload_text_at(payload, ("notes",)),
+            _agenda_items_text(agenda_payload.get("items")),
+            _agenda_items_text(payload.get("items")),
+        ])
+    if artifact_type == "transcript_reflection":
+        return _join_artifact_fields([
+            _payload_text_or_lines(payload.get("transcript_reflection")),
+            _payload_text_at(payload, ("summary",)),
+            _payload_text_at(payload, ("notes",)),
+        ])
+    return _join_artifact_fields(fallback_values)
 
 
 def content_hash(text: str) -> str:

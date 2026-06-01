@@ -1198,6 +1198,7 @@ class UpdateObservationInput(BaseModel):
     observation_id: UUID
     content: str | None = None
     confidence: Confidence | None = None
+    significance: int | None = Field(default=None, ge=1, le=5)
     status: ObservationStatus | None = None
     related_theme_ids: list[UUID] | None = None
 

@@ -334,9 +334,13 @@ async def _fetch_semantic_matches(
                         m.sent_at DESC,
                         m.message_id DESC
                 ) AS semantic_rank
-            FROM mediator.message_embeddings e
+            FROM mediator.content_embeddings e
+            JOIN mediator.v_searchable_content sc
+              ON sc.source_type = e.source_type
+             AND sc.source_id = e.source_id
+             AND sc.source_type = 'message'
             JOIN mediator.v_searchable_messages m
-              ON m.message_id = e.message_id
+              ON m.message_id = sc.message_id
             WHERE {where_clause}
         )
         SELECT

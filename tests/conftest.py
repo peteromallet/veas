@@ -557,6 +557,22 @@ class FakePool:
         if compact.startswith("SELECT message_id, canonical_text FROM mediator.v_searchable_messages"):
             row = self.messages.get(args[0])
             return self._searchable_message_row(row) if row is not None else None
+        if compact.startswith(
+            "SELECT source_type, source_id, message_id, canonical_text FROM mediator.v_searchable_content"
+        ):
+            source_type, source_id = args
+            if source_type != "message":
+                return None
+            row = self.messages.get(source_id)
+            searchable = self._searchable_message_row(row) if row is not None else None
+            if searchable is None:
+                return None
+            return {
+                "source_type": "message",
+                "source_id": source_id,
+                "message_id": searchable["message_id"],
+                "canonical_text": searchable["canonical_text"],
+            }
         if compact.startswith("SELECT id, deleted_at, search_suppressed_at FROM mediator.messages"):
             row = self.messages.get(args[0])
             if row is None:
@@ -566,12 +582,13 @@ class FakePool:
                 "deleted_at": row.get("deleted_at"),
                 "search_suppressed_at": row.get("search_suppressed_at"),
             }
-        if compact.startswith("SELECT id, message_id, job_kind") and "FROM mediator.embed_jobs" in compact:
-            message_id, job_kind, content_hash_value = args
+        if compact.startswith("SELECT id, source_type, source_id, message_id, job_kind") and "FROM mediator.embed_jobs" in compact:
+            source_type, source_id, job_kind, content_hash_value = args
             matches = [
                 job
                 for job in self.embed_jobs.values()
-                if job["message_id"] == message_id
+                if job.get("source_type", "message") == source_type
+                and job.get("source_id", job["message_id"]) == source_id
                 and job["job_kind"] == job_kind
                 and job["status"] in {"pending", "processing"}
                 and job.get("content_hash") == content_hash_value
@@ -579,10 +596,12 @@ class FakePool:
             matches.sort(key=lambda row: (row.get("created_at"), str(row["id"])))
             return matches[0] if matches else None
         if compact.startswith("INSERT INTO mediator.embed_jobs"):
-            message_id, job_kind, model, dimension, content_hash_value, now = args
+            source_type, source_id, message_id, job_kind, model, dimension, content_hash_value, now = args
             job_id = uuid4()
             row = {
                 "id": job_id,
+                "source_type": source_type,
+                "source_id": source_id,
                 "message_id": message_id,
                 "job_kind": job_kind,
                 "status": "pending",
@@ -1345,6 +1364,26 @@ class FakePool:
                 **dict(row),
                 "partner_path": row.get("partner_path", "message_partner"),
             }
+        if compact.startswith("SELECT id, content, status, visibility FROM memories WHERE id"):
+            row = self.memories.get(args[0])
+            if row is None:
+                return None
+            return {
+                "id": row["id"],
+                "content": row.get("content"),
+                "status": row.get("status"),
+                "visibility": row.get("visibility"),
+            }
+        if compact.startswith("SELECT id, content, status, significance FROM observations WHERE id"):
+            row = self.observations.get(args[0])
+            if row is None:
+                return None
+            return {
+                "id": row["id"],
+                "content": row.get("content"),
+                "status": row.get("status"),
+                "significance": row.get("significance"),
+            }
         if compact.startswith("WITH new_artifact AS ( INSERT INTO memories"):
             (
                 about_user_id,
@@ -1404,7 +1443,20 @@ class FakePool:
             return {"id": row["id"]}
         if compact.startswith("UPDATE memories SET"):
             memory_id = args[-1]
-            self.memories.setdefault(memory_id, {"id": memory_id, "status": "active"})
+            row = self.memories.setdefault(memory_id, {"id": memory_id, "status": "active"})
+            lowered = compact.lower()
+            arg_index = 0
+            if "content=$" in lowered:
+                row["content"] = args[arg_index]
+                arg_index += 1
+            if "content_encrypted=$" in lowered:
+                row["content_encrypted"] = args[arg_index]
+                arg_index += 1
+            if "related_theme_ids=$" in lowered:
+                row["related_theme_ids"] = list(args[arg_index] or [])
+                arg_index += 1
+            if "status=$" in lowered:
+                row["status"] = args[arg_index]
             return {"id": memory_id}
         if compact.startswith("WITH old AS ( UPDATE memories SET status='superseded'"):
             # (old_id, new_content, content_encrypted, related_theme_ids)
@@ -1603,9 +1655,28 @@ class FakePool:
                 )
                 return {"id": observation_id}
             observation_id = args[-1]
-            self.observations.setdefault(
+            row = self.observations.setdefault(
                 observation_id, {"id": observation_id, "status": "active"}
             )
+            lowered = compact.lower()
+            arg_index = 0
+            if "content=$" in lowered:
+                row["content"] = args[arg_index]
+                arg_index += 1
+            if "content_encrypted=$" in lowered:
+                row["content_encrypted"] = args[arg_index]
+                arg_index += 1
+            if "confidence=$" in lowered:
+                row["confidence"] = args[arg_index]
+                arg_index += 1
+            if "significance=$" in lowered:
+                row["significance"] = args[arg_index]
+                arg_index += 1
+            if "status=$" in lowered:
+                row["status"] = args[arg_index]
+                arg_index += 1
+            if "related_theme_ids=$" in lowered:
+                row["related_theme_ids"] = list(args[arg_index] or [])
             return {"id": observation_id}
         if compact.startswith("WITH new_artifact AS ( INSERT INTO distillations"):
             (
@@ -1816,6 +1887,24 @@ class FakePool:
             old["revised_at"] = datetime.now(UTC)
             old["updated_at"] = datetime.now(UTC)
             return {"new_id": new["id"], "old_id": old_id}
+        if (
+            compact.startswith("SELECT id, content, status, visibility, superseded_by_distillation_id")
+            and "FROM distillations WHERE id = $1" in compact
+        ):
+            row = self.distillations.get(args[0])
+            if row is None:
+                return None
+            return {
+                "id": row["id"],
+                "content": row.get("content"),
+                "status": row.get("status", "active"),
+                "visibility": row.get("visibility", "private"),
+                "superseded_by_distillation_id": row.get(
+                    "superseded_by_distillation_id"
+                ),
+                "revised_at": row.get("revised_at"),
+                "retired_at": row.get("retired_at"),
+            }
         if compact.startswith("WITH new_artifact AS ( INSERT INTO out_of_bounds"):
             # (owner_id, sensitive_core, sensitive_core_encrypted, shareable_context, severity, review_at, bot_id, topic_id_list, reason)
             (
@@ -2868,7 +2957,10 @@ class FakePool:
                 limit = next((arg for arg in reversed(args) if isinstance(arg, int)), len(rows))
                 return rows[:limit]
             rows = []
-            is_semantic = "FROM mediator.message_embeddings e" in compact
+            is_semantic = (
+                "FROM mediator.content_embeddings e" in compact
+                or "FROM mediator.message_embeddings e" in compact
+            )
             if is_semantic:
                 query_terms = []
             else:
@@ -2939,7 +3031,7 @@ class FakePool:
                     row["keyword_rank"] = index
             limit = next((arg for arg in reversed(args) if isinstance(arg, int)), len(rows))
             return rows[:limit]
-        if "FROM mediator.message_embeddings e" in compact:
+        if "FROM mediator.message_embeddings e" in compact or "FROM mediator.content_embeddings e" in compact:
             # Keep vector-specific ANN behavior explicit: shared FakePool only
             # supports the production ANN shape joined through the searchable view.
             raise AssertionError(
@@ -2965,6 +3057,8 @@ class FakePool:
                 rows.append(
                     {
                         "id": job["id"],
+                        "source_type": job.get("source_type", "message"),
+                        "source_id": job.get("source_id", job["message_id"]),
                         "message_id": job["message_id"],
                         "job_kind": job["job_kind"],
                         "model": job["model"],
@@ -4244,9 +4338,21 @@ class FakePool:
         compact = " ".join(sql.split())
         if compact.startswith("SET LOCAL hnsw.ef_search"):
             return "SET"
-        if compact.startswith("INSERT INTO mediator.message_embeddings"):
-            message_id, vector, model, dimension, content_hash_value, now = args
-            self.message_embeddings[message_id] = {
+        if compact.startswith("INSERT INTO mediator.message_embeddings") or compact.startswith(
+            "INSERT INTO mediator.content_embeddings"
+        ):
+            if compact.startswith("INSERT INTO mediator.content_embeddings"):
+                source_type, source_id, vector, model, dimension, content_hash_value, now = args
+                message_id = source_id if source_type == "message" else None
+                key = source_id
+            else:
+                message_id, vector, model, dimension, content_hash_value, now = args
+                source_type = "message"
+                source_id = message_id
+                key = message_id
+            self.message_embeddings[key] = {
+                "source_type": source_type,
+                "source_id": source_id,
                 "message_id": message_id,
                 "embedding": vector,
                 "model": model,
@@ -4255,9 +4361,16 @@ class FakePool:
                 "embedded_at": now,
             }
             return "INSERT 0 1"
-        if compact.startswith("DELETE FROM mediator.message_embeddings"):
-            existed = args[0] in self.message_embeddings
-            self.message_embeddings.pop(args[0], None)
+        if compact.startswith("DELETE FROM mediator.message_embeddings") or compact.startswith(
+            "DELETE FROM mediator.content_embeddings"
+        ):
+            if compact.startswith("DELETE FROM mediator.content_embeddings"):
+                _, source_id = args
+                key = source_id
+            else:
+                key = args[0]
+            existed = key in self.message_embeddings
+            self.message_embeddings.pop(key, None)
             return f"DELETE {1 if existed else 0}"
         if compact.startswith("UPDATE mediator.embed_jobs SET status = $1"):
             status, last_error, now, job_id, worker_id = args
@@ -4296,11 +4409,12 @@ class FakePool:
                 return "UPDATE 1"
             return "UPDATE 0"
         if "UPDATE mediator.embed_jobs" in compact and "superseded by drop job" in compact:
-            message_id, now = args
+            source_type, source_id, now = args
             affected = 0
             for job in self.embed_jobs.values():
                 if (
-                    job["message_id"] == message_id
+                    job.get("source_type", "message") == source_type
+                    and job.get("source_id", job["message_id"]) == source_id
                     and job["job_kind"] in {"embed", "reembed"}
                     and job["status"] == "pending"
                 ):
@@ -4315,11 +4429,12 @@ class FakePool:
                     affected += 1
             return f"UPDATE {affected}"
         if "UPDATE mediator.embed_jobs" in compact and "superseded by newer content hash" in compact:
-            message_id, content_hash_value, now = args
+            source_type, source_id, content_hash_value, now = args
             affected = 0
             for job in self.embed_jobs.values():
                 if (
-                    job["message_id"] == message_id
+                    job.get("source_type", "message") == source_type
+                    and job.get("source_id", job["message_id"]) == source_id
                     and job["job_kind"] in {"embed", "reembed"}
                     and job["status"] == "pending"
                     and job.get("content_hash") != content_hash_value

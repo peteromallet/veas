@@ -600,7 +600,9 @@ async def test_hybrid_semantic_ann_sets_hnsw_and_fetches_ann_in_same_transaction
     assert execute_event[:3] == ("execute", 1, 1)
     assert execute_event[3] == "SET LOCAL hnsw.ef_search = 123"
     assert fetch_event[:3] == ("fetch", 1, 1)
-    assert "FROM mediator.message_embeddings e" in fetch_event[3]
+    assert "FROM mediator.content_embeddings e" in fetch_event[3]
+    assert "JOIN mediator.v_searchable_content sc" in fetch_event[3]
+    assert "sc.source_type = 'message'" in fetch_event[3]
     assert "JOIN mediator.v_searchable_messages m" in fetch_event[3]
     assert "e.embedding <=> $1" in fetch_event[3]
 
@@ -618,9 +620,11 @@ async def test_hybrid_semantic_sql_joins_searchable_view_and_orders_by_cosine_wi
 
     assert pool.sql is not None
     compact = " ".join(pool.sql.split())
-    assert "FROM mediator.message_embeddings e" in pool.sql
+    assert "FROM mediator.content_embeddings e" in pool.sql
+    assert "JOIN mediator.v_searchable_content sc" in pool.sql
     assert "JOIN mediator.v_searchable_messages m" in pool.sql
-    assert "ON m.message_id = e.message_id" in pool.sql
+    assert "ON m.message_id = sc.message_id" in pool.sql
+    assert "sc.source_type = 'message'" in pool.sql
     assert "e.model = $2" in pool.sql
     assert "e.dimension = $3" in pool.sql
     assert "e.embedding <=> $1 AS cosine_distance" in pool.sql
@@ -1038,11 +1042,13 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
         await conn.execute("CREATE SCHEMA mediator")
         await conn.execute(
             """
-            CREATE TABLE mediator.message_embeddings (
-                message_id uuid PRIMARY KEY,
+            CREATE TABLE mediator.content_embeddings (
+                source_type text NOT NULL,
+                source_id uuid NOT NULL,
                 model text NOT NULL,
                 dimension integer NOT NULL,
-                embedding vector(3) NOT NULL
+                embedding vector(3) NOT NULL,
+                PRIMARY KEY (source_type, source_id)
             )
             """
         )
@@ -1050,6 +1056,23 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
             """
             CREATE TABLE mediator.v_searchable_messages (
                 message_id uuid PRIMARY KEY,
+                bot_id text NOT NULL,
+                sender_id uuid,
+                recipient_id uuid,
+                topic_id uuid,
+                thread_owner_user_id uuid,
+                thread_owner_partner_share text,
+                dyad_id uuid,
+                sent_at timestamptz NOT NULL
+            )
+            """
+        )
+        await conn.execute(
+            """
+            CREATE TABLE mediator.v_searchable_content (
+                source_type text NOT NULL,
+                source_id uuid NOT NULL,
+                message_id uuid,
                 bot_id text NOT NULL,
                 sender_id uuid,
                 recipient_id uuid,
@@ -1089,11 +1112,24 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
         )
         await conn.execute(
             """
-            INSERT INTO mediator.message_embeddings (
-                message_id, model, dimension, embedding
+            INSERT INTO mediator.v_searchable_content (
+                source_type, source_id, message_id, bot_id, sender_id, recipient_id,
+                thread_owner_user_id, thread_owner_partner_share, sent_at
             )
-            VALUES ($1, 'test-model', 3, '[0.6,0.8,0]'::vector),
-                   ($2, 'test-model', 3, '[1,0,0]'::vector)
+            VALUES ('message', $1, $1, 'mediator', $3, $3, $3, 'unset', '2025-06-01T12:00:00Z'),
+                   ('message', $2, $2, 'mediator', $3, $3, $3, 'unset', '2025-06-01T11:00:00Z')
+            """,
+            message_id,
+            older_message_id,
+            viewer_id,
+        )
+        await conn.execute(
+            """
+            INSERT INTO mediator.content_embeddings (
+                source_type, source_id, model, dimension, embedding
+            )
+            VALUES ('message', $1, 'test-model', 3, '[0.6,0.8,0]'::vector),
+                   ('message', $2, 'test-model', 3, '[1,0,0]'::vector)
             """,
             message_id,
             older_message_id,

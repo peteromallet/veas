@@ -26,6 +26,9 @@ from typing import Any
 
 import asyncpg
 
+from app.services.embeddings import canonical_artifact_embedding_text, content_hash
+from app.services.message_embedding_lifecycle import enqueue_content_embed
+
 logger = logging.getLogger(__name__)
 
 # -- constants --
@@ -164,7 +167,16 @@ async def create_artifact(
                 payload, payload_version, created_by_turn_id, expires_at,
             )
             await conn.execute(f"RELEASE SAVEPOINT {sp}")
-            return ArtifactRow.from_record(row)
+            artifact = ArtifactRow.from_record(row)
+            canonical_text = canonical_artifact_embedding_text(artifact.artifact_type, artifact.payload)
+            if canonical_text:
+                await enqueue_content_embed(
+                    conn,
+                    source_type="artifact",
+                    source_id=artifact.id,
+                    content_hash=content_hash(canonical_text),
+                )
+            return artifact
         except asyncpg.exceptions.UniqueViolationError:
             await conn.execute(f"ROLLBACK TO SAVEPOINT {sp}")
             logger.debug(

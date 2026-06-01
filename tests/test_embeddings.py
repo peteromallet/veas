@@ -14,8 +14,13 @@ from app.services.embeddings import (
     EmbeddingError,
     LocalBgeSmallEmbedder,
     OpenAIEmbedder,
+    canonical_artifact_embedding_text,
     canonical_content_hash,
+    canonical_distillation_embedding_text,
     canonical_embedding_text,
+    canonical_memory_embedding_text,
+    canonical_observation_embedding_text,
+    canonical_raw_content_text,
     content_hash,
     embedder_from_settings,
     validate_vectors,
@@ -75,6 +80,137 @@ def test_content_hash_normalization_is_stable_for_whitespace_and_stringlike_fiel
         "body", {"summary": "42"}
     )
     assert canonical_content_hash("body", media_a) == canonical_content_hash("body", media_b)
+
+
+def test_non_message_raw_content_builders_return_content_and_empty_text_for_missing_values() -> None:
+    assert canonical_raw_content_text("memory text") == "memory text"
+    assert canonical_raw_content_text(42) == "42"
+    assert canonical_raw_content_text(None) == ""
+    assert canonical_memory_embedding_text("memory text") == "memory text"
+    assert canonical_observation_embedding_text("observation text") == "observation text"
+    assert canonical_distillation_embedding_text("private synthesis") == "private synthesis"
+    assert canonical_memory_embedding_text(None) == ""
+    assert canonical_observation_embedding_text(None) == ""
+    assert canonical_distillation_embedding_text(None) == ""
+
+
+def test_message_canonical_text_behavior_is_preserved_with_non_message_builders() -> None:
+    media = {"explanation": "why", "description": "what", "summary": "short"}
+
+    assert canonical_embedding_text("body", media) == "body\nwhy\nwhat\nshort"
+    assert canonical_memory_embedding_text("body") != canonical_embedding_text("body", media)
+
+
+def test_artifact_canonical_text_matches_representative_sql_view_fixtures() -> None:
+    fixtures = [
+        (
+            "live_prep_brief",
+            {
+                "agenda": {
+                    "prep_summary": "Focus on repair.",
+                    "items": [
+                        {
+                            "id": "skip-structural-id",
+                            "title": "Name the tension",
+                            "intent": "Surface what happened",
+                            "ask": "What felt unresolved?",
+                            "done_when": "Both people answer",
+                            "priority": "skip-structural-priority",
+                        }
+                    ],
+                },
+                "notes": "Use the calmer first item.",
+                "turn_id": "skip-structural-turn",
+            },
+            "Focus on repair.\nUse the calmer first item.\n"
+            "Name the tension\nSurface what happened\nWhat felt unresolved?\nBoth people answer",
+        ),
+        (
+            "live_debrief",
+            {
+                "review_summary": "They found a next step.",
+                "what_heard": ["Timing is hard", "Both want clarity"],
+                "what_decided": "Try a Sunday check-in",
+                "still_open": "",
+                "what_to_remember": "Avoid late-night planning",
+                "durable_write_summary": "Created one memory",
+                "open_questions": "Who owns the calendar invite?",
+                "references": [{"transcript_turn_id": "skip-reference-id"}],
+            },
+            "They found a next step.\nTiming is hard\nBoth want clarity\n"
+            "Try a Sunday check-in\n\nAvoid late-night planning\n"
+            "Created one memory\nWho owns the calendar invite?",
+        ),
+        (
+            "review_summary",
+            {
+                "review_summary": "Short review.",
+                "conversation_id": "skip-conversation-id",
+                "source_artifact_id": "skip-source-id",
+            },
+            "Short review.",
+        ),
+        (
+            "agenda_revision",
+            {
+                "summary": "Revision after user edit.",
+                "notes": "Move logistics later.",
+                "items": [
+                    {
+                        "id": "skip-root-item-id",
+                        "title": "Start with feelings",
+                        "intent": "Lower defensiveness",
+                    }
+                ],
+            },
+            "Revision after user edit.\nMove logistics later.\nStart with feelings\nLower defensiveness",
+        ),
+        (
+            "transcript_reflection",
+            {
+                "transcript_reflection": ["Partner sounded tired", "Primary softened"],
+                "summary": "Tone shifted.",
+                "transcript_turn_id": "skip-turn-id",
+            },
+            "Partner sounded tired\nPrimary softened\nTone shifted.",
+        ),
+        (
+            "unknown_future_artifact",
+            {
+                "title": "Fallback title",
+                "summary": "Fallback summary",
+                "what_heard": ["One", "Two"],
+                "id": "skip-structural-id",
+            },
+            "Fallback summary\nFallback title\nOne\nTwo",
+        ),
+    ]
+
+    for artifact_type, payload, expected in fixtures:
+        assert canonical_artifact_embedding_text(artifact_type, payload) == expected
+
+
+def test_artifact_python_builder_stays_in_parity_with_sql_contract() -> None:
+    sql = Path("migrations/0058_content_embeddings_unified_index.sql").read_text(encoding="utf-8")
+
+    for artifact_type in (
+        "live_prep_brief",
+        "live_debrief",
+        "review_summary",
+        "agenda_revision",
+        "transcript_reflection",
+    ):
+        assert f"WHEN '{artifact_type}'" in sql
+
+    for structural_field in ("turn_id", "id", "references", "created_by_turn_id"):
+        assert f"ca.payload->>'{structural_field}'" not in sql
+
+    assert "ELSE btrim(concat_ws" in sql
+    assert "jsonb_typeof(ca.payload->'what_heard') = 'array'" in sql
+    assert "value->>'title'" in sql
+    assert "value->>'intent'" in sql
+    assert "value->>'ask'" in sql
+    assert "value->>'done_when'" in sql
 
 
 def test_normalize_vector_validates_dimension_finiteness_and_zero_norm() -> None:

@@ -5,6 +5,7 @@ import pytest
 
 from scripts.backup_dump import sha256_file
 from scripts.backfill_embeddings import (
+    COVERAGE_SQL,
     HNSW_INDEX_SQL,
     SELECT_CANDIDATES_SQL,
     UPSERT_EMBEDDING_SQL,
@@ -51,10 +52,14 @@ def test_backfill_embeddings_source_safety_contract() -> None:
 
     assert "DIRECT_DATABASE_URL" in source
     assert "DATABASE_URL" not in source.replace("DIRECT_DATABASE_URL", "")
-    assert "mediator.v_searchable_messages" in SELECT_CANDIDATES_SQL
-    assert "LEFT JOIN mediator.message_embeddings" in SELECT_CANDIDATES_SQL
+    assert "mediator.v_searchable_content" in SELECT_CANDIDATES_SQL
+    assert "LEFT JOIN mediator.content_embeddings" in SELECT_CANDIDATES_SQL
+    assert "source_type" in SELECT_CANDIDATES_SQL
+    assert "source_id" in SELECT_CANDIDATES_SQL
+    assert "GROUP BY source_type" in COVERAGE_SQL
     assert "content_hash(" in source
-    assert "$2::vector" in UPSERT_EMBEDDING_SQL
+    assert "$3::vector" in UPSERT_EMBEDDING_SQL
+    assert "ON CONFLICT (source_type, source_id)" in UPSERT_EMBEDDING_SQL
     assert "CREATE INDEX CONCURRENTLY" in HNSW_INDEX_SQL
     assert "asyncio.create_task" not in source
     assert "embedding_worker_enabled" not in source
@@ -74,15 +79,19 @@ class FakeBackfillEmbedder:
 
 class FakeBackfillConn:
     def __init__(self, rows):
-        self.rows = sorted(rows, key=lambda row: str(row["message_id"]))
+        self.rows = sorted(rows, key=lambda row: (row["source_type"], str(row["source_id"])))
         self.fetch_calls = []
         self.execute_calls = []
         self.upserts = {}
 
     async def fetch(self, sql: str, *args):
         self.fetch_calls.append((sql, args))
-        cursor, limit = args
-        rows = [row for row in self.rows if str(row["message_id"]) > str(cursor)]
+        cursor_type, cursor_id, limit = args
+        rows = [
+            row
+            for row in self.rows
+            if (row["source_type"], str(row["source_id"])) > (cursor_type, str(cursor_id))
+        ]
         return rows[:limit]
 
     async def execute(self, sql: str, *args):
@@ -90,8 +99,8 @@ class FakeBackfillConn:
         if sql == HNSW_INDEX_SQL:
             return "CREATE INDEX"
         if sql == UPSERT_EMBEDDING_SQL:
-            message_id, vector, model, dimension, hash_value, embedded_at = args
-            self.upserts[message_id] = {
+            source_type, source_id, vector, model, dimension, hash_value, embedded_at = args
+            self.upserts[(source_type, source_id)] = {
                 "vector": vector,
                 "model": model,
                 "dimension": dimension,
@@ -111,6 +120,8 @@ async def test_backfill_embeddings_dry_run_scans_view_without_embedding(anyio_ba
     conn = FakeBackfillConn(
         [
             {
+                "source_type": "message",
+                "source_id": message_id,
                 "message_id": message_id,
                 "canonical_text": "hello\n\n\n",
                 "existing_content_hash": None,
@@ -141,11 +152,15 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
     current_id = UUID("00000000-0000-0000-0000-000000000001")
     stale_id = UUID("00000000-0000-0000-0000-000000000002")
     missing_id = UUID("00000000-0000-0000-0000-000000000003")
+    memory_id = UUID("00000000-0000-0000-0000-000000000004")
     current_text = "already current\n\n\n"
     stale_text = "edited\n\n\n"
+    memory_text = "private memory"
     conn = FakeBackfillConn(
         [
             {
+                "source_type": "message",
+                "source_id": current_id,
                 "message_id": current_id,
                 "canonical_text": current_text,
                 "existing_content_hash": content_hash(current_text),
@@ -153,6 +168,8 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
                 "existing_dimension": 3,
             },
             {
+                "source_type": "message",
+                "source_id": stale_id,
                 "message_id": stale_id,
                 "canonical_text": stale_text,
                 "existing_content_hash": "0" * 64,
@@ -160,8 +177,19 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
                 "existing_dimension": 3,
             },
             {
+                "source_type": "message",
+                "source_id": missing_id,
                 "message_id": missing_id,
                 "canonical_text": None,
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
+            {
+                "source_type": "memory",
+                "source_id": memory_id,
+                "message_id": None,
+                "canonical_text": memory_text,
                 "existing_content_hash": None,
                 "existing_model": None,
                 "existing_dimension": None,
@@ -179,13 +207,18 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
         sleep=_no_sleep,
     )
 
-    assert totals.scanned == 3
+    assert totals.scanned == 4
     assert totals.skipped_current == 1
-    assert totals.embedded == 2
-    assert embedder.calls == [[stale_text], [""]]
-    assert set(conn.upserts) == {stale_id, missing_id}
-    assert conn.upserts[stale_id]["content_hash"] == content_hash(stale_text)
-    assert conn.upserts[missing_id]["content_hash"] == content_hash("")
+    assert totals.embedded == 3
+    assert embedder.calls == [[memory_text], [stale_text, ""]]
+    assert set(conn.upserts) == {
+        ("message", stale_id),
+        ("message", missing_id),
+        ("memory", memory_id),
+    }
+    assert conn.upserts[("message", stale_id)]["content_hash"] == content_hash(stale_text)
+    assert conn.upserts[("message", missing_id)]["content_hash"] == content_hash("")
+    assert conn.upserts[("memory", memory_id)]["content_hash"] == content_hash(memory_text)
 
 
 async def test_backfill_hnsw_index_build_uses_concurrent_statement_without_transaction(anyio_backend) -> None:

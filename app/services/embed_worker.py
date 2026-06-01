@@ -1,11 +1,11 @@
-"""Background worker for message embedding jobs.
+"""Background worker for content embedding jobs.
 
 Embed/reembed jobs read canonical text only from
-``mediator.v_searchable_messages``.  The only raw ``mediator.messages`` read in
-this module is the cleanup exception used after a claimed job disappears from
-the view: deleted or search-suppressed rows are intentionally hidden from the
-searchable surface, so the worker may inspect those lifecycle flags solely to
-delete stale embeddings and finish the job without embedding hidden content.
+``mediator.v_searchable_content``.  The only raw ``mediator.messages`` read in
+this module is the cleanup exception used after a claimed message job disappears
+from the view: deleted or search-suppressed rows are intentionally hidden from
+the searchable surface, so the worker may inspect those lifecycle flags solely
+to delete stale embeddings and finish the job without embedding hidden content.
 """
 
 from __future__ import annotations
@@ -128,7 +128,8 @@ class EmbedJobWorker:
                 updated_at = $1
             FROM due
             WHERE ej.id = due.id
-            RETURNING ej.id, ej.message_id, ej.job_kind, ej.model, ej.dimension,
+            RETURNING ej.id, ej.source_type, ej.source_id, ej.message_id,
+                      ej.job_kind, ej.model, ej.dimension,
                       ej.content_hash, ej.attempts, ej.locked_by
             """,
             now,
@@ -139,26 +140,35 @@ class EmbedJobWorker:
 
     async def _process_job(self, job: dict[str, Any], *, now: datetime) -> str:
         if job["job_kind"] == "drop":
-            await self._delete_embedding(job["message_id"])
+            await self._delete_embedding(job["source_type"], job["source_id"])
             await self._mark_completed(job, status="succeeded", now=now)
             return "dropped"
 
-        searchable = await self._fetch_searchable_message(job["message_id"])
+        searchable = await self._fetch_searchable_content(job["source_type"], job["source_id"])
         if searchable is None:
-            cleanup_state = await self._fetch_raw_cleanup_state(job["message_id"])
-            if cleanup_state is not None and (
-                cleanup_state.get("deleted_at") is not None
-                or cleanup_state.get("search_suppressed_at") is not None
-            ):
-                await self._delete_embedding(job["message_id"])
-                await self._mark_completed(
-                    job,
-                    status="skipped",
-                    now=now,
-                    last_error="message no longer searchable; embedding deleted",
-                )
+            if job["source_type"] == "message":
+                cleanup_state = await self._fetch_raw_cleanup_state(job["message_id"] or job["source_id"])
+                if cleanup_state is not None and (
+                    cleanup_state.get("deleted_at") is not None
+                    or cleanup_state.get("search_suppressed_at") is not None
+                ):
+                    await self._delete_embedding(job["source_type"], job["source_id"])
+                    await self._mark_completed(
+                        job,
+                        status="skipped",
+                        now=now,
+                        last_error="message no longer searchable; embedding deleted",
+                    )
+                    return "skipped"
+                await self._mark_completed(job, status="skipped", now=now, last_error="message not found")
                 return "skipped"
-            await self._mark_completed(job, status="skipped", now=now, last_error="message not found")
+            await self._delete_embedding(job["source_type"], job["source_id"])
+            await self._mark_completed(
+                job,
+                status="skipped",
+                now=now,
+                last_error="source no longer searchable; embedding deleted",
+            )
             return "skipped"
 
         canonical_text = searchable["canonical_text"] or ""
@@ -168,6 +178,8 @@ class EmbedJobWorker:
                 if job["job_kind"] == "embed":
                     await enqueue_embed_job(
                         conn,
+                        source_type=job["source_type"],
+                        source_id=job["source_id"],
                         message_id=job["message_id"],
                         content_hash=current_hash,
                         model=job["model"],
@@ -177,6 +189,8 @@ class EmbedJobWorker:
                 else:
                     await enqueue_reembed_job(
                         conn,
+                        source_type=job["source_type"],
+                        source_id=job["source_id"],
                         message_id=job["message_id"],
                         content_hash=current_hash,
                         model=job["model"],
@@ -193,7 +207,8 @@ class EmbedJobWorker:
 
         vector = (await self.embedder.embed_texts([canonical_text]))[0]
         await self._upsert_embedding(
-            message_id=job["message_id"],
+            source_type=job["source_type"],
+            source_id=job["source_id"],
             vector=vector,
             model=job["model"],
             dimension=job["dimension"],
@@ -203,14 +218,15 @@ class EmbedJobWorker:
         await self._mark_completed(job, status="succeeded", now=now)
         return "embedded"
 
-    async def _fetch_searchable_message(self, message_id: Any) -> Any | None:
+    async def _fetch_searchable_content(self, source_type: str, source_id: Any) -> Any | None:
         return await self.pool.fetchrow(
             """
-            SELECT message_id, canonical_text
-            FROM mediator.v_searchable_messages
-            WHERE message_id = $1
+            SELECT source_type, source_id, message_id, canonical_text
+            FROM mediator.v_searchable_content
+            WHERE source_type = $1 AND source_id = $2
             """,
-            message_id,
+            source_type,
+            source_id,
         )
 
     async def _fetch_raw_cleanup_state(self, message_id: Any) -> Any | None:
@@ -226,7 +242,8 @@ class EmbedJobWorker:
     async def _upsert_embedding(
         self,
         *,
-        message_id: Any,
+        source_type: str,
+        source_id: Any,
         vector: Sequence[float],
         model: str,
         dimension: int,
@@ -235,18 +252,19 @@ class EmbedJobWorker:
     ) -> None:
         await self.pool.execute(
             """
-            INSERT INTO mediator.message_embeddings (
-                message_id, embedding, model, dimension, content_hash, embedded_at
+            INSERT INTO mediator.content_embeddings (
+                source_type, source_id, embedding, model, dimension, content_hash, embedded_at
             )
-            VALUES ($1, $2::vector, $3, $4, $5, $6)
-            ON CONFLICT (message_id) DO UPDATE
+            VALUES ($1, $2, $3::vector, $4, $5, $6, $7)
+            ON CONFLICT (source_type, source_id) DO UPDATE
             SET embedding = EXCLUDED.embedding,
                 model = EXCLUDED.model,
                 dimension = EXCLUDED.dimension,
                 content_hash = EXCLUDED.content_hash,
                 embedded_at = EXCLUDED.embedded_at
             """,
-            message_id,
+            source_type,
+            source_id,
             _vector_literal(vector),
             model,
             dimension,
@@ -254,13 +272,14 @@ class EmbedJobWorker:
             now,
         )
 
-    async def _delete_embedding(self, message_id: Any) -> None:
+    async def _delete_embedding(self, source_type: str, source_id: Any) -> None:
         await self.pool.execute(
             """
-            DELETE FROM mediator.message_embeddings
-            WHERE message_id = $1
+            DELETE FROM mediator.content_embeddings
+            WHERE source_type = $1 AND source_id = $2
             """,
-            message_id,
+            source_type,
+            source_id,
         )
 
     async def _mark_completed(

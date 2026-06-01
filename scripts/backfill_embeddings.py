@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Backfill message embeddings for Xen M1 retrieval.
+"""Backfill unified content embeddings for Xen M1 retrieval.
 
 This is a human-run operational script.  It deliberately requires
 ``DIRECT_DATABASE_URL`` and refuses common transaction-pooler endpoints because
@@ -35,25 +35,28 @@ DEFAULT_COVERAGE_THRESHOLD = 0.95
 
 SELECT_CANDIDATES_SQL = """
 SELECT
+    v.source_type,
+    v.source_id,
     v.message_id,
     v.canonical_text,
     e.content_hash AS existing_content_hash,
     e.model AS existing_model,
     e.dimension AS existing_dimension
-FROM mediator.v_searchable_messages v
-LEFT JOIN mediator.message_embeddings e
-  ON e.message_id = v.message_id
-WHERE v.message_id > $1
-ORDER BY v.message_id ASC
-LIMIT $2
+FROM mediator.v_searchable_content v
+LEFT JOIN mediator.content_embeddings e
+  ON e.source_type = v.source_type
+ AND e.source_id = v.source_id
+WHERE (v.source_type, v.source_id) > ($1, $2::uuid)
+ORDER BY v.source_type ASC, v.source_id ASC
+LIMIT $3
 """
 
 UPSERT_EMBEDDING_SQL = """
-INSERT INTO mediator.message_embeddings (
-    message_id, embedding, model, dimension, content_hash, embedded_at
+INSERT INTO mediator.content_embeddings (
+    source_type, source_id, embedding, model, dimension, content_hash, embedded_at
 )
-VALUES ($1, $2::vector, $3, $4, $5, $6)
-ON CONFLICT (message_id) DO UPDATE
+VALUES ($1, $2, $3::vector, $4, $5, $6, $7)
+ON CONFLICT (source_type, source_id) DO UPDATE
 SET embedding = EXCLUDED.embedding,
     model = EXCLUDED.model,
     dimension = EXCLUDED.dimension,
@@ -63,24 +66,29 @@ SET embedding = EXCLUDED.embedding,
 
 COVERAGE_SQL = """
 WITH searchable AS (
-    SELECT count(*)::bigint AS total
-    FROM mediator.v_searchable_messages
+    SELECT source_type, count(*)::bigint AS total
+    FROM mediator.v_searchable_content
+    GROUP BY source_type
 ),
 covered AS (
-    SELECT count(*)::bigint AS covered
-    FROM mediator.v_searchable_messages v
-    JOIN mediator.message_embeddings e
-      ON e.message_id = v.message_id
+    SELECT v.source_type, count(*)::bigint AS covered
+    FROM mediator.v_searchable_content v
+    JOIN mediator.content_embeddings e
+      ON e.source_type = v.source_type
+     AND e.source_id = v.source_id
      AND e.model = $1
      AND e.dimension = $2
+    GROUP BY v.source_type
 )
-SELECT searchable.total, covered.covered
-FROM searchable, covered
+SELECT searchable.source_type, searchable.total, coalesce(covered.covered, 0)::bigint AS covered
+FROM searchable
+LEFT JOIN covered USING (source_type)
+ORDER BY searchable.source_type
 """
 
 HNSW_INDEX_SQL = """
-CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_message_embeddings_hnsw_embedding
-ON mediator.message_embeddings
+CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_content_embeddings_hnsw_embedding
+ON mediator.content_embeddings
 USING hnsw (embedding vector_cosine_ops)
 """
 
@@ -107,6 +115,7 @@ class BackfillTotals:
 
 @dataclass(frozen=True)
 class Coverage:
+    source_type: str
     total: int
     covered: int
 
@@ -161,9 +170,22 @@ async def _direct_connection(database_url: str) -> AsyncIterator[Any]:
         await conn.close()
 
 
-async def fetch_coverage(conn: Any, *, model: str, dimension: int) -> Coverage:
-    row = await conn.fetchrow(COVERAGE_SQL, model, dimension)
-    return Coverage(total=int(row["total"]), covered=int(row["covered"]))
+async def fetch_coverage(conn: Any, *, model: str, dimension: int) -> list[Coverage]:
+    rows = await conn.fetch(COVERAGE_SQL, model, dimension)
+    return [
+        Coverage(
+            source_type=str(row["source_type"]),
+            total=int(row["total"]),
+            covered=int(row["covered"]),
+        )
+        for row in rows
+    ]
+
+
+def _overall_coverage(rows: Sequence[Coverage]) -> Coverage:
+    total = sum(row.total for row in rows)
+    covered = sum(row.covered for row in rows)
+    return Coverage(source_type="all", total=total, covered=covered)
 
 
 async def build_hnsw_index_concurrently(conn: Any) -> None:
@@ -193,16 +215,18 @@ async def backfill_embeddings(
     sleep: Any = asyncio.sleep,
     now_factory: Any = _utc_now,
 ) -> BackfillTotals:
-    """Backfill embeddings by keyset-scanning ``v_searchable_messages``."""
+    """Backfill embeddings by keyset-scanning ``v_searchable_content``."""
 
-    cursor = UUID("00000000-0000-0000-0000-000000000000")
+    cursor_type = ""
+    cursor_id = UUID("00000000-0000-0000-0000-000000000000")
     totals = BackfillTotals()
     while True:
-        rows = await conn.fetch(SELECT_CANDIDATES_SQL, cursor, batch_size)
+        rows = await conn.fetch(SELECT_CANDIDATES_SQL, cursor_type, cursor_id, batch_size)
         if not rows:
             return totals
-        cursor = rows[-1]["message_id"]
-        pending: list[tuple[Any, str, str]] = []
+        cursor_type = rows[-1]["source_type"]
+        cursor_id = rows[-1]["source_id"]
+        pending: list[tuple[str, Any, str, str]] = []
         skipped_current = 0
         for row in rows:
             canonical_text = row["canonical_text"] or ""
@@ -215,7 +239,7 @@ async def backfill_embeddings(
             ):
                 skipped_current += 1
             else:
-                pending.append((row["message_id"], canonical_text, hash_value))
+                pending.append((row["source_type"], row["source_id"], canonical_text, hash_value))
 
         if dry_run:
             batch_totals = BackfillTotals(
@@ -230,7 +254,7 @@ async def backfill_embeddings(
                 len(rows),
                 len(pending),
                 skipped_current,
-                cursor,
+                f"{cursor_type}:{cursor_id}",
             )
             continue
 
@@ -238,16 +262,17 @@ async def backfill_embeddings(
         failed = 0
         if pending:
             try:
-                vectors = await embedder.embed_texts([item[1] for item in pending])
+                vectors = await embedder.embed_texts([item[2] for item in pending])
             except Exception:
-                logger.exception("embedding provider batch failed at cursor=%s", cursor)
+                logger.exception("embedding provider batch failed at cursor=%s:%s", cursor_type, cursor_id)
                 failed += len(pending)
                 vectors = []
-            for (message_id, _text, hash_value), vector in zip(pending, vectors, strict=False):
+            for (source_type, source_id, _text, hash_value), vector in zip(pending, vectors, strict=False):
                 try:
                     await conn.execute(
                         UPSERT_EMBEDDING_SQL,
-                        message_id,
+                        source_type,
+                        source_id,
                         _vector_literal(vector),
                         embedder.model_name,
                         embedder.dimension,
@@ -256,7 +281,7 @@ async def backfill_embeddings(
                     )
                 except Exception:
                     failed += 1
-                    logger.exception("embedding upsert failed for message_id=%s", message_id)
+                    logger.exception("embedding upsert failed for source_type=%s source_id=%s", source_type, source_id)
                 else:
                     embedded += 1
             if len(vectors) < len(pending):
@@ -277,7 +302,7 @@ async def backfill_embeddings(
             embedded,
             failed,
             skipped_current,
-            cursor,
+            f"{cursor_type}:{cursor_id}",
         )
         await _sleep_for_rate_limit(
             embedded_count=embedded,
@@ -289,7 +314,7 @@ async def backfill_embeddings(
 def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(
         description=(
-            "Backfill mediator.message_embeddings from mediator.v_searchable_messages. "
+            "Backfill mediator.content_embeddings from mediator.v_searchable_content. "
             "Requires DIRECT_DATABASE_URL and refuses pooler endpoints."
         )
     )
@@ -353,13 +378,17 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
     )
     embedder = embedder_from_settings(settings)
     async with _direct_connection(database_url) as conn:
-        before = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
-        logger.info(
-            "coverage before: covered=%d total=%d ratio=%.4f",
-            before.covered,
-            before.total,
-            before.ratio,
-        )
+        before_rows = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
+        for coverage in before_rows:
+            logger.info(
+                "coverage before source_type=%s: covered=%d total=%d ratio=%.4f",
+                coverage.source_type,
+                coverage.covered,
+                coverage.total,
+                coverage.ratio,
+            )
+        before = _overall_coverage(before_rows)
+        logger.info("coverage before all: covered=%d total=%d ratio=%.4f", before.covered, before.total, before.ratio)
         totals = await backfill_embeddings(
             conn,
             embedder=embedder,
@@ -367,7 +396,7 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
             rate_limit_per_min=args.rate_limit_per_min,
             dry_run=args.dry_run,
         )
-        after = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
+        after_rows = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
         logger.info(
             "backfill done dry_run=%s scanned=%d embedded=%d pending=%d current=%d failed=%d",
             args.dry_run,
@@ -377,8 +406,18 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
             totals.skipped_current,
             totals.failed,
         )
+        for coverage in after_rows:
+            logger.info(
+                "coverage after source_type=%s: covered=%d total=%d ratio=%.4f threshold=%.4f",
+                coverage.source_type,
+                coverage.covered,
+                coverage.total,
+                coverage.ratio,
+                args.coverage_threshold,
+            )
+        after = _overall_coverage(after_rows)
         logger.info(
-            "coverage after: covered=%d total=%d ratio=%.4f threshold=%.4f",
+            "coverage after all: covered=%d total=%d ratio=%.4f threshold=%.4f",
             after.covered,
             after.total,
             after.ratio,

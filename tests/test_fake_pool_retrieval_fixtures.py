@@ -6,7 +6,7 @@ from uuid import uuid4
 
 import pytest
 
-from app.services.embed_jobs import enqueue_drop_embedding_job, enqueue_embed_job
+from app.services.embed_jobs import enqueue_message_drop_embedding_job, enqueue_message_embed_job
 from app.services.embed_worker import EmbedJobWorker
 from app.services.embeddings import DeterministicFakeEmbedder, content_hash
 from app.services.retrieval import RetrievalQuery, hybrid_search
@@ -76,7 +76,7 @@ async def test_fake_pool_supports_embed_jobs_and_worker_embedding_lifecycle():
         text="Deploy crash",
     )
 
-    created = await enqueue_embed_job(
+    created = await enqueue_message_embed_job(
         pool,
         message_id=message_id,
         content_hash=content_hash(text),
@@ -116,7 +116,7 @@ async def test_fake_pool_supports_drop_jobs_and_search_suppression_cleanup():
     )
     pool.message_embeddings[message_id] = {"content_hash": "old"}
 
-    job = await enqueue_drop_embedding_job(pool, message_id=message_id, now=now)
+    job = await enqueue_message_drop_embedding_job(pool, message_id=message_id, now=now)
     result = await EmbedJobWorker(
         pool,
         settings=_settings(),
@@ -230,5 +230,6 @@ async def test_fake_pool_transaction_spy_records_hnsw_and_ann_fetch_together():
     ]
     assert pool.transaction_entries == 1
     assert transactional[0][2] == "SET LOCAL hnsw.ef_search = 77"
-    assert "FROM mediator.message_embeddings e" in transactional[1][2]
+    assert "FROM mediator.content_embeddings e" in transactional[1][2]
+    assert "JOIN mediator.v_searchable_content sc" in transactional[1][2]
     assert "JOIN mediator.v_searchable_messages m" in transactional[1][2]

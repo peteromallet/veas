@@ -10,6 +10,7 @@ from typing import Any, Literal
 from uuid import UUID
 
 
+EmbedSourceType = Literal["message", "memory", "observation", "distillation", "artifact"]
 EmbedJobKind = Literal["embed", "reembed", "drop"]
 EmbedJobStatus = Literal["pending", "processing", "succeeded", "failed", "skipped", "superseded", "cancelled"]
 EmbedJobAction = Literal["created", "existing"]
@@ -20,7 +21,9 @@ _HASH_LENGTH = 64
 @dataclass(frozen=True)
 class EmbedJob:
     id: UUID
-    message_id: UUID
+    source_type: EmbedSourceType
+    source_id: UUID
+    message_id: UUID | None
     job_kind: EmbedJobKind
     status: EmbedJobStatus
     model: str | None
@@ -68,6 +71,8 @@ def _validate_model_dimension(model: str | None, dimension: int | None, *, job_k
 def _row_to_job(row: Any) -> EmbedJob:
     return EmbedJob(
         id=row["id"],
+        source_type=row["source_type"],
+        source_id=row["source_id"],
         message_id=row["message_id"],
         job_kind=row["job_kind"],
         status=row["status"],
@@ -94,16 +99,20 @@ async def _connection(pool_or_conn: Any) -> AsyncIterator[Any]:
 async def enqueue_embed_job(
     pool_or_conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
     content_hash: str,
     model: str,
     dimension: int,
+    message_id: UUID | None = None,
     now: datetime | None = None,
 ) -> EnqueueEmbedJobResult:
     """Ensure one active pending/processing embed job exists for this content hash."""
 
     return await _enqueue_job(
         pool_or_conn,
+        source_type=source_type,
+        source_id=source_id,
         message_id=message_id,
         job_kind="embed",
         content_hash=content_hash,
@@ -116,16 +125,20 @@ async def enqueue_embed_job(
 async def enqueue_reembed_job(
     pool_or_conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
     content_hash: str,
     model: str,
     dimension: int,
+    message_id: UUID | None = None,
     now: datetime | None = None,
 ) -> EnqueueEmbedJobResult:
     """Ensure one active pending/processing reembed job exists for this content hash."""
 
     return await _enqueue_job(
         pool_or_conn,
+        source_type=source_type,
+        source_id=source_id,
         message_id=message_id,
         job_kind="reembed",
         content_hash=content_hash,
@@ -138,13 +151,17 @@ async def enqueue_reembed_job(
 async def enqueue_drop_embedding_job(
     pool_or_conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
+    message_id: UUID | None = None,
     now: datetime | None = None,
 ) -> EnqueueEmbedJobResult:
     """Ensure one active drop job exists and cancel obsolete pending embed work."""
 
     return await _enqueue_job(
         pool_or_conn,
+        source_type=source_type,
+        source_id=source_id,
         message_id=message_id,
         job_kind="drop",
         content_hash=None,
@@ -157,7 +174,9 @@ async def enqueue_drop_embedding_job(
 async def _enqueue_job(
     pool_or_conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
+    message_id: UUID | None,
     job_kind: EmbedJobKind,
     content_hash: str | None,
     model: str | None,
@@ -176,14 +195,16 @@ async def _enqueue_job(
     async with _connection(pool_or_conn) as conn:
         superseded = await _supersede_obsolete_pending(
             conn,
-            message_id=message_id,
+            source_type=source_type,
+            source_id=source_id,
             job_kind=job_kind,
             content_hash=normalized_hash,
             now=timestamp,
         )
         existing = await _fetch_active_job(
             conn,
-            message_id=message_id,
+            source_type=source_type,
+            source_id=source_id,
             job_kind=job_kind,
             content_hash=normalized_hash,
         )
@@ -195,6 +216,8 @@ async def _enqueue_job(
             )
         inserted = await _insert_job(
             conn,
+            source_type=source_type,
+            source_id=source_id,
             message_id=message_id,
             job_kind=job_kind,
             content_hash=normalized_hash,
@@ -212,7 +235,8 @@ async def _enqueue_job(
 async def _supersede_obsolete_pending(
     conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
     job_kind: EmbedJobKind,
     content_hash: str | None,
     now: datetime,
@@ -225,13 +249,15 @@ async def _supersede_obsolete_pending(
                 last_error = 'superseded by drop job',
                 locked_at = NULL,
                 locked_by = NULL,
-                updated_at = $2,
-                completed_at = $2
-            WHERE message_id = $1
+                updated_at = $3,
+                completed_at = $3
+            WHERE source_type = $1
+              AND source_id = $2
               AND job_kind IN ('embed', 'reembed')
               AND status = 'pending'
             """,
-            message_id,
+            source_type,
+            source_id,
             now,
         )
         return _rows_affected(status)
@@ -243,14 +269,16 @@ async def _supersede_obsolete_pending(
             last_error = 'superseded by newer content hash',
             locked_at = NULL,
             locked_by = NULL,
-            updated_at = $3,
-            completed_at = $3
-        WHERE message_id = $1
+            updated_at = $4,
+            completed_at = $4
+        WHERE source_type = $1
+          AND source_id = $2
           AND job_kind IN ('embed', 'reembed')
           AND status = 'pending'
-          AND content_hash IS DISTINCT FROM $2
+          AND content_hash IS DISTINCT FROM $3
         """,
-        message_id,
+        source_type,
+        source_id,
         content_hash,
         now,
     )
@@ -260,23 +288,26 @@ async def _supersede_obsolete_pending(
 async def _fetch_active_job(
     conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
     job_kind: EmbedJobKind,
     content_hash: str | None,
 ) -> Any | None:
     return await conn.fetchrow(
         """
-        SELECT id, message_id, job_kind, status, model, dimension, content_hash,
+        SELECT id, source_type, source_id, message_id, job_kind, status, model, dimension, content_hash,
                attempts, next_attempt_at, created_at, updated_at
         FROM mediator.embed_jobs
-        WHERE message_id = $1
-          AND job_kind = $2
+        WHERE source_type = $1
+          AND source_id = $2
+          AND job_kind = $3
           AND status IN ('pending', 'processing')
-          AND content_hash IS NOT DISTINCT FROM $3
+          AND content_hash IS NOT DISTINCT FROM $4
         ORDER BY created_at ASC, id ASC
         LIMIT 1
         """,
-        message_id,
+        source_type,
+        source_id,
         job_kind,
         content_hash,
     )
@@ -285,7 +316,9 @@ async def _fetch_active_job(
 async def _insert_job(
     conn: Any,
     *,
-    message_id: UUID,
+    source_type: EmbedSourceType,
+    source_id: UUID,
+    message_id: UUID | None,
     job_kind: EmbedJobKind,
     content_hash: str | None,
     model: str | None,
@@ -295,20 +328,79 @@ async def _insert_job(
     return await conn.fetchrow(
         """
         INSERT INTO mediator.embed_jobs (
-            message_id, job_kind, status, model, dimension, content_hash,
+            source_type, source_id, message_id, job_kind, status, model, dimension, content_hash,
             attempts, last_error, next_attempt_at, locked_at, locked_by,
             created_at, updated_at, completed_at
         )
-        VALUES ($1, $2, 'pending', $3, $4, $5, 0, NULL, $6, NULL, NULL, $6, $6, NULL)
-        RETURNING id, message_id, job_kind, status, model, dimension, content_hash,
+        VALUES ($1, $2, $3, $4, 'pending', $5, $6, $7, 0, NULL, $8, NULL, NULL, $8, $8, NULL)
+        RETURNING id, source_type, source_id, message_id, job_kind, status, model, dimension, content_hash,
                   attempts, next_attempt_at, created_at, updated_at
         """,
+        source_type,
+        source_id,
         message_id,
         job_kind,
         model,
         dimension,
         content_hash,
         now,
+    )
+
+
+async def enqueue_message_embed_job(
+    pool_or_conn: Any,
+    *,
+    message_id: UUID,
+    content_hash: str,
+    model: str,
+    dimension: int,
+    now: datetime | None = None,
+) -> EnqueueEmbedJobResult:
+    return await enqueue_embed_job(
+        pool_or_conn,
+        source_type="message",
+        source_id=message_id,
+        message_id=message_id,
+        content_hash=content_hash,
+        model=model,
+        dimension=dimension,
+        now=now,
+    )
+
+
+async def enqueue_message_reembed_job(
+    pool_or_conn: Any,
+    *,
+    message_id: UUID,
+    content_hash: str,
+    model: str,
+    dimension: int,
+    now: datetime | None = None,
+) -> EnqueueEmbedJobResult:
+    return await enqueue_reembed_job(
+        pool_or_conn,
+        source_type="message",
+        source_id=message_id,
+        message_id=message_id,
+        content_hash=content_hash,
+        model=model,
+        dimension=dimension,
+        now=now,
+    )
+
+
+async def enqueue_message_drop_embedding_job(
+    pool_or_conn: Any,
+    *,
+    message_id: UUID,
+    now: datetime | None = None,
+) -> EnqueueEmbedJobResult:
+    return await enqueue_drop_embedding_job(
+        pool_or_conn,
+        source_type="message",
+        source_id=message_id,
+        message_id=message_id,
+        now=now,
     )
 
 
