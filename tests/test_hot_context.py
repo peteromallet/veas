@@ -760,6 +760,83 @@ async def test_semantic_prior_retrieval_errors_degrade_to_topic_recent_only(
     assert all("retrieval" not in item for item in hc.relevant_prior)
 
 
+async def test_semantic_prior_skips_explicit_non_message_results(
+    hot_context_seed, monkeypatch
+):
+    pool, user, partner = hot_context_seed
+    memory_id = uuid4()
+
+    async def fake_hybrid_search(_pool, request):
+        return [
+            RetrievalResult(
+                message_id=None,
+                source_type="memory",
+                source_id=memory_id,
+                match_type="semantic",
+                rrf_score=0.91,
+                keyword_rank=None,
+                semantic_rank=1,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=pool.messages[0]["id"],
+                match_type="semantic",
+                rrf_score=0.74,
+                keyword_rank=None,
+                semantic_rank=2,
+                semantic_degraded=False,
+                keyword_score=None,
+            ),
+        ]
+
+    monkeypatch.setattr("app.services.hot_context.hybrid_search", fake_hybrid_search)
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+
+    assert memory_id not in {item["id"] for item in hc.relevant_prior}
+    assert any(
+        item["id"] == pool.messages[0]["id"] and item["source"] == "topic_recent"
+        for item in hc.relevant_prior
+    )
+
+
+async def test_semantic_prior_filters_null_message_ids_before_exclusion_and_hydration(
+    hot_context_seed, monkeypatch
+):
+    pool, user, partner = hot_context_seed
+    message_id = pool.messages[0]["id"]
+
+    async def fake_hybrid_search(_pool, request):
+        return [
+            RetrievalResult(
+                message_id=None,
+                source_type="observation",
+                source_id=uuid4(),
+                match_type="semantic",
+                rrf_score=0.91,
+                keyword_rank=None,
+                semantic_rank=1,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=message_id,
+                match_type="semantic",
+                rrf_score=0.74,
+                keyword_rank=None,
+                semantic_rank=2,
+                semantic_degraded=False,
+                keyword_score=None,
+            ),
+        ]
+
+    monkeypatch.setattr("app.services.hot_context.hybrid_search", fake_hybrid_search)
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+
+    assert None not in {item["id"] for item in hc.relevant_prior}
+    assert all(item["id"] != message_id or item["source"] == "topic_recent" for item in hc.relevant_prior)
+
+
 # ── T8: Focused semantic-prior unit tests ──────────────────────────────
 
 

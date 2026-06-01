@@ -555,9 +555,12 @@ def test_message_nav_tools_are_wired_into_registry_and_derived_read_sets() -> No
         LIVE_PREP_TOOLS,
         READ_PHASE_TOOLS,
         READ_TOOLS_FOR_STEP,
+        RESPOND_TOOLS,
         RECORD_READ_TOOLS,
+        SCHEDULE_TOOLS,
         TOOL_DESCRIPTIONS,
         TOOL_DISPATCH,
+        WRITE_PHASE_TOOLS,
     )
 
     new_read_tools = {
@@ -566,6 +569,7 @@ def test_message_nav_tools_are_wired_into_registry_and_derived_read_sets() -> No
         "open_thread",
         "scroll",
         "topic_recent",
+        "source_messages",
         "search",
     }
     exclusive_tools = set().union(*BOT_EXCLUSIVE_TOOLS.values())
@@ -578,5 +582,9 @@ def test_message_nav_tools_are_wired_into_registry_and_derived_read_sets() -> No
     assert new_read_tools <= READ_TOOLS_FOR_STEP
     assert new_read_tools <= LIVE_PREP_TOOLS
     assert new_read_tools.isdisjoint(exclusive_tools)
+    assert "source_messages" not in WRITE_PHASE_TOOLS
+    assert "source_messages" not in RESPOND_TOOLS
+    assert "source_messages" not in SCHEDULE_TOOLS
     assert "hot-context gist" in TOOL_DESCRIPTIONS["messages_before"]
+    assert "supporting messages" in TOOL_DESCRIPTIONS["source_messages"]
     assert "hot-context gist" in TOOL_DESCRIPTIONS["search"]

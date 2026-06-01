@@ -172,6 +172,7 @@ class FakePool:
         self.watch_items = {}
         self.observations = {}
         self.distillations = {}
+        self.conversation_artifacts = {}
         self.out_of_bounds = {}
         self.withheld_outbound_reviews = {}
         self.bridge_candidates = {}
@@ -267,6 +268,269 @@ class FakePool:
             "thread_owner_partner_share": partner_share or row.get("partner_share", "unset"),
             "active_oob_severity": row.get("active_oob_severity"),
         }
+
+    def _searchable_content_row(
+        self, source_type: str, source_id: UUID
+    ) -> dict[str, Any] | None:
+        default_topic_id = UUID("00000000-0000-4000-8000-000000000001")
+        if source_type == "message":
+            row = self.messages.get(source_id)
+            searchable = self._searchable_message_row(row) if row is not None else None
+            if searchable is None:
+                return None
+            sent_at = searchable.get("sent_at")
+            return {
+                **searchable,
+                "source_type": "message",
+                "source_id": source_id,
+                "message_id": searchable["message_id"],
+                "direction": row.get("direction"),
+                "charge": row.get("charge", "routine") or "routine",
+                "edited_at": row.get("edited_at"),
+                "edit_history": row.get("edit_history"),
+                "content": row.get("content"),
+                "media_type": row.get("media_type"),
+                "media_analysis": row.get("media_analysis"),
+                "sort_at": sent_at,
+                "primary_topic_id": searchable.get("topic_id"),
+                "topic_ids": [searchable["topic_id"]] if searchable.get("topic_id") else [],
+                "source_created_at": sent_at,
+                "source_updated_at": row.get("edited_at") or sent_at,
+            }
+
+        if source_type == "memory":
+            row = self.memories.get(source_id)
+            if row is None or row.get("status", "active") != "active":
+                return None
+            if row.get("visibility") == "dyad_shareable":
+                return None
+            text = row.get("content") or row.get("summary") or row.get("memory") or ""
+            created_at = row.get("created_at")
+            updated_at = row.get("last_referenced_at") or created_at
+            topic_id = self.artifact_topics.get(("memories", source_id)) or row.get("topic_id")
+            return {
+                "source_type": "memory",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": row.get("about_user_id"),
+                "recipient_id": None,
+                "bot_id": row.get("recorded_by_bot_id", "mediator"),
+                "topic_id": topic_id,
+                "dyad_id": None,
+                "thread_owner_user_id": row.get("about_user_id"),
+                "thread_owner_partner_share": None,
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": None,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": updated_at,
+            }
+
+        if source_type == "distillation":
+            row = self.distillations.get(source_id)
+            if row is None or row.get("status", "active") != "active":
+                return None
+            if row.get("visibility") == "dyad_shareable":
+                return None
+            text = row.get("content") or row.get("summary") or row.get("distillation") or ""
+            created_at = row.get("created_at")
+            updated_at = row.get("updated_at") or created_at
+            topic_id = self.artifact_topics.get(("distillations", source_id)) or row.get("topic_id")
+            return {
+                "source_type": "distillation",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": None,
+                "recipient_id": None,
+                "bot_id": row.get("recorded_by_bot_id"),
+                "topic_id": topic_id,
+                "dyad_id": None,
+                "thread_owner_user_id": None,
+                "thread_owner_partner_share": None,
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": None,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": updated_at,
+            }
+
+        if source_type == "observation":
+            row = self.observations.get(source_id)
+            if row is None or row.get("status", "active") != "active":
+                return None
+            if row.get("significance", 3) < 3:
+                return None
+            text = row.get("content") or row.get("summary") or row.get("observation") or ""
+            created_at = row.get("created_at") or row.get("observed_at")
+            updated_at = row.get("last_reinforced_at") or created_at
+            topic_id = self.artifact_topics.get(("observations", source_id)) or row.get("topic_id")
+            return {
+                "source_type": "observation",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": row.get("about_user_id"),
+                "recipient_id": None,
+                "bot_id": row.get("recorded_by_bot_id", "mediator"),
+                "topic_id": topic_id,
+                "dyad_id": None,
+                "thread_owner_user_id": row.get("about_user_id"),
+                "thread_owner_partner_share": None,
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": None,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": updated_at,
+            }
+
+        if source_type == "artifact":
+            row = self.conversation_artifacts.get(source_id)
+            if row is None or row.get("deleted_at") is not None:
+                return None
+            expires_at = row.get("expires_at")
+            if expires_at is not None and expires_at <= datetime.now(UTC):
+                return None
+            payload = row.get("payload") or {}
+            text = self._canonical_artifact_text(row)
+            if not text:
+                return None
+            created_at = row.get("created_at")
+            topic_id = row.get("topic_id", default_topic_id)
+            media_analysis = {
+                "artifact_type": row.get("artifact_type"),
+                "payload_version": row.get("payload_version"),
+                "revision_number": row.get("revision_number"),
+                "conversation_id": row.get("conversation_id"),
+                "created_by_turn_id": row.get("created_by_turn_id"),
+                "expires_at": row.get("expires_at"),
+            }
+            return {
+                "source_type": "artifact",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": row.get("user_id"),
+                "recipient_id": None,
+                "bot_id": row.get("bot_id", "mediator"),
+                "topic_id": topic_id,
+                "dyad_id": None,
+                "thread_owner_user_id": row.get("user_id"),
+                "thread_owner_partner_share": None,
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": media_analysis,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": created_at,
+                "payload": payload,
+            }
+
+        return None
+
+    def _canonical_artifact_text(self, row: dict[str, Any]) -> str:
+        payload = row.get("payload") or {}
+
+        def flatten(value: Any) -> list[str]:
+            if value is None:
+                return []
+            if isinstance(value, str):
+                return [value]
+            if isinstance(value, list):
+                parts: list[str] = []
+                for item in value:
+                    parts.extend(flatten(item))
+                return parts
+            if isinstance(value, dict):
+                parts = []
+                for key in (
+                    "title",
+                    "intent",
+                    "ask",
+                    "done_when",
+                    "summary",
+                    "notes",
+                    "review_summary",
+                    "prep_summary",
+                    "text",
+                ):
+                    parts.extend(flatten(value.get(key)))
+                return parts
+            return [str(value)]
+
+        keys_by_type = {
+            "live_prep_brief": ("agenda", "notes"),
+            "live_debrief": (
+                "review_summary",
+                "live_debrief",
+                "what_heard",
+                "what_decided",
+                "still_open",
+                "what_to_remember",
+                "durable_write_summary",
+                "open_questions",
+            ),
+            "review_summary": ("review_summary", "summary", "live_debrief", "review"),
+            "agenda_revision": ("prep_summary", "agenda", "summary", "notes", "items"),
+            "transcript_reflection": ("transcript_reflection", "summary", "notes"),
+        }
+        keys = keys_by_type.get(row.get("artifact_type"), tuple(payload.keys()))
+        parts: list[str] = []
+        for key in keys:
+            parts.extend(flatten(payload.get(key)))
+        return "\n".join(part.strip() for part in parts if part and part.strip())
+
+    def _all_searchable_content_rows(self) -> list[dict[str, Any]]:
+        source_maps: tuple[tuple[str, dict[UUID, dict[str, Any]]], ...] = (
+            ("message", self.messages),
+            ("memory", self.memories),
+            ("observation", self.observations),
+            ("distillation", self.distillations),
+            ("artifact", self.conversation_artifacts),
+        )
+        rows: list[dict[str, Any]] = []
+        for source_type, source_rows in source_maps:
+            for source_id in source_rows:
+                searchable = self._searchable_content_row(source_type, source_id)
+                if searchable is not None:
+                    rows.append(searchable)
+        return rows
 
     def _render_searchable_projection(
         self, message: dict[str, Any], searchable: dict[str, Any]
@@ -561,14 +825,11 @@ class FakePool:
             "SELECT source_type, source_id, message_id, canonical_text FROM mediator.v_searchable_content"
         ):
             source_type, source_id = args
-            if source_type != "message":
-                return None
-            row = self.messages.get(source_id)
-            searchable = self._searchable_message_row(row) if row is not None else None
+            searchable = self._searchable_content_row(source_type, source_id)
             if searchable is None:
                 return None
             return {
-                "source_type": "message",
+                "source_type": source_type,
                 "source_id": source_id,
                 "message_id": searchable["message_id"],
                 "canonical_text": searchable["canonical_text"],
@@ -2848,9 +3109,122 @@ class FakePool:
             return self._project_searchable_rows(compact, *args)
         if "WITH ranked_ids AS" in compact and "JOIN mediator.v_searchable_messages m" in compact:
             return self._project_searchable_rows(compact, *args)
+        if "WITH ranked_sources AS" in compact and "JOIN mediator.v_searchable_content sc" in compact:
+            source_types = args[-2]
+            source_ids = args[-1]
+            bot_id = args[0] if args and isinstance(args[0], str) else None
+            topic_id = args[1] if "sc.topic_id = $" in compact and len(args) > 1 else None
+            thread_owner_user_id = (
+                args[1]
+                if "sc.thread_owner_user_id = $" in compact and len(args) > 1
+                else None
+            )
+            dyad_id = (
+                args[2]
+                if "(sc.dyad_id = $" in compact and len(args) > 2 and isinstance(args[2], UUID)
+                else None
+            )
+            rows = []
+            for source_type, source_id in zip(source_types, source_ids, strict=True):
+                searchable = self._searchable_content_row(source_type, source_id)
+                if searchable is None or searchable.get("source_type") == "message":
+                    continue
+                if not self._match_searchable_scope(
+                    searchable,
+                    bot_id=bot_id,
+                    viewer_id=None,
+                    participants=set(),
+                    topic_id=topic_id,
+                    thread_owner_user_id=thread_owner_user_id,
+                    dyad_id=dyad_id,
+                ):
+                    continue
+                rows.append(
+                    {
+                        "source_type": searchable["source_type"],
+                        "source_id": searchable["source_id"],
+                        "message_id": searchable["message_id"],
+                        "sender_id": searchable.get("sender_id"),
+                        "recipient_id": searchable.get("recipient_id"),
+                        "thread_owner_user_id": searchable.get("thread_owner_user_id"),
+                        "thread_owner_partner_share": searchable.get(
+                            "thread_owner_partner_share"
+                        ),
+                        "bot_id": searchable.get("bot_id"),
+                        "topic_id": searchable.get("topic_id"),
+                        "dyad_id": searchable.get("dyad_id"),
+                        "sent_at": searchable.get("sent_at"),
+                        "source_created_at": searchable.get("source_created_at")
+                        or searchable.get("sent_at"),
+                        "source_updated_at": searchable.get("source_updated_at")
+                        or searchable.get("sent_at"),
+                        "sort_at": searchable.get("sort_at")
+                        or searchable.get("sent_at"),
+                        "content": searchable.get("canonical_text"),
+                    }
+                )
+            return rows
+        if "FROM mediator.memories" in compact and "source_id" in compact:
+            source_ids = set(args[0])
+            return [
+                {
+                    "source_type": "memory",
+                    "source_id": row["id"],
+                    "status": row.get("status", "active"),
+                    "visibility": row.get("visibility", "private"),
+                    "bot_id": row.get("recorded_by_bot_id", "mediator"),
+                    "content": row.get("content"),
+                }
+                for row in self.memories.values()
+                if row.get("id") in source_ids
+            ]
+        if "FROM mediator.observations" in compact and "source_id" in compact:
+            source_ids = set(args[0])
+            return [
+                {
+                    "source_type": "observation",
+                    "source_id": row["id"],
+                    "status": row.get("status", "active"),
+                    "bot_id": row.get("recorded_by_bot_id", "mediator"),
+                    "supporting_message_ids": row.get("supporting_message_ids", []),
+                    "content": row.get("content"),
+                }
+                for row in self.observations.values()
+                if row.get("id") in source_ids
+            ]
+        if "FROM mediator.distillations" in compact and "source_id" in compact:
+            source_ids = set(args[0])
+            return [
+                {
+                    "source_type": "distillation",
+                    "source_id": row["id"],
+                    "status": row.get("status", "active"),
+                    "visibility": row.get("visibility", "private"),
+                    "bot_id": row.get("recorded_by_bot_id", "mediator"),
+                    "supporting_message_ids": row.get("supporting_message_ids", []),
+                    "content": row.get("content"),
+                }
+                for row in self.distillations.values()
+                if row.get("id") in source_ids
+            ]
+        if "FROM mediator.conversation_artifacts" in compact and "source_id" in compact:
+            source_ids = set(args[0])
+            return [
+                {
+                    "source_type": "artifact",
+                    "source_id": row["id"],
+                    "bot_id": row.get("bot_id", "mediator"),
+                    "artifact_type": row.get("artifact_type"),
+                    "deleted_at": row.get("deleted_at"),
+                }
+                for row in getattr(self, "conversation_artifacts", {}).values()
+                if row.get("id") in source_ids
+            ]
         if (
             "FROM mediator.v_searchable_messages m" in compact
             or "JOIN mediator.v_searchable_messages m" in compact
+            or "FROM mediator.v_searchable_content sc" in compact
+            or "JOIN mediator.v_searchable_content sc" in compact
         ):
             if "SELECT m.message_id AS id," in compact:
                 rows = []
@@ -2970,16 +3344,34 @@ class FakePool:
                     for term in query_text.replace('"', " ").split()
                     if term.strip()
                 ]
-            for message in self.messages.values():
-                searchable = self._searchable_message_row(message)
+            semantic_searchables: list[tuple[dict[str, Any], dict[str, Any]]] = []
+            if is_semantic:
+                for embedding in self.message_embeddings.values():
+                    source_type = embedding.get("source_type", "message")
+                    source_id = embedding.get("source_id") or embedding.get("message_id")
+                    if source_id is None:
+                        continue
+                    searchable = self._searchable_content_row(source_type, source_id)
+                    if searchable is None:
+                        continue
+                    semantic_searchables.append((searchable, embedding))
+
+            iterable = (
+                [(searchable, None) for searchable, _embedding in semantic_searchables]
+                if is_semantic
+                else [(searchable, None) for searchable in self._all_searchable_content_rows()]
+            )
+            for searchable, message in iterable:
                 if searchable is None:
                     continue
                 if not self._row_matches_retrieval_visibility(searchable, args):
                     continue
                 if is_semantic:
-                    embedding = self.message_embeddings.get(searchable["message_id"])
-                    if embedding is None:
-                        continue
+                    embedding = next(
+                        stored
+                        for candidate, stored in semantic_searchables
+                        if candidate is searchable
+                    )
                     model_args = [arg for arg in args if isinstance(arg, str)]
                     int_args = [arg for arg in args if isinstance(arg, int)]
                     model = model_args[0] if model_args else embedding.get("model")
@@ -2988,6 +3380,8 @@ class FakePool:
                         continue
                     rows.append(
                         {
+                            "source_type": searchable["source_type"],
+                            "source_id": searchable["source_id"],
                             "message_id": searchable["message_id"],
                             "sent_at": searchable["sent_at"],
                             "cosine_distance": embedding.get("cosine_distance", 0.0),
@@ -3000,9 +3394,11 @@ class FakePool:
                         continue
                     rows.append(
                         {
+                            "source_type": searchable["source_type"],
+                            "source_id": searchable["source_id"],
                             "message_id": searchable["message_id"],
                             "sent_at": searchable["sent_at"],
-                            "keyword_score": message.get("keyword_score", 1.0),
+                            "keyword_score": searchable.get("keyword_score", 1.0),
                             "keyword_rank": 0,
                         }
                     )
@@ -3011,7 +3407,8 @@ class FakePool:
                     key=lambda row: (
                         row["cosine_distance"],
                         row["sent_at"] or datetime.min.replace(tzinfo=UTC),
-                        row["message_id"],
+                        str(row["source_type"]),
+                        str(row["source_id"]),
                     ),
                     reverse=False,
                 )
@@ -3020,7 +3417,8 @@ class FakePool:
                     key=lambda row: (
                         -float(row["keyword_score"]),
                         row["sent_at"] or datetime.min.replace(tzinfo=UTC),
-                        row["message_id"],
+                        str(row["source_type"]),
+                        str(row["source_id"]),
                     ),
                     reverse=True,
                 )
@@ -3035,7 +3433,7 @@ class FakePool:
             # Keep vector-specific ANN behavior explicit: shared FakePool only
             # supports the production ANN shape joined through the searchable view.
             raise AssertionError(
-                "FakePool semantic retrieval must join mediator.v_searchable_messages"
+                "FakePool semantic retrieval must join mediator.v_searchable_content"
             )
         if "FROM mediator.embed_jobs" in compact and "FOR UPDATE SKIP LOCKED" in compact:
             now, limit, worker_id = args

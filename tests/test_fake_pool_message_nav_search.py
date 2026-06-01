@@ -376,7 +376,8 @@ async def test_fake_pool_search_and_search_messages_honor_visibility_metadata_an
     assert _message_id(12) not in {hit.id for hit in current_scope.hits}
     assert _message_id(13) not in {hit.id for hit in current_scope.hits}
     assert _message_id(15) not in {hit.id for hit in current_scope.hits}
-    assert all("mediator.v_searchable_messages" in sql for sql in fake_pool.fetch_sqls)
+    assert any("mediator.v_searchable_messages" in sql for sql in fake_pool.fetch_sqls)
+    assert not any("mediator.v_searchable_content" in sql for sql in fake_pool.fetch_sqls)
     assert not any(
         "FROM mediator.messages" in sql and "deleted_at" not in sql
         for sql in fake_pool.fetch_sqls

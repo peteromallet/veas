@@ -196,6 +196,11 @@ class Settings(BaseSettings):
     query_embed_cache_ttl_s: int = Field(default=300, ge=0, le=86400)
     query_embed_cache_max_entries: int = Field(default=1024, ge=0, le=100000)
     retrieval_hnsw_ef_search: int = Field(default=80, ge=1, le=10000)
+    # Source-type multipliers applied inside retrieval RRF fusion.  The default
+    # is intentionally inert for M2 because only message sources are rendered.
+    retrieval_source_weight_map: dict[str, float] = Field(
+        default_factory=lambda: {"message": 1.0}
+    )
     embedding_worker_enabled: bool = False
     embedding_worker_poll_interval_s: float = Field(default=5.0, gt=0.0, le=300.0)
     embedding_worker_batch_size: int = Field(default=32, ge=1, le=1000)
