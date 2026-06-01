@@ -4,14 +4,20 @@ from __future__ import annotations
 
 import logging
 import asyncio
+import base64
+import binascii
+import hashlib
+import json
 import re
-from datetime import UTC, datetime, timedelta
+from datetime import UTC, date as dt_date, datetime, timedelta
 from typing import Any, Literal
 from zoneinfo import ZoneInfo
+from uuid import UUID
 
 from app.services.cross_thread_privacy import raw_message_visibility
 from app.services.cross_thread_privacy import bridge_candidate_visible_to_target
 from app.services.partner_sharing import get_partner_share
+from app.services.retrieval import RetrievalQuery, hybrid_search
 from app.services.turn_context import TurnContext, scope_from_turn_context
 from app.config import get_settings
 from app.services.messaging import send_outbound_part
@@ -26,6 +32,7 @@ from app.services.tools.scope_guard import check_read_scope
 from app.services.tools.common import (
     add_date_range,
     distillation_row,
+    media_analysis_text,
     memory_row,
     message_hit,
     observation_row,
@@ -67,13 +74,25 @@ from tool_schemas import (
     ListThemesOutput,
     ListWatchItemsInput,
     ListWatchItemsOutput,
+    MessageNavHit,
+    MessageSpeaker,
+    MessagesAfterInput,
+    MessagesAfterOutput,
+    MessagesBeforeInput,
+    MessagesBeforeOutput,
+    OpenThreadInput,
+    OpenThreadOutput,
     RecentActivityInput,
     RecentActivityOutput,
     EmojiSearchHit,
+    SearchHit,
+    SearchMatchType,
     SearchMessagesInput,
     SearchMessagesOutput,
     SearchEmojisInput,
     SearchEmojisOutput,
+    ScrollInput,
+    ScrollOutput,
     ListAllRemindersInput,
     ListAllRemindersOutput,
     ReminderItem,
@@ -103,9 +122,17 @@ from tool_schemas import (
     ListConversationPlansOutput,
     ListConversationPlansRow,
     PlanItem,
+    TopicRecentInput,
+    TopicRecentOutput,
 )
 
 logger = logging.getLogger(__name__)
+
+_HEADER_MARKUP_RE = re.compile(r"[`*_#>\[\]\(\)]")
+_UUID_IN_TEXT_RE = re.compile(
+    r"\b[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}\b"
+)
+_CURSOR_ERROR_FIELD = "cursor"
 
 _EMOJI_FALLBACK = {
     "🫶": ("heart hands", ["care", "support", "tender", "warmth"]),
@@ -197,6 +224,1065 @@ def _time(
     if value_dt is None:
         return None
     return temporal_reference(value_dt, _ctx_timezone(ctx, timezone), now=_ctx_now(ctx))
+
+
+def _reject_cursor(
+    *,
+    error_code: str,
+    reason: str,
+    correction_hint: str,
+    retryable: bool = True,
+) -> None:
+    from app.services.tools.write_tools import ToolCallRejected  # noqa: PLC0415
+
+    raise ToolCallRejected(
+        {
+            "error": error_code,
+            "is_error": True,
+            "error_code": error_code,
+            "field": _CURSOR_ERROR_FIELD,
+            "reason": reason,
+            "correction_hint": correction_hint,
+            "retryable": retryable,
+            "failure_class": "tool_validation_recoverable",
+        }
+    )
+
+
+def _encode_cursor(payload: dict[str, Any]) -> str:
+    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    return base64.urlsafe_b64encode(encoded).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(
+    cursor: str, *, expected_kind: Literal["nav", "search_page"]
+) -> dict[str, Any]:
+    if not isinstance(cursor, str) or not cursor.strip():
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason="cursor is required and must be a non-empty string.",
+            correction_hint="Pass back the opaque cursor returned by a previous nav or search tool call.",
+        )
+    padding = "=" * (-len(cursor) % 4)
+    try:
+        raw = base64.urlsafe_b64decode(f"{cursor}{padding}".encode("ascii"))
+        payload = json.loads(raw.decode("utf-8"))
+    except (ValueError, UnicodeDecodeError, binascii.Error, json.JSONDecodeError):
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason="cursor is malformed or was not produced by this tool surface.",
+            correction_hint="Discard the bad cursor and restart from a fresh tool result.",
+        )
+    if not isinstance(payload, dict):
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason="cursor payload must decode to an object.",
+            correction_hint="Discard the bad cursor and restart from a fresh tool result.",
+        )
+    actual_kind = payload.get("kind")
+    if actual_kind != expected_kind:
+        _reject_cursor(
+            error_code="wrong_cursor_kind",
+            reason=f"expected a {expected_kind} cursor, got {actual_kind or 'unknown'}.",
+            correction_hint="Use a cursor returned by the same tool family. Nav cursors and search-page cursors are not interchangeable.",
+        )
+    return payload
+
+
+def _encode_nav_cursor(
+    *,
+    anchor_sent_at: datetime,
+    anchor_id: UUID,
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None = None,
+    thread_owner_user_id: UUID | None = None,
+) -> str:
+    payload = {
+        "kind": "nav",
+        "anchor_sent_at": anchor_sent_at.astimezone(UTC).isoformat(),
+        "anchor_id": str(anchor_id),
+        "scope": scope,
+    }
+    if topic_id is not None:
+        payload["topic_id"] = str(topic_id)
+    if thread_owner_user_id is not None:
+        payload["thread_owner_user_id"] = str(thread_owner_user_id)
+    return _encode_cursor(payload)
+
+
+def _decode_nav_cursor(cursor: str) -> dict[str, Any]:
+    return _decode_cursor(cursor, expected_kind="nav")
+
+
+def _encode_search_page_cursor(
+    *,
+    query_hash: str,
+    rank_offset: int,
+    scope: Literal["thread", "topic"],
+) -> str:
+    return _encode_cursor(
+        {
+            "kind": "search_page",
+            "query_hash": query_hash,
+            "rank_offset": rank_offset,
+            "scope": scope,
+        }
+    )
+
+
+def _decode_search_page_cursor(cursor: str) -> dict[str, Any]:
+    return _decode_cursor(cursor, expected_kind="search_page")
+
+
+def _reject_search_args(
+    *,
+    field: str,
+    error_code: str,
+    reason: str,
+    correction_hint: str,
+    retryable: bool = True,
+) -> None:
+    from app.services.tools.write_tools import ToolCallRejected  # noqa: PLC0415
+
+    raise ToolCallRejected(
+        {
+            "error": error_code,
+            "is_error": True,
+            "error_code": error_code,
+            "field": field,
+            "reason": reason,
+            "correction_hint": correction_hint,
+            "retryable": retryable,
+            "failure_class": "tool_validation_recoverable",
+        }
+    )
+
+
+def _normalized_search_query(query: str) -> str:
+    return " ".join(query.split())
+
+
+def _search_page_hash(
+    *,
+    query: str,
+    mode: Literal["exact", "semantic"],
+    scope: Literal["thread", "topic"],
+) -> str:
+    payload = json.dumps(
+        {
+            "mode": mode,
+            "query": _normalized_search_query(query),
+            "scope": scope,
+        },
+        separators=(",", ":"),
+        sort_keys=True,
+    )
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()
+
+
+def _validated_search_page_cursor(
+    args: Any,
+) -> tuple[int, str]:
+    query_hash = _search_page_hash(query=args.query, mode=args.mode, scope=args.scope)
+    if args.cursor is None:
+        return 0, query_hash
+    payload = _decode_search_page_cursor(args.cursor)
+    if payload.get("scope") != args.scope or payload.get("query_hash") != query_hash:
+        _reject_cursor(
+            error_code="search_cursor_mismatch",
+            reason="search cursor does not match this query, mode, or scope.",
+            correction_hint="Reuse the exact query/mode/scope from the page that produced this cursor, or restart the search from page one.",
+        )
+    rank_offset = payload.get("rank_offset")
+    if not isinstance(rank_offset, int) or rank_offset < 0:
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason="search cursor rank_offset is missing or invalid.",
+            correction_hint="Discard the bad cursor and restart from a fresh search result.",
+        )
+    return rank_offset, query_hash
+
+
+def _searchable_view_scope_filters(
+    ctx: TurnContext,
+    *,
+    initial_params: list[Any] | None = None,
+    next_param: int = 1,
+    topic_id: UUID | None = None,
+    thread_owner_user_id: UUID | None = None,
+    dyad_id: UUID | None = None,
+) -> tuple[list[str], list[Any], int]:
+    if ctx.bot_id is None:
+        raise ValueError("TurnContext is missing bot_id")
+    request = RetrievalQuery(
+        query="helper",
+        viewer_user_id=ctx.user.id,
+        partner_user_id=ctx.partner.id if ctx.partner is not None else None,
+        bot_id=ctx.bot_id,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+        dyad_id=dyad_id,
+        mode="exact",
+        limit=1,
+    )
+    return _searchable_view_filters_from_request(
+        request,
+        initial_params=initial_params,
+        next_param=next_param,
+    )
+
+
+def _searchable_view_filters_from_request(
+    request: RetrievalQuery,
+    *,
+    initial_params: list[Any] | None = None,
+    next_param: int = 1,
+) -> tuple[list[str], list[Any], int]:
+    params = list(initial_params or [])
+    participant_ids = [request.viewer_user_id]
+    if request.partner_user_id is not None:
+        participant_ids.append(request.partner_user_id)
+
+    bot_param = next_param
+    params.append(request.bot_id)
+    next_param += 1
+
+    viewer_param = next_param
+    params.append(request.viewer_user_id)
+    next_param += 1
+
+    participants_param = next_param
+    params.append(participant_ids)
+    next_param += 1
+
+    filters = [
+        f"m.bot_id = ${bot_param}",
+        f"m.thread_owner_user_id = ANY(${participants_param}::uuid[])",
+        (
+            f"(m.sender_id = ANY(${participants_param}::uuid[]) "
+            f"OR m.recipient_id = ANY(${participants_param}::uuid[]))"
+        ),
+        (
+            f"(m.thread_owner_user_id = ${viewer_param} "
+            "OR m.thread_owner_partner_share = 'opt_in')"
+        ),
+        """
+        NOT EXISTS (
+            SELECT 1
+            FROM mediator.out_of_bounds x
+            WHERE x.owner_id = m.thread_owner_user_id
+              AND x.status = 'active'
+              AND x.severity IN ('firm', 'hard')
+        )
+        """,
+    ]
+
+    if request.topic_id is not None:
+        filters.append(f"m.topic_id = ${next_param}")
+        params.append(request.topic_id)
+        next_param += 1
+
+    if request.thread_owner_user_id is not None:
+        filters.append(f"m.thread_owner_user_id = ${next_param}")
+        params.append(request.thread_owner_user_id)
+        next_param += 1
+
+    if request.dyad_id is not None:
+        filters.append(f"m.dyad_id = ${next_param}")
+        params.append(request.dyad_id)
+        next_param += 1
+
+    return filters, params, next_param
+
+
+def _add_searchable_sent_at_filters(
+    ctx: TurnContext,
+    clauses: list[str],
+    params: list[Any],
+    *,
+    local_day: Literal["today", "yesterday"] | dt_date | None = None,
+    timezone: str | None = None,
+    date_range: DateRange | None = None,
+    column: str = "m.sent_at",
+) -> None:
+    if local_day is not None and date_range is not None:
+        raise ValueError("Use either local_day or date_range, not both.")
+    if local_day is not None:
+        start, end = local_day_bounds_utc(
+            local_day,
+            _ctx_timezone(ctx, timezone),
+            now=_ctx_now(ctx),
+        )
+        params.extend([start, end])
+        clauses.append(f"{column} >= ${len(params) - 1}")
+        clauses.append(f"{column} < ${len(params)}")
+        return
+    add_date_range(clauses, params, column, date_range)
+
+
+def _spoken_safe_label(label: str) -> str:
+    collapsed = _HEADER_MARKUP_RE.sub("", label or "").strip()
+    collapsed = _UUID_IN_TEXT_RE.sub("message", collapsed)
+    return " ".join(collapsed.split()) or "Unknown"
+
+
+def _spoken_header(
+    label: str,
+    *,
+    sent_at: datetime | str | None,
+    ctx: TurnContext,
+    timezone: str | None = None,
+) -> str:
+    sent_dt = _coerce_datetime(sent_at)
+    if sent_dt is None:
+        return f"{_spoken_safe_label(label)}:"
+    tz = ZoneInfo(_ctx_timezone(ctx, timezone))
+    local = sent_dt.astimezone(tz)
+    ref = _time(sent_dt, ctx, timezone=timezone) or {}
+    day_label = ref.get("local_day_label")
+    if day_label in {None, "", local.date().isoformat()}:
+        day_text = local.strftime("%A")
+    else:
+        day_text = str(day_label)
+    time_text = local.strftime("%I:%M %p").lstrip("0")
+    zone_text = str(tz.key).split("/")[-1].replace("_", " ")
+    return f"{_spoken_safe_label(label)}, {day_text} {time_text} {zone_text}:"
+
+
+def _edit_history_original(row: Any) -> str | None:
+    history = value(row, "edit_history")
+    if not isinstance(history, list) or not history:
+        return None
+    first = history[0]
+    if not isinstance(first, dict):
+        return None
+    original = first.get("content")
+    return original if isinstance(original, str) and original.strip() else None
+
+
+def _message_speaker(row: Any, ctx: TurnContext) -> MessageSpeaker:
+    sender_id = value(row, "sender_id")
+    direction = value(row, "direction", "inbound")
+    if direction == "inbound" and sender_id == ctx.user.id:
+        return MessageSpeaker(label="You", user_id=ctx.user.id, direction=direction)
+    if direction == "inbound" and ctx.partner is not None and sender_id == ctx.partner.id:
+        return MessageSpeaker(
+            label=ctx.partner.name or "Partner",
+            user_id=ctx.partner.id,
+            direction=direction,
+        )
+    bot_name = getattr(ctx.bot_spec, "display_name", None) or "Veas"
+    return MessageSpeaker(label=bot_name, user_id=None, direction=direction)
+
+
+def _render_message_nav_hit(
+    row: Any,
+    ctx: TurnContext,
+    *,
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None = None,
+    thread_owner_user_id: UUID | None = None,
+    timezone: str | None = None,
+) -> MessageNavHit:
+    sent_at = _coerce_datetime(value(row, "sent_at"))
+    if sent_at is None:
+        raise ValueError("message row is missing sent_at")
+    message_id = value(row, "message_id")
+    if message_id is None:
+        raise ValueError("message row is missing message_id")
+    speaker = _message_speaker(row, ctx)
+    return MessageNavHit(
+        message_id=message_id,
+        cursor=_encode_nav_cursor(
+            anchor_sent_at=sent_at,
+            anchor_id=message_id,
+            scope=scope,
+            topic_id=topic_id,
+            thread_owner_user_id=thread_owner_user_id,
+        ),
+        speaker=speaker,
+        sent_at=sent_at,
+        sent_at_time=_time(sent_at, ctx, timezone=timezone),
+        charge=value(row, "charge", "routine"),
+        edited_at=_coerce_datetime(value(row, "edited_at")),
+        edit_history_original=_edit_history_original(row),
+        header=_spoken_header(
+            speaker.label, sent_at=sent_at, ctx=ctx, timezone=timezone
+        ),
+        content=(value(row, "content", "") or media_analysis_text(row)),
+    )
+
+
+def _render_search_hit(
+    row: Any,
+    ctx: TurnContext,
+    *,
+    scope: Literal["thread", "topic"],
+    match_type: SearchMatchType,
+    snippet: str,
+    why_matched: str | None = None,
+    topic_id: UUID | None = None,
+    thread_owner_user_id: UUID | None = None,
+    timezone: str | None = None,
+) -> SearchHit:
+    nav_hit = _render_message_nav_hit(
+        row,
+        ctx,
+        scope=scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+        timezone=timezone,
+    )
+    return SearchHit(
+        message_id=nav_hit.message_id,
+        cursor=nav_hit.cursor,
+        speaker=nav_hit.speaker,
+        sent_at=nav_hit.sent_at,
+        sent_at_time=nav_hit.sent_at_time,
+        charge=nav_hit.charge,
+        edited_at=nav_hit.edited_at,
+        edit_history_original=nav_hit.edit_history_original,
+        header=nav_hit.header,
+        snippet=snippet,
+        match_type=match_type,
+        why_matched=why_matched,
+    )
+
+
+def _snippet_excerpt(
+    text: str,
+    *,
+    start: int | None = None,
+    end: int | None = None,
+    radius: int = 70,
+    max_len: int = 180,
+) -> str:
+    cleaned = " ".join(text.split())
+    if not cleaned:
+        return ""
+    if start is None or end is None:
+        return cleaned if len(cleaned) <= max_len else f"{cleaned[: max_len - 1].rstrip()}…"
+    left = max(start - radius, 0)
+    right = min(end + radius, len(cleaned))
+    excerpt = cleaned[left:right].strip()
+    if left > 0:
+        excerpt = f"…{excerpt}"
+    if right < len(cleaned):
+        excerpt = f"{excerpt}…"
+    return excerpt
+
+
+def _search_snippet(row: Any, query: str) -> str:
+    text = (value(row, "content", "") or media_analysis_text(row) or "").strip()
+    if not text:
+        return ""
+    normalized_query = _normalized_search_query(query)
+    if normalized_query:
+        lower_text = text.casefold()
+        lower_query = normalized_query.casefold()
+        index = lower_text.find(lower_query)
+        if index >= 0:
+            return _snippet_excerpt(text, start=index, end=index + len(normalized_query))
+        for term in normalized_query.split():
+            index = lower_text.find(term.casefold())
+            if index >= 0:
+                return _snippet_excerpt(text, start=index, end=index + len(term))
+    return _snippet_excerpt(text)
+
+
+def _why_matched(
+    *,
+    match_type: Literal["exact", "semantic", "both"],
+    semantic_degraded: bool,
+) -> str:
+    if semantic_degraded:
+        return "Matched exact words while semantic retrieval was unavailable."
+    if match_type == "both":
+        return "Matched both exact words and semantic neighbors."
+    if match_type == "semantic":
+        return "Matched semantically related wording."
+    return "Matched exact words in the message text."
+
+
+def _search_scope_kwargs(
+    ctx: TurnContext, scope: Literal["thread", "topic"]
+) -> tuple[UUID | None, UUID | None]:
+    if scope == "topic":
+        if ctx.primary_topic_id is None:
+            raise ValueError("TurnContext is missing primary_topic_id")
+        return ctx.primary_topic_id, None
+    return None, ctx.user.id
+
+
+async def _hydrate_search_rows(
+    ctx: TurnContext,
+    *,
+    message_ids: list[UUID],
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None,
+    thread_owner_user_id: UUID | None,
+) -> list[dict[str, Any]]:
+    if not message_ids:
+        return []
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    params.append(message_ids)
+    ids_param = next_param
+    rows = await ctx.pool.fetch(
+        f"""
+        WITH ranked_ids AS (
+            SELECT ranked.message_id, ranked.ordinality
+            FROM unnest(${ids_param}::uuid[]) WITH ORDINALITY AS ranked(message_id, ordinality)
+        )
+        SELECT
+            m.message_id,
+            m.sender_id,
+            m.recipient_id,
+            m.thread_owner_user_id,
+            m.thread_owner_partner_share,
+            m.bot_id,
+            m.topic_id,
+            m.dyad_id,
+            m.direction,
+            m.sent_at,
+            m.content,
+            m.media_analysis,
+            m.charge,
+            m.edited_at,
+            m.edit_history
+        FROM ranked_ids
+        JOIN mediator.v_searchable_messages m ON m.message_id = ranked_ids.message_id
+        WHERE {" AND ".join(clauses)}
+        ORDER BY ranked_ids.ordinality ASC
+        """,
+        *params,
+    )
+    return [dict(row) for row in rows]
+
+
+def _message_select_sql(where_sql: str, *, order_sql: str, limit_param: int) -> str:
+    return f"""
+        SELECT
+            m.message_id,
+            m.sender_id,
+            m.recipient_id,
+            m.thread_owner_user_id,
+            m.thread_owner_partner_share,
+            m.bot_id,
+            m.topic_id,
+            m.dyad_id,
+            m.direction,
+            m.sent_at,
+            m.content,
+            m.media_analysis,
+            m.charge,
+            m.edited_at,
+            m.edit_history
+        FROM mediator.v_searchable_messages m
+        WHERE {where_sql}
+        ORDER BY {order_sql}
+        LIMIT ${limit_param}
+    """
+
+
+def _nav_cursor_uuid(payload: dict[str, Any], key: str) -> UUID | None:
+    raw = payload.get(key)
+    if raw in (None, ""):
+        return None
+    try:
+        return UUID(str(raw))
+    except ValueError:
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason=f"cursor field {key} is not a valid UUID.",
+            correction_hint="Discard the bad cursor and restart from a fresh nav result.",
+        )
+    return None
+
+
+def _nav_cursor_datetime(payload: dict[str, Any], key: str) -> datetime:
+    value_ = _coerce_datetime(payload.get(key))
+    if value_ is None:
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason=f"cursor field {key} is missing or invalid.",
+            correction_hint="Discard the bad cursor and restart from a fresh nav result.",
+        )
+    return value_
+
+
+def _current_anchor_payload(ctx: TurnContext) -> dict[str, Any] | None:
+    extras = ctx.extras or {}
+    for key in ("hot_context_edge", "current_anchor"):
+        payload = extras.get(key)
+        if isinstance(payload, dict):
+            return payload
+    return None
+
+
+def _raise_missing_current_anchor() -> None:
+    _reject_cursor(
+        error_code="missing_current_anchor",
+        reason="The current hot-context edge is not available on this turn.",
+        correction_hint="Use a concrete message id or retry after the turn publishes a current anchor.",
+    )
+
+
+async def _resolve_topic_anchor_row(
+    ctx: TurnContext, anchor: UUID | Literal["current"]
+) -> dict[str, Any]:
+    if ctx.primary_topic_id is None:
+        raise ValueError("TurnContext is missing primary_topic_id")
+    if anchor == "current":
+        payload = _current_anchor_payload(ctx)
+        if payload is None:
+            _raise_missing_current_anchor()
+        message_id = payload.get("message_id") or payload.get("id")
+        sent_at = _coerce_datetime(payload.get("sent_at"))
+        if message_id is None or sent_at is None:
+            _raise_missing_current_anchor()
+        return {
+            "message_id": UUID(str(message_id)),
+            "sent_at": sent_at,
+            "topic_id": ctx.primary_topic_id,
+        }
+
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=ctx.primary_topic_id,
+    )
+    params.append(anchor)
+    row = await ctx.pool.fetchrow(
+        _message_select_sql(
+            " AND ".join([*clauses, f"m.message_id = ${next_param}"]),
+            order_sql="m.sent_at ASC, m.message_id ASC",
+            limit_param=next_param + 1,
+        ),
+        *params,
+        1,
+    )
+    if row is None:
+        from app.services.tools.write_tools import ToolCallRejected  # noqa: PLC0415
+
+        raise ToolCallRejected(
+            {
+                "error": "anchor_not_found",
+                "is_error": True,
+                "error_code": "anchor_not_found",
+                "field": "anchor",
+                "reason": "The anchor message is not visible in the current topic scope.",
+                "correction_hint": "Use a visible message id from this topic, or choose another nav tool result.",
+                "retryable": True,
+                "failure_class": "tool_validation_recoverable",
+            }
+        )
+    return dict(row)
+
+
+async def _resolve_thread_anchor_row(
+    ctx: TurnContext, around: UUID | dt_date | Literal["latest"]
+) -> dict[str, Any] | None:
+    if ctx.primary_topic_id is None:
+        raise ValueError("TurnContext is missing primary_topic_id")
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=ctx.primary_topic_id,
+    )
+    if isinstance(around, UUID):
+        params.append(around)
+        sql = _message_select_sql(
+            " AND ".join([*clauses, f"m.message_id = ${next_param}"]),
+            order_sql="m.sent_at ASC, m.message_id ASC",
+            limit_param=next_param + 1,
+        )
+        row = await ctx.pool.fetchrow(sql, *params, 1)
+        return dict(row) if row is not None else None
+
+    order_sql = "m.sent_at DESC, m.message_id DESC"
+    if around == "latest":
+        sql = _message_select_sql(
+            " AND ".join(clauses),
+            order_sql=order_sql,
+            limit_param=next_param,
+        )
+        row = await ctx.pool.fetchrow(sql, *params, 1)
+        return dict(row) if row is not None else None
+
+    _add_searchable_sent_at_filters(
+        ctx,
+        clauses,
+        params,
+        local_day=around,
+        column="m.sent_at",
+    )
+    sql = _message_select_sql(
+        " AND ".join(clauses),
+        order_sql=order_sql,
+        limit_param=len(params) + 1,
+    )
+    row = await ctx.pool.fetchrow(sql, *params, 1)
+    return dict(row) if row is not None else None
+
+
+def _nav_output_cursor(
+    rows: list[dict[str, Any]],
+    *,
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None = None,
+    thread_owner_user_id: UUID | None = None,
+    row_index: int,
+) -> str | None:
+    if not rows:
+        return None
+    row = rows[row_index]
+    return _encode_nav_cursor(
+        anchor_sent_at=_coerce_datetime(row["sent_at"]) or datetime.now(UTC),
+        anchor_id=row["message_id"],
+        scope=scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+
+
+async def messages_before(
+    ctx: TurnContext, args: MessagesBeforeInput
+) -> MessagesBeforeOutput:
+    logger.info("read tool messages_before turn_id=%s", ctx.turn_id)
+    anchor_row = await _resolve_topic_anchor_row(ctx, args.anchor)
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=ctx.primary_topic_id,
+    )
+    params.extend([anchor_row["sent_at"], anchor_row["message_id"], args.n])
+    rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(
+                [
+                    *clauses,
+                    f"(m.sent_at, m.message_id) < (${next_param}, ${next_param + 1})",
+                ]
+            ),
+            order_sql="m.sent_at DESC, m.message_id DESC",
+            limit_param=next_param + 2,
+        ),
+        *params,
+    )
+    ordered_rows = [dict(row) for row in reversed(list(rows))]
+    return MessagesBeforeOutput(
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope="topic",
+                topic_id=ctx.primary_topic_id,
+            )
+            for row in ordered_rows
+        ],
+        cursor=_nav_output_cursor(
+            ordered_rows,
+            scope="topic",
+            topic_id=ctx.primary_topic_id,
+            row_index=0,
+        ),
+    )
+
+
+async def messages_after(
+    ctx: TurnContext, args: MessagesAfterInput
+) -> MessagesAfterOutput:
+    logger.info("read tool messages_after turn_id=%s", ctx.turn_id)
+    anchor_row = await _resolve_topic_anchor_row(ctx, args.anchor)
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=ctx.primary_topic_id,
+    )
+    params.extend([anchor_row["sent_at"], anchor_row["message_id"], args.n])
+    rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(
+                [
+                    *clauses,
+                    f"(m.sent_at, m.message_id) > (${next_param}, ${next_param + 1})",
+                ]
+            ),
+            order_sql="m.sent_at ASC, m.message_id ASC",
+            limit_param=next_param + 2,
+        ),
+        *params,
+    )
+    ordered_rows = [dict(row) for row in rows]
+    return MessagesAfterOutput(
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope="topic",
+                topic_id=ctx.primary_topic_id,
+            )
+            for row in ordered_rows
+        ],
+        cursor=_nav_output_cursor(
+            ordered_rows,
+            scope="topic",
+            topic_id=ctx.primary_topic_id,
+            row_index=-1,
+        ),
+    )
+
+
+async def open_thread(ctx: TurnContext, args: OpenThreadInput) -> OpenThreadOutput:
+    logger.info("read tool open_thread turn_id=%s", ctx.turn_id)
+    anchor_row = await _resolve_thread_anchor_row(ctx, args.around)
+    if anchor_row is None:
+        return OpenThreadOutput(messages=[], cursor=None)
+    thread_owner_user_id = anchor_row["thread_owner_user_id"]
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    before_n = max((args.n - 1) // 2, 0)
+    after_n = max(args.n - before_n, 1)
+
+    before_rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(
+                [
+                    *clauses,
+                    f"(m.sent_at, m.message_id) <= (${next_param}, ${next_param + 1})",
+                ]
+            ),
+            order_sql="m.sent_at DESC, m.message_id DESC",
+            limit_param=next_param + 2,
+        ),
+        *params,
+        anchor_row["sent_at"],
+        anchor_row["message_id"],
+        before_n + 1,
+    )
+    after_rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(
+                [
+                    *clauses,
+                    f"(m.sent_at, m.message_id) > (${next_param}, ${next_param + 1})",
+                ]
+            ),
+            order_sql="m.sent_at ASC, m.message_id ASC",
+            limit_param=next_param + 2,
+        ),
+        *params,
+        anchor_row["sent_at"],
+        anchor_row["message_id"],
+        after_n - 1,
+    )
+    older_segment = list(reversed([dict(row) for row in before_rows]))
+    if len(older_segment) > before_n + 1:
+        older_segment = older_segment[-(before_n + 1) :]
+    ordered_rows = [*older_segment, *[dict(row) for row in after_rows]]
+    return OpenThreadOutput(
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope="thread",
+                thread_owner_user_id=thread_owner_user_id,
+            )
+            for row in ordered_rows
+        ],
+        cursor=_encode_nav_cursor(
+            anchor_sent_at=anchor_row["sent_at"],
+            anchor_id=anchor_row["message_id"],
+            scope="thread",
+            thread_owner_user_id=thread_owner_user_id,
+        ),
+    )
+
+
+async def scroll(ctx: TurnContext, args: ScrollInput) -> ScrollOutput:
+    logger.info("read tool scroll turn_id=%s", ctx.turn_id)
+    payload = _decode_nav_cursor(args.cursor)
+    scope = payload["scope"]
+    if scope not in {"thread", "topic"}:
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason=f"unknown nav cursor scope {scope!r}.",
+            correction_hint="Discard the bad cursor and restart from a fresh nav result.",
+        )
+    topic_id = _nav_cursor_uuid(payload, "topic_id")
+    thread_owner_user_id = _nav_cursor_uuid(payload, "thread_owner_user_id")
+    clauses, params, next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=topic_id if scope == "topic" else None,
+        thread_owner_user_id=thread_owner_user_id if scope == "thread" else None,
+    )
+    anchor_sent_at = _nav_cursor_datetime(payload, "anchor_sent_at")
+    anchor_id = _nav_cursor_uuid(payload, "anchor_id")
+    if anchor_id is None:
+        _reject_cursor(
+            error_code="invalid_cursor",
+            reason="cursor is missing anchor_id.",
+            correction_hint="Discard the bad cursor and restart from a fresh nav result.",
+        )
+    comparison = "<" if args.direction == "older" else ">"
+    order_sql = (
+        "m.sent_at DESC, m.message_id DESC"
+        if args.direction == "older"
+        else "m.sent_at ASC, m.message_id ASC"
+    )
+    params.extend([anchor_sent_at, anchor_id, args.n])
+    rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(
+                [
+                    *clauses,
+                    f"(m.sent_at, m.message_id) {comparison} (${next_param}, ${next_param + 1})",
+                ]
+            ),
+            order_sql=order_sql,
+            limit_param=next_param + 2,
+        ),
+        *params,
+    )
+    ordered_rows = [dict(row) for row in rows]
+    if args.direction == "older":
+        ordered_rows.reverse()
+        cursor_index = 0
+    else:
+        cursor_index = -1
+    return ScrollOutput(
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope=scope,
+                topic_id=topic_id if scope == "topic" else None,
+                thread_owner_user_id=thread_owner_user_id if scope == "thread" else None,
+            )
+            for row in ordered_rows
+        ],
+        cursor=_nav_output_cursor(
+            ordered_rows,
+            scope=scope,
+            topic_id=topic_id if scope == "topic" else None,
+            thread_owner_user_id=thread_owner_user_id if scope == "thread" else None,
+            row_index=cursor_index,
+        ),
+    )
+
+
+async def topic_recent(
+    ctx: TurnContext, args: TopicRecentInput
+) -> TopicRecentOutput:
+    logger.info("read tool topic_recent turn_id=%s", ctx.turn_id)
+    topic_id = args.topic_id or ctx.primary_topic_id
+    if topic_id is None:
+        raise ValueError("TurnContext is missing primary_topic_id")
+    clauses, params, next_param = _searchable_view_scope_filters(ctx, topic_id=topic_id)
+    params.append(args.n)
+    rows = await ctx.pool.fetch(
+        _message_select_sql(
+            " AND ".join(clauses),
+            order_sql="m.sent_at DESC, m.message_id DESC",
+            limit_param=next_param,
+        ),
+        *params,
+    )
+    ordered_rows = [dict(row) for row in rows]
+    return TopicRecentOutput(
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope="topic",
+                topic_id=topic_id,
+            )
+            for row in ordered_rows
+        ],
+        cursor=_nav_output_cursor(
+            ordered_rows,
+            scope="topic",
+            topic_id=topic_id,
+            row_index=-1,
+        ),
+    )
+
+
+async def search(ctx: TurnContext, args: Any) -> Any:
+    logger.info("read tool search turn_id=%s", ctx.turn_id)
+    query = _normalized_search_query(args.query)
+    if not query:
+        _reject_search_args(
+            field="query",
+            error_code="empty_query",
+            reason="query must include at least one non-whitespace character.",
+            correction_hint="Provide a short phrase, keyword, or idea to search for.",
+        )
+
+    rank_offset, query_hash = _validated_search_page_cursor(args)
+    topic_id, thread_owner_user_id = _search_scope_kwargs(ctx, args.scope)
+    retrieval_mode = "hybrid" if args.mode == "semantic" else "exact"
+    ranked = await hybrid_search(
+        ctx.pool,
+        RetrievalQuery(
+            query=query,
+            viewer_user_id=ctx.user.id,
+            partner_user_id=ctx.partner.id if ctx.partner is not None else None,
+            bot_id=ctx.bot_id or "",
+            topic_id=topic_id,
+            thread_owner_user_id=thread_owner_user_id,
+            dyad_id=ctx.dyad_id,
+            mode=retrieval_mode,
+            limit=rank_offset + args.limit + 1,
+        ),
+    )
+    page_ranked = ranked[rank_offset : rank_offset + args.limit + 1]
+    page_results = page_ranked[: args.limit]
+    hydrated_rows = await _hydrate_search_rows(
+        ctx,
+        message_ids=[result.message_id for result in page_results],
+        scope=args.scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    rows_by_id = {row["message_id"]: row for row in hydrated_rows}
+    hits = []
+    for result in page_results:
+        row = rows_by_id.get(result.message_id)
+        if row is None:
+            continue
+        hits.append(
+            _render_search_hit(
+                row,
+                ctx,
+                scope=args.scope,
+                topic_id=topic_id,
+                thread_owner_user_id=thread_owner_user_id,
+                match_type=SearchMatchType(result.match_type),
+                snippet=_search_snippet(row, query),
+                why_matched=_why_matched(
+                    match_type=result.match_type,
+                    semantic_degraded=result.semantic_degraded,
+                ),
+            )
+        )
+    has_more = len(page_ranked) > args.limit
+    next_cursor = None
+    if has_more:
+        next_cursor = _encode_search_page_cursor(
+            query_hash=query_hash,
+            rank_offset=rank_offset + len(page_results),
+            scope=args.scope,
+        )
+    from tool_schemas import SearchOutput  # noqa: PLC0415
+
+    return SearchOutput(
+        hits=hits,
+        truncated=has_more,
+        next_cursor=next_cursor,
+    )
 
 
 def _with_audit_event_times(events: list[dict], ctx: TurnContext) -> list[dict]:
@@ -421,66 +1507,48 @@ async def search_messages(
     dyad_ids = set(participant_ids)
     if args.partner_user_id is not None and args.partner_user_id not in dyad_ids:
         return SearchMessagesOutput(hits=[], truncated=False)
-    clauses = ["deleted_at IS NULL", "search_suppressed_at IS NULL"]
-    params: list[Any] = []
-    if args.partner_user_id is not None:
-        params.append(args.partner_user_id)
-        clauses.append(f"(sender_id = ${len(params)} OR recipient_id = ${len(params)})")
-    else:
-        params.append(participant_ids)
-        clauses.append(
-            f"(sender_id = ANY(${len(params)}::uuid[]) OR recipient_id = ANY(${len(params)}::uuid[]))"
-        )
-    params.append(ctx.bot_id)
-    clauses.append(f"bot_id = ${len(params)}")
-    params.append(ctx.primary_topic_id)
-    clauses.append(f"topic_id = ${len(params)}")
+
+    clauses, params, _next_param = _searchable_view_scope_filters(
+        ctx,
+        topic_id=ctx.primary_topic_id,
+        thread_owner_user_id=args.partner_user_id,
+        dyad_id=ctx.dyad_id,
+    )
     if args.text_contains:
         params.append(f"%{args.text_contains}%")
-        clauses.append(
-            f"""(
-                content ILIKE ${len(params)}
-                OR media_analysis->>'explanation' ILIKE ${len(params)}
-                OR media_analysis->>'description' ILIKE ${len(params)}
-                OR media_analysis->>'summary' ILIKE ${len(params)}
-            )"""
-        )
-    if args.local_day is not None:
-        start, end = local_day_bounds_utc(
-            args.local_day, _ctx_timezone(ctx, args.timezone), now=_ctx_now(ctx)
-        )
-        params.extend([start, end])
-        clauses.append(f"sent_at >= ${len(params) - 1}")
-        clauses.append(f"sent_at < ${len(params)}")
-    else:
-        add_date_range(clauses, params, "sent_at", args.date_range)
+        clauses.append(f"m.canonical_text ILIKE ${len(params)}")
+    _add_searchable_sent_at_filters(
+        ctx,
+        clauses,
+        params,
+        local_day=args.local_day,
+        timezone=args.timezone,
+        date_range=args.date_range,
+        column="m.sent_at",
+    )
     params.append(args.limit)
     rows = await ctx.pool.fetch(
         f"""
-        SELECT id, sender_id, recipient_id, sent_at, content, media_type, media_analysis, bot_id, topic_id,
-               COALESCE(charge, 'routine') AS charge, direction
-        FROM messages
+        SELECT
+            m.message_id AS id,
+            m.sender_id,
+            m.recipient_id,
+            m.sent_at,
+            m.content,
+            m.media_type,
+            m.media_analysis,
+            m.bot_id,
+            m.topic_id,
+            m.charge,
+            m.direction
+        FROM mediator.v_searchable_messages m
         WHERE {' AND '.join(clauses)}
-        ORDER BY sent_at DESC
+        ORDER BY m.sent_at DESC, m.message_id DESC
         LIMIT ${len(params)}
         """,
         *params,
     )
-    partner_share_by_user = await _partner_share_by_user_for_current_bot(ctx)
-    hits = []
-    for row in rows:
-        if not _message_in_current_scope(row, ctx):
-            continue
-        owner_id = _message_thread_owner_id(row)
-        if owner_id not in dyad_ids:
-            continue
-        if not raw_message_visibility(
-            viewer_user_id=ctx.user.id,
-            thread_owner_user_id=owner_id,
-            thread_owner_partner_share=partner_share_by_user.get(owner_id),
-        ).visible:
-            continue
-        hits.append(message_hit(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)))
+    hits = [message_hit(row, timezone=_ctx_timezone(ctx), now=_ctx_now(ctx)) for row in rows]
     return SearchMessagesOutput(hits=hits, truncated=len(rows) == args.limit)
 
 

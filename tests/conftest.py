@@ -204,6 +204,7 @@ class FakePool:
         # S7: Hector fitness — commitments and events tables (T15).
         self.commitments: dict[UUID, dict[str, Any]] = {}
         self.events: dict[UUID, dict[str, Any]] = {}
+        self.fetch_sqls: list[str] = []
 
     def _canonical_searchable_text(self, row: dict[str, Any]) -> str:
         if "canonical_text" in row:
@@ -234,24 +235,220 @@ class FakePool:
             return None
         if row.get("search_suppressed_at") is not None:
             return None
+        direction = row.get("direction")
+        if row.get("thread_owner_user_id") is not None:
+            thread_owner_user_id = row.get("thread_owner_user_id")
+        elif direction == "inbound" and row.get("sender_id") is not None:
+            thread_owner_user_id = row.get("sender_id")
+        elif direction == "outbound" and row.get("recipient_id") is not None:
+            thread_owner_user_id = row.get("recipient_id")
+        else:
+            thread_owner_user_id = row.get("sender_id") or row.get("recipient_id")
+        bot_id = row["bot_id"] if "bot_id" in row else "mediator"
+        partner_share = row.get("thread_owner_partner_share")
+        if partner_share is None and thread_owner_user_id is not None:
+            partner_share = (
+                self.user_bot_state.get((thread_owner_user_id, bot_id), {}).get(
+                    "partner_share"
+                )
+            )
         return {
             "message_id": row["id"],
             "canonical_text": self._canonical_searchable_text(row),
             "sent_at": row.get("sent_at"),
             "sender_id": row.get("sender_id"),
             "recipient_id": row.get("recipient_id"),
-            "bot_id": row.get("bot_id", "mediator"),
+            "bot_id": bot_id,
             "topic_id": row.get(
                 "topic_id", UUID("00000000-0000-4000-8000-000000000001")
             ),
             "dyad_id": row.get("dyad_id"),
-            "thread_owner_user_id": row.get("thread_owner_user_id")
-            or row.get("sender_id"),
-            "thread_owner_partner_share": row.get(
-                "thread_owner_partner_share", row.get("partner_share", "private")
-            ),
+            "thread_owner_user_id": thread_owner_user_id,
+            "thread_owner_partner_share": partner_share or row.get("partner_share", "unset"),
             "active_oob_severity": row.get("active_oob_severity"),
         }
+
+    def _render_searchable_projection(
+        self, message: dict[str, Any], searchable: dict[str, Any]
+    ) -> dict[str, Any]:
+        return {
+            "message_id": searchable["message_id"],
+            "sender_id": searchable.get("sender_id"),
+            "recipient_id": searchable.get("recipient_id"),
+            "thread_owner_user_id": searchable.get("thread_owner_user_id"),
+            "thread_owner_partner_share": searchable.get(
+                "thread_owner_partner_share"
+            ),
+            "bot_id": searchable.get("bot_id"),
+            "topic_id": searchable.get("topic_id"),
+            "dyad_id": searchable.get("dyad_id"),
+            "direction": message.get("direction"),
+            "sent_at": searchable.get("sent_at"),
+            "content": message.get("content"),
+            "media_type": message.get("media_type"),
+            "media_analysis": message.get("media_analysis"),
+            "charge": message.get("charge", "routine") or "routine",
+            "edited_at": message.get("edited_at"),
+            "edit_history": message.get("edit_history"),
+        }
+
+    def _match_searchable_scope(
+        self,
+        searchable: dict[str, Any],
+        *,
+        bot_id: str | None,
+        viewer_id: UUID | None,
+        participants: set[UUID],
+        topic_id: UUID | None,
+        thread_owner_user_id: UUID | None,
+        dyad_id: UUID | None,
+    ) -> bool:
+        if bot_id is not None and searchable.get("bot_id") != bot_id:
+            return False
+        if participants:
+            if searchable.get("thread_owner_user_id") not in participants:
+                return False
+            if (
+                searchable.get("sender_id") not in participants
+                and searchable.get("recipient_id") not in participants
+            ):
+                return False
+        if (
+            viewer_id is not None
+            and searchable.get("thread_owner_user_id") != viewer_id
+            and searchable.get("thread_owner_partner_share") != "opt_in"
+        ):
+            return False
+        if topic_id is not None and searchable.get("topic_id") != topic_id:
+            return False
+        if (
+            thread_owner_user_id is not None
+            and searchable.get("thread_owner_user_id") != thread_owner_user_id
+        ):
+            return False
+        if dyad_id is not None and searchable.get("dyad_id") not in (None, dyad_id):
+            return False
+        if searchable.get("active_oob_severity") in {"firm", "hard"}:
+            return False
+        return True
+
+    def _project_searchable_rows(
+        self, compact: str, *args: Any
+    ) -> list[dict[str, Any]]:
+        bot_id = args[0] if args and isinstance(args[0], str) else None
+        viewer_id = args[1] if len(args) > 1 and isinstance(args[1], UUID) else None
+        participants = (
+            set(args[2])
+            if len(args) > 2
+            and isinstance(args[2], list)
+            and all(isinstance(item, UUID) for item in args[2])
+            else set()
+        )
+        idx = 3
+        topic_id = None
+        if "m.topic_id = $" in compact and idx < len(args) and isinstance(args[idx], UUID):
+            topic_id = args[idx]
+            idx += 1
+        explicit_thread_owner = compact.count("m.thread_owner_user_id = $") > 1
+        thread_owner_user_id = None
+        if explicit_thread_owner and idx < len(args) and isinstance(args[idx], UUID):
+            thread_owner_user_id = args[idx]
+            idx += 1
+        dyad_id = None
+        if "m.dyad_id = $" in compact and idx < len(args) and isinstance(args[idx], UUID):
+            dyad_id = args[idx]
+            idx += 1
+        lower_bound = None
+        upper_bound = None
+        if "m.sent_at >=" in compact and idx < len(args) and isinstance(args[idx], datetime):
+            lower_bound = args[idx]
+            idx += 1
+        if "m.sent_at < $" in compact and idx < len(args) and isinstance(args[idx], datetime):
+            upper_bound = args[idx]
+            idx += 1
+        anchor_message_id = None
+        if (
+            "m.message_id = $" in compact
+            and "JOIN mediator.v_searchable_messages m ON m.message_id = ranked_ids.message_id"
+            not in compact
+            and idx < len(args)
+            and isinstance(args[idx], UUID)
+        ):
+            anchor_message_id = args[idx]
+            idx += 1
+        anchor_sent_at = None
+        tuple_operator = None
+        if "(m.sent_at, m.message_id) <=" in compact:
+            tuple_operator = "<="
+        elif "(m.sent_at, m.message_id) <" in compact:
+            tuple_operator = "<"
+        elif "(m.sent_at, m.message_id) >" in compact:
+            tuple_operator = ">"
+        anchor_tuple_id = None
+        if tuple_operator is not None and idx + 1 < len(args):
+            anchor_sent_at = args[idx]
+            anchor_tuple_id = args[idx + 1]
+            idx += 2
+        ranked_ids = None
+        if (
+            "WITH ranked_ids AS" in compact
+            and idx < len(args)
+            and isinstance(args[idx], list)
+            and all(isinstance(item, UUID) for item in args[idx])
+        ):
+            ranked_ids = list(args[idx])
+            idx += 1
+        limit = args[idx] if idx < len(args) and isinstance(args[idx], int) else None
+
+        rows: list[dict[str, Any]] = []
+        for message in self.messages.values():
+            searchable = self._searchable_message_row(message)
+            if searchable is None:
+                continue
+            if not self._match_searchable_scope(
+                searchable,
+                bot_id=bot_id,
+                viewer_id=viewer_id,
+                participants=participants,
+                topic_id=topic_id,
+                thread_owner_user_id=thread_owner_user_id,
+                dyad_id=dyad_id,
+            ):
+                continue
+            sent_at = searchable.get("sent_at")
+            if lower_bound is not None and sent_at is not None and sent_at < lower_bound:
+                continue
+            if upper_bound is not None and sent_at is not None and sent_at >= upper_bound:
+                continue
+            if anchor_message_id is not None and searchable.get("message_id") != anchor_message_id:
+                continue
+            if tuple_operator is not None and anchor_sent_at is not None and anchor_tuple_id is not None:
+                row_key = (searchable.get("sent_at"), searchable.get("message_id"))
+                anchor_key = (anchor_sent_at, anchor_tuple_id)
+                if tuple_operator == "<" and not (row_key < anchor_key):
+                    continue
+                if tuple_operator == "<=" and not (row_key <= anchor_key):
+                    continue
+                if tuple_operator == ">" and not (row_key > anchor_key):
+                    continue
+            rows.append(self._render_searchable_projection(message, searchable))
+
+        if ranked_ids is not None:
+            rows_by_id = {row["message_id"]: row for row in rows}
+            ordered = [rows_by_id[message_id] for message_id in ranked_ids if message_id in rows_by_id]
+            return ordered
+
+        reverse = "ORDER BY m.sent_at DESC, m.message_id DESC" in compact
+        rows.sort(
+            key=lambda row: (
+                row["sent_at"] or datetime.min.replace(tzinfo=UTC),
+                row["message_id"],
+            ),
+            reverse=reverse,
+        )
+        if limit is not None:
+            return rows[:limit]
+        return rows
 
     def _row_matches_retrieval_visibility(
         self, row: dict[str, Any], args: tuple[Any, ...]
@@ -348,6 +545,15 @@ class FakePool:
 
     async def fetchrow(self, sql: str, *args):
         compact = " ".join(sql.split())
+        if (
+            compact.startswith("SELECT m.message_id,")
+            and "FROM mediator.v_searchable_messages m" in compact
+        ):
+            rows = self._project_searchable_rows(compact, *args)
+            return rows[0] if rows else None
+        if "WITH ranked_ids AS" in compact and "JOIN mediator.v_searchable_messages m" in compact:
+            rows = self._project_searchable_rows(compact, *args)
+            return rows[0] if rows else None
         if compact.startswith("SELECT message_id, canonical_text FROM mediator.v_searchable_messages"):
             row = self.messages.get(args[0])
             return self._searchable_message_row(row) if row is not None else None
@@ -2545,10 +2751,122 @@ class FakePool:
 
     async def fetch(self, sql: str, *args):
         compact = " ".join(sql.split())
+        self.fetch_sqls.append(compact)
+        if (
+            compact.startswith("SELECT m.message_id,")
+            and "FROM mediator.v_searchable_messages m" in compact
+        ):
+            return self._project_searchable_rows(compact, *args)
+        if "WITH ranked_ids AS" in compact and "JOIN mediator.v_searchable_messages m" in compact:
+            return self._project_searchable_rows(compact, *args)
         if (
             "FROM mediator.v_searchable_messages m" in compact
             or "JOIN mediator.v_searchable_messages m" in compact
         ):
+            if "SELECT m.message_id AS id," in compact:
+                rows = []
+                query_text = next(
+                    (
+                        arg
+                        for arg in args
+                        if isinstance(arg, str) and "%" in arg
+                    ),
+                    "",
+                )
+                query_terms = [
+                    term.casefold()
+                    for term in query_text.replace("%", " ").replace('"', " ").split()
+                    if term.strip()
+                ]
+                bot_id = next(
+                    (
+                        arg
+                        for arg in args
+                        if isinstance(arg, str) and "%" not in arg
+                    ),
+                    None,
+                )
+                uuid_values = [arg for arg in args if isinstance(arg, UUID)]
+                uuid_lists = [
+                    list(arg)
+                    for arg in args
+                    if isinstance(arg, list) and all(isinstance(item, UUID) for item in arg)
+                ]
+                viewer_id = uuid_values[0] if uuid_values else None
+                topic_id = uuid_values[1] if len(uuid_values) > 1 else None
+                thread_owner = None
+                dyad_id = None
+                has_explicit_thread_owner = compact.count("m.thread_owner_user_id = $") > 1
+                has_dyad_filter = "m.dyad_id = $" in compact
+                if has_explicit_thread_owner and has_dyad_filter:
+                    thread_owner = uuid_values[2] if len(uuid_values) > 2 else None
+                    dyad_id = uuid_values[3] if len(uuid_values) > 3 else None
+                elif has_explicit_thread_owner:
+                    thread_owner = uuid_values[2] if len(uuid_values) > 2 else None
+                elif has_dyad_filter:
+                    dyad_id = uuid_values[2] if len(uuid_values) > 2 else None
+                participants = set(uuid_lists[0]) if uuid_lists else set()
+                datetimes = [arg for arg in args if isinstance(arg, datetime)]
+                lower_bound = datetimes[0] if datetimes else None
+                upper_bound = datetimes[1] if len(datetimes) > 1 else None
+
+                for message in self.messages.values():
+                    searchable = self._searchable_message_row(message)
+                    if searchable is None:
+                        continue
+                    if bot_id is not None and searchable.get("bot_id") != bot_id:
+                        continue
+                    if viewer_id is not None and searchable.get("thread_owner_user_id") != viewer_id:
+                        if searchable.get("thread_owner_partner_share") != "opt_in":
+                            continue
+                    if participants:
+                        if searchable.get("thread_owner_user_id") not in participants:
+                            continue
+                        if (
+                            searchable.get("sender_id") not in participants
+                            and searchable.get("recipient_id") not in participants
+                        ):
+                            continue
+                    if topic_id is not None and searchable.get("topic_id") != topic_id:
+                        continue
+                    if thread_owner is not None and searchable.get("thread_owner_user_id") != thread_owner:
+                        continue
+                    if dyad_id is not None and searchable.get("dyad_id") not in (None, dyad_id):
+                        continue
+                    if searchable.get("active_oob_severity") in {"firm", "hard"}:
+                        continue
+                    sent_at = searchable.get("sent_at")
+                    if lower_bound is not None and sent_at is not None and sent_at < lower_bound:
+                        continue
+                    if upper_bound is not None and sent_at is not None and sent_at > upper_bound:
+                        continue
+                    canonical_text = searchable["canonical_text"].casefold()
+                    if query_terms and not any(term in canonical_text for term in query_terms):
+                        continue
+                    rows.append(
+                        {
+                            "id": searchable["message_id"],
+                            "sender_id": searchable.get("sender_id"),
+                            "recipient_id": searchable.get("recipient_id"),
+                            "sent_at": searchable.get("sent_at"),
+                            "content": message.get("content"),
+                            "media_type": message.get("media_type"),
+                            "media_analysis": message.get("media_analysis"),
+                            "bot_id": searchable.get("bot_id"),
+                            "topic_id": searchable.get("topic_id"),
+                            "charge": message.get("charge", "routine") or "routine",
+                            "direction": message.get("direction"),
+                        }
+                    )
+                rows.sort(
+                    key=lambda row: (
+                        row["sent_at"] or datetime.min.replace(tzinfo=UTC),
+                        row["id"],
+                    ),
+                    reverse=True,
+                )
+                limit = next((arg for arg in reversed(args) if isinstance(arg, int)), len(rows))
+                return rows[:limit]
             rows = []
             is_semantic = "FROM mediator.message_embeddings e" in compact
             if is_semantic:

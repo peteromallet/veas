@@ -5,6 +5,7 @@ from __future__ import annotations
 import subprocess
 import sys
 import tempfile
+import types
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -600,9 +601,199 @@ def test_db_nav_adapter_requires_env_var() -> None:
             os.environ["DIRECT_DATABASE_URL"] = old
 
 
+class _FakeNavCursor:
+    def __init__(self, scripted_results: list[object], log: list[tuple[str, object]]) -> None:
+        self._scripted_results = scripted_results
+        self._log = log
+        self._current: object = None
+
+    def __enter__(self) -> "_FakeNavCursor":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def execute(self, sql: str, params: object = None) -> None:
+        self._log.append((" ".join(sql.split()), params))
+        self._current = self._scripted_results.pop(0)
+
+    def fetchone(self) -> object:
+        return self._current
+
+    def fetchall(self) -> object:
+        return self._current
+
+
+class _FakeNavConnection:
+    def __init__(self, scripted_results: list[object], log: list[tuple[str, object]]) -> None:
+        self._scripted_results = scripted_results
+        self._log = log
+
+    def __enter__(self) -> "_FakeNavConnection":
+        return self
+
+    def __exit__(self, exc_type: object, exc: object, tb: object) -> None:
+        return None
+
+    def cursor(self) -> _FakeNavCursor:
+        return _FakeNavCursor(self._scripted_results, self._log)
+
+
+def _install_fake_nav_db(
+    monkeypatch: pytest.MonkeyPatch,
+    scripted_results: list[object],
+) -> list[tuple[str, object]]:
+    log: list[tuple[str, object]] = []
+    fake_psycopg = types.ModuleType("psycopg")
+    fake_psycopg.connect = lambda _dsn: _FakeNavConnection(scripted_results, log)  # type: ignore[attr-defined]
+    monkeypatch.setenv("DIRECT_DATABASE_URL", "postgresql://direct.example/db")
+    monkeypatch.setitem(sys.modules, "psycopg", fake_psycopg)
+    monkeypatch.setitem(sys.modules, "pgvector", types.ModuleType("pgvector"))
+    return log
+
+
+def test_db_nav_adapter_uses_searchable_view_topic_ordering_for_before_after(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eval.retrieval.nav_eval import DbNavAdapter
+
+    anchor_row = (
+        "m003",
+        datetime(2025, 1, 1, 10, 2, 0, tzinfo=timezone.utc),
+        "mediator",
+        "top1",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000099",
+    )
+    log = _install_fake_nav_db(
+        monkeypatch,
+        scripted_results=[
+            anchor_row,
+            [("m002",), ("m001",)],
+            anchor_row,
+            [("m004",), ("m005",)],
+        ],
+    )
+
+    adapter = DbNavAdapter(_mini_corpus())
+    assert adapter.messages_before("m003", 2) == ["m001", "m002"]
+    assert adapter.messages_after("m003", 2) == ["m004", "m005"]
+
+    before_sql, before_params = log[1]
+    after_sql, after_params = log[3]
+    assert "FROM mediator.v_searchable_messages m" in before_sql
+    assert "m.topic_id = %s" in before_sql
+    assert "(m.sent_at, m.message_id) < (%s, %s)" in before_sql
+    assert "ORDER BY m.sent_at DESC, m.message_id DESC" in before_sql
+    assert "m.thread_owner_partner_share = 'opt_in'" in before_sql
+    assert "m.dyad_id = %s" in before_sql
+    assert before_params[5] == "00000000-0000-0000-0000-000000000099"
+    assert before_params[-3:-1] == [anchor_row[1], "m003"]
+    assert "FROM mediator.v_searchable_messages m" in after_sql
+    assert "m.topic_id = %s" in after_sql
+    assert "(m.sent_at, m.message_id) > (%s, %s)" in after_sql
+    assert "ORDER BY m.sent_at ASC, m.message_id ASC" in after_sql
+    assert after_params[5] == "00000000-0000-0000-0000-000000000099"
+    assert after_params[-3:-1] == [anchor_row[1], "m003"]
+
+
+def test_db_nav_adapter_uses_searchable_view_for_thread_scroll_and_topic_recent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eval.retrieval.nav_eval import DbNavAdapter
+
+    thread_scope_row = (
+        "m001",
+        datetime(2025, 1, 1, 10, 0, 0, tzinfo=timezone.utc),
+        "mediator",
+        "top1",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        None,
+    )
+    anchor_row = (
+        "m003",
+        datetime(2025, 1, 1, 10, 2, 0, tzinfo=timezone.utc),
+        "mediator",
+        "top1",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        None,
+    )
+    topic_scope_row = thread_scope_row
+    log = _install_fake_nav_db(
+        monkeypatch,
+        scripted_results=[
+            thread_scope_row,
+            [("m001",), ("m002",), ("m003",), ("m004",), ("m005",)],
+            anchor_row,
+            [("m001",), ("m002",), ("m003",), ("m004",), ("m005",)],
+            topic_scope_row,
+            [("m005",), ("m004",), ("m003",)],
+        ],
+    )
+
+    adapter = DbNavAdapter(_mini_corpus())
+    assert adapter.open_thread(None, "t1") == ["m001", "m002", "m003", "m004", "m005"]
+    assert adapter.scroll("m003", 3) == ["m002", "m003", "m004"]
+    assert adapter.topic_recent("top1", 3) == ["m005", "m004", "m003"]
+
+    open_thread_sql, _ = log[1]
+    scroll_sql, _ = log[3]
+    topic_recent_sql, _ = log[5]
+    assert "m.thread_owner_user_id = %s" in open_thread_sql
+    assert "ORDER BY m.sent_at ASC, m.message_id ASC" in open_thread_sql
+    assert "m.thread_owner_user_id = %s" in scroll_sql
+    assert "ORDER BY m.sent_at ASC, m.message_id ASC" in scroll_sql
+    assert "m.topic_id = %s" in topic_recent_sql
+    assert "ORDER BY m.sent_at DESC, m.message_id DESC" in topic_recent_sql
+
+
+def test_db_nav_adapter_alias_methods_follow_messages_before_contract(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    from eval.retrieval.nav_eval import DbNavAdapter
+
+    anchor_row = (
+        "m004",
+        datetime(2025, 1, 1, 10, 3, 0, tzinfo=timezone.utc),
+        "mediator",
+        "top1",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        None,
+    )
+    log = _install_fake_nav_db(
+        monkeypatch,
+        scripted_results=[
+            anchor_row,
+            [("m003",), ("m002",)],
+            anchor_row,
+            [("m003",), ("m002",), ("m001",)],
+        ],
+    )
+
+    adapter = DbNavAdapter(_mini_corpus())
+    assert adapter.before_message_id("m004", 2) == ["m002", "m003"]
+    assert adapter.recent_before_current("m004", 3) == ["m001", "m002", "m003"]
+    assert "(m.sent_at, m.message_id) < (%s, %s)" in log[1][0]
+    assert "(m.sent_at, m.message_id) < (%s, %s)" in log[3][0]
+
+
+def _live_nav_db_env() -> str | None:
+    import os
+
+    return os.environ.get("DIRECT_DATABASE_URL") or os.environ.get("TEST_DATABASE_URL")
+
+
 @pytest.mark.skipif(
-    not __import__("os").environ.get("DIRECT_DATABASE_URL"),
-    reason="DIRECT_DATABASE_URL not set — skipping live DB test",
+    not _live_nav_db_env(),
+    reason="TEST_DATABASE_URL/DIRECT_DATABASE_URL unset — skipping live DB test",
 )
 def test_db_nav_adapter_construction_succeeds_with_env() -> None:
     """DbNavAdapter constructs successfully when env var is set."""
@@ -611,5 +802,123 @@ def test_db_nav_adapter_construction_succeeds_with_env() -> None:
     from eval.retrieval.nav_eval import DbNavAdapter
 
     corpus = _mini_corpus()
+    original_direct = os.environ.get("DIRECT_DATABASE_URL")
+    test_dsn = os.environ.get("TEST_DATABASE_URL")
+    if original_direct is None and test_dsn is not None:
+        os.environ["DIRECT_DATABASE_URL"] = test_dsn
+    try:
+        adapter = DbNavAdapter(corpus)
+        assert adapter is not None
+    finally:
+        if original_direct is None:
+            os.environ.pop("DIRECT_DATABASE_URL", None)
+
+
+# ---------------------------------------------------------------------------
+# T14: DB-backed nav eval integration tests
+# ---------------------------------------------------------------------------
+
+
+@pytest.mark.skipif(
+    not _live_nav_db_env(),
+    reason="TEST_DATABASE_URL/DIRECT_DATABASE_URL unset — skipping live DB test",
+)
+def test_db_nav_adapter_runs_shipped_golden_cases() -> None:
+    """DbNavAdapter runs the shipped nav golden cases when a DB is configured.
+
+    Verifies the adapter can load, dispatch all seven nav ops against the
+    DB, and produce a report without crashing.  Exact-match passes depend
+    on the DB containing corpus-matching data; this test gates on the
+    adapter not raising exceptions during eval.
+    """
+    from eval.retrieval.loader import load_corpus
+    from eval.retrieval.nav_eval import DbNavAdapter, run_nav_eval
+
+    corpus = load_corpus(_SHIPPED_CORPUS)
+    golden = load_nav_golden(_SHIPPED_NAV_GOLDEN, corpus=corpus)
     adapter = DbNavAdapter(corpus)
-    assert adapter is not None
+
+    report = run_nav_eval(adapter, golden, corpus)
+    assert report.n == 14
+    # The DB may not have corpus-matching data, so we only verify the
+    # adapter runs without error and produces a well-formed report.
+    assert isinstance(report.per_case, list)
+    assert all("case_id" in r for r in report.per_case)
+    assert all("returned" in r for r in report.per_case)
+    assert 0.0 <= report.pass_rate_exact <= 1.0
+    assert 0.0 <= report.pass_rate_boundary <= 1.0
+
+
+def test_db_nav_adapter_never_uses_raw_messages_table(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All seven DbNavAdapter methods query v_searchable_messages, never raw messages."""
+    from eval.retrieval.nav_eval import DbNavAdapter
+
+    anchor_row = (
+        "m003",
+        datetime(2025, 1, 1, 10, 2, 0, tzinfo=timezone.utc),
+        "mediator",
+        "top1",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000001",
+        "00000000-0000-0000-0000-000000000002",
+        "00000000-0000-0000-0000-000000000099",
+    )
+    thread_rows = [
+        ("m001",),
+        ("m002",),
+        ("m003",),
+        ("m004",),
+        ("m005",),
+    ]
+    topic_rows = [("m005",), ("m004",), ("m003",)]
+
+    # Script results: 6 scope-row fetches + data fetches
+    log = _install_fake_nav_db(
+        monkeypatch,
+        scripted_results=[
+            # messages_before: scope_row + data
+            anchor_row,
+            [("m002",), ("m001",)],
+            # messages_after: scope_row + data
+            anchor_row,
+            [("m004",), ("m005",)],
+            # open_thread: scope_row + data
+            anchor_row,
+            thread_rows,
+            # scroll: scope_row + thread_data
+            anchor_row,
+            thread_rows,
+            # topic_recent: scope_row + data
+            anchor_row,
+            topic_rows,
+            # before_message_id: scope_row + data (alias)
+            anchor_row,
+            [("m002",), ("m001",)],
+            # recent_before_current: scope_row + data (alias)
+            anchor_row,
+            [("m002",), ("m001",)],
+        ],
+    )
+
+    adapter = DbNavAdapter(_mini_corpus())
+    # Exercise every method to produce SQL.
+    adapter.messages_before("m003", 2)
+    adapter.messages_after("m003", 2)
+    adapter.open_thread(None, "t1")
+    adapter.scroll("m003", 3)
+    adapter.topic_recent("top1", 3)
+    adapter.before_message_id("m003", 2)
+    adapter.recent_before_current("m003", 2)
+
+    # Collect all logged SQL statements.
+    all_sql = " ".join(sql for sql, _ in log)
+
+    # Must use the searchable view.
+    assert "FROM mediator.v_searchable_messages" in all_sql
+    # Must NEVER use raw mediator.messages table.
+    # "messages" appears in the view name itself ("v_searchable_messages"),
+    # so we check the FROM clause precisely.
+    assert "FROM mediator.messages" not in all_sql
+    assert "from mediator.messages" not in all_sql

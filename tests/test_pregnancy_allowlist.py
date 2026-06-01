@@ -47,18 +47,18 @@ class TestTanteRosiAllowlist:
             )
 
     def test_excludes_other_coach_exclusions(self):
-        """The remaining coach-excluded tools (non-bridge) must also be absent."""
+        """The remaining non-bridge exclusions stay absent from Rosi."""
         from app.bots.registry import get_bot_spec
         spec = get_bot_spec("tante_rosi")
         assert spec.tool_allowlist is not None
         for excluded in (
             "set_topic_status",
-            "search_messages",
             "recent_activity",
         ):
             assert excluded not in spec.tool_allowlist, (
                 f"{excluded} must be excluded from Rosi allowlist"
             )
+        assert "search_messages" in spec.tool_allowlist
 
 
 class TestCoachAllowlist:
@@ -133,7 +133,7 @@ class TestNoAutoBridgingGuarantee:
         )
 
     def test_all_eight_coach_exclusions_absent_from_rosi(self):
-        """Full 8-item coach exclusions check for completeness."""
+        """Bridge/dyad-write exclusions stay complete after search migration."""
         from app.bots.registry import get_bot_spec
         spec = get_bot_spec("tante_rosi")
         assert spec.tool_allowlist is not None
@@ -145,13 +145,13 @@ class TestNoAutoBridgingGuarantee:
             "send_bridge_candidate",
             "list_bridge_candidates",
             "escalate_to_partner",
-            "search_messages",
             "recent_activity",
         }
         found = spec.tool_allowlist & all_exclusions
         assert not found, (
             f"Rosi allowlist contains excluded tools: {found}"
         )
+        assert "search_messages" in spec.tool_allowlist
 
     def test_rosi_pregnancy_tools_present_in_tool_dispatch(self):
         """Pregnancy tools are in TOOL_DISPATCH but gated by allowlist —

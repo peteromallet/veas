@@ -138,7 +138,6 @@ class TestHectorBotSpecRegistration:
         excluded = {
             "create_bridge_candidate",
             "escalate_to_partner",
-            "search_messages",
             "recent_activity",
             "set_pregnancy_edd",
             "correct_pregnancy_edd",
@@ -146,6 +145,7 @@ class TestHectorBotSpecRegistration:
         }
         for tool in excluded:
             assert tool not in spec.tool_allowlist, f"Should be excluded: {tool}"
+        assert "search_messages" in spec.tool_allowlist
 
 
 # ── partner=None render safety (integration check) ───────────────────────

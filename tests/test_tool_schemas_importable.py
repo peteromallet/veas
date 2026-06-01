@@ -546,3 +546,37 @@ def test_submit_live_debrief_importable_and_versioned() -> None:
     assert empty.review_summary is None
     assert empty.references is None
     assert empty.failed_writes is None
+
+
+def test_message_nav_tools_are_wired_into_registry_and_derived_read_sets() -> None:
+    from app.services.tools.registry import (
+        BOT_EXCLUSIVE_TOOLS,
+        CONSULT_PHASE_TOOLS,
+        LIVE_PREP_TOOLS,
+        READ_PHASE_TOOLS,
+        READ_TOOLS_FOR_STEP,
+        RECORD_READ_TOOLS,
+        TOOL_DESCRIPTIONS,
+        TOOL_DISPATCH,
+    )
+
+    new_read_tools = {
+        "messages_before",
+        "messages_after",
+        "open_thread",
+        "scroll",
+        "topic_recent",
+        "search",
+    }
+    exclusive_tools = set().union(*BOT_EXCLUSIVE_TOOLS.values())
+
+    assert new_read_tools <= set(TOOL_DISPATCH)
+    assert new_read_tools <= set(TOOL_DESCRIPTIONS)
+    assert new_read_tools <= READ_PHASE_TOOLS
+    assert new_read_tools <= CONSULT_PHASE_TOOLS
+    assert new_read_tools <= RECORD_READ_TOOLS
+    assert new_read_tools <= READ_TOOLS_FOR_STEP
+    assert new_read_tools <= LIVE_PREP_TOOLS
+    assert new_read_tools.isdisjoint(exclusive_tools)
+    assert "hot-context gist" in TOOL_DESCRIPTIONS["messages_before"]
+    assert "hot-context gist" in TOOL_DESCRIPTIONS["search"]

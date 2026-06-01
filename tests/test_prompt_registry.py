@@ -7,6 +7,8 @@ and new-tool presence in every bot's tool_allowlist.
 
 from __future__ import annotations
 
+from uuid import uuid4
+
 import pytest
 
 from app.bots.prompts.registry import (
@@ -17,6 +19,8 @@ from app.bots.prompts.registry import (
     slots_for,
 )
 from app.bots.prompts.profile import render_profile
+from app.models.user import User
+from app.services.turn_context import TurnContext
 
 # ── test: duplicate name ──────────────────────────────────────────────────────
 
@@ -222,4 +226,49 @@ def test_both_new_tools_in_every_bot_allowlist() -> None:
         )
         assert "list_all_reminders" in allowlist, (
             f"list_all_reminders missing from {bot_id} allowlist"
+        )
+
+
+def _step_allowed_for(bot_id: str):
+    from app.services.tools.registry import _step_allowed
+
+    user = User(id=uuid4(), name="Test", phone="+15555550100", timezone="UTC")
+    spec = _build_all_specs()[bot_id]
+    ctx = TurnContext(
+        turn_id=uuid4(),
+        pool=None,
+        user=user,
+        partner=None,
+        triggering_message_ids=[],
+        bot_id=bot_id,
+        primary_topic_id=uuid4(),
+        primary_topic_slug=spec.primary_topic_slug,
+        current_step="read",
+        bot_spec=spec,
+    )
+    return _step_allowed(ctx)
+
+
+def test_nav_and_search_read_tools_survive_step_allowed_intersection() -> None:
+    expected = {
+        "messages_before",
+        "messages_after",
+        "open_thread",
+        "scroll",
+        "topic_recent",
+        "search",
+        "search_messages",
+    }
+
+    for bot_id in ("mediator", "coach", "hector", "habits", "tante_rosi"):
+        allowed = _step_allowed_for(bot_id)
+        missing = expected - allowed
+        assert not missing, f"{bot_id} lost read tools after _step_allowed: {missing}"
+
+
+def test_recent_activity_stays_excluded_from_solo_bot_step_allowed_sets() -> None:
+    for bot_id in ("coach", "hector", "habits", "tante_rosi"):
+        allowed = _step_allowed_for(bot_id)
+        assert "recent_activity" not in allowed, (
+            f"{bot_id} should still exclude recent_activity"
         )

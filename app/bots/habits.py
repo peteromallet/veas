@@ -126,7 +126,6 @@ _COACH_EXCLUSIONS = frozenset({
     "send_bridge_candidate",
     "list_bridge_candidates",
     "escalate_to_partner",
-    "search_messages",
     "recent_activity",
     "set_pregnancy_edd",
     "correct_pregnancy_edd",

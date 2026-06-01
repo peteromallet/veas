@@ -15,13 +15,12 @@ def _inside_transaction(sql: str) -> str:
     return sql[begin:commit]
 
 
-def test_0056_is_next_migration_number() -> None:
+def test_0056_migration_exists_once() -> None:
     numbered = sorted(
         path.name
         for path in MIGRATIONS_DIR.glob("[0-9][0-9][0-9][0-9]_*.sql")
         if not path.name.endswith(".down.sql")
     )
-    assert numbered[-1].startswith("0056_")
     assert sum(1 for name in numbered if name.startswith("0056_")) == 1
 
 

@@ -299,6 +299,11 @@ class DbNavAdapter:
 
         self._corpus = corpus  # kept for interface compatibility
         self._corpus_order = sorted(corpus.messages, key=lambda m: (m.sent_at, m.id))
+        self._thread_seed_ids: dict[str, str] = {}
+        self._topic_seed_ids: dict[str, str] = {}
+        for msg in self._corpus_order:
+            self._thread_seed_ids.setdefault(msg.thread_id, msg.id)
+            self._topic_seed_ids.setdefault(msg.topic_id, msg.id)
 
         db_url = _os.environ.get("DIRECT_DATABASE_URL")
         if not db_url:
@@ -325,182 +330,232 @@ class DbNavAdapter:
 
         self._db_url = db_url
 
+    @staticmethod
+    def _scope_row_from_tuple(row: tuple[Any, ...] | None) -> dict[str, Any] | None:
+        if row is None:
+            return None
+        return {
+            "message_id": row[0],
+            "sent_at": row[1],
+            "bot_id": row[2],
+            "topic_id": row[3],
+            "thread_owner_user_id": row[4],
+            "sender_id": row[5],
+            "recipient_id": row[6],
+            "dyad_id": row[7],
+        }
+
+    def _fetch_scope_row(self, message_id: str) -> dict[str, Any] | None:
+        import psycopg
+
+        with psycopg.connect(self._db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(
+                    """
+                    SELECT
+                        m.message_id,
+                        m.sent_at,
+                        m.bot_id,
+                        m.topic_id,
+                        m.thread_owner_user_id,
+                        m.sender_id,
+                        m.recipient_id,
+                        m.dyad_id
+                    FROM mediator.v_searchable_messages m
+                    WHERE m.message_id = %s
+                    LIMIT 1
+                    """,
+                    (message_id,),
+                )
+                return self._scope_row_from_tuple(cur.fetchone())
+
+    def _scope_row_for_thread(self, thread_id: str) -> dict[str, Any] | None:
+        seed_id = self._thread_seed_ids.get(thread_id)
+        if seed_id is None:
+            return None
+        return self._fetch_scope_row(seed_id)
+
+    def _scope_row_for_topic(self, topic_id: str) -> dict[str, Any] | None:
+        seed_id = self._topic_seed_ids.get(topic_id)
+        if seed_id is None:
+            return None
+        return self._fetch_scope_row(seed_id)
+
+    @staticmethod
+    def _participant_ids(scope_row: dict[str, Any]) -> list[Any]:
+        participants: list[Any] = []
+        for key in ("sender_id", "recipient_id"):
+            value = scope_row.get(key)
+            if value is not None and value not in participants:
+                participants.append(value)
+        return participants
+
+    def _view_filters(
+        self,
+        scope_row: dict[str, Any],
+        *,
+        include_topic: bool = False,
+        include_thread: bool = False,
+    ) -> tuple[list[str], list[Any]]:
+        participant_ids = self._participant_ids(scope_row)
+        filters = [
+            "m.bot_id = %s",
+            "m.thread_owner_user_id = ANY(%s::uuid[])",
+            "(m.sender_id = ANY(%s::uuid[]) OR m.recipient_id = ANY(%s::uuid[]))",
+            "(m.thread_owner_user_id = %s OR m.thread_owner_partner_share = 'opt_in')",
+            """
+            NOT EXISTS (
+                SELECT 1
+                FROM mediator.out_of_bounds x
+                WHERE x.owner_id = m.thread_owner_user_id
+                  AND x.status = 'active'
+                  AND x.severity IN ('firm', 'hard')
+            )
+            """,
+        ]
+        params: list[Any] = [
+            scope_row["bot_id"],
+            participant_ids,
+            participant_ids,
+            scope_row["thread_owner_user_id"],
+        ]
+        if include_topic:
+            filters.append("m.topic_id = %s")
+            params.append(scope_row["topic_id"])
+        if include_thread:
+            filters.append("m.thread_owner_user_id = %s")
+            params.append(scope_row["thread_owner_user_id"])
+        if scope_row.get("dyad_id") is not None:
+            filters.append("m.dyad_id = %s")
+            params.append(scope_row["dyad_id"])
+        return filters, params
+
+    def _fetch_ids(
+        self,
+        *,
+        filters: list[str],
+        params: list[Any],
+        order_sql: str,
+        limit: int | None = None,
+    ) -> list[str]:
+        import psycopg
+
+        sql = (
+            "SELECT m.message_id FROM mediator.v_searchable_messages m "
+            f"WHERE {' AND '.join(filters)} "
+            f"ORDER BY {order_sql}"
+        )
+        query_params = list(params)
+        if limit is not None:
+            sql += " LIMIT %s"
+            query_params.append(limit)
+        with psycopg.connect(self._db_url) as conn:
+            with conn.cursor() as cur:
+                cur.execute(sql, query_params)
+                return [str(row[0]) for row in cur.fetchall()]
+
     # ------------------------------------------------------------------
-    # messages_before — n messages chronologically before anchor (exclusive).
+    # messages_before — map the M0 op onto the handler's topic-scoped
+    # visibility contract, then return chronological ascending rows.
     # ------------------------------------------------------------------
     def messages_before(self, anchor: str, n: int) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT sent_at FROM messages WHERE id = %s",
-                    (anchor,),
-                )
-                anchor_row = cur.fetchone()
-                if anchor_row is None:
-                    return []
-                cur.execute(
-                    "SELECT id FROM messages "
-                    "WHERE sent_at < %s "
-                    "ORDER BY sent_at DESC, id DESC "
-                    "LIMIT %s",
-                    (anchor_row[0], n),
-                )
-                rows = cur.fetchall()
-        result = [r[0] for r in rows]
-        result.reverse()  # chronological ascending
-        return result
+        anchor_row = self._fetch_scope_row(anchor)
+        if anchor_row is None:
+            return []
+        filters, params = self._view_filters(anchor_row, include_topic=True)
+        filters.append("(m.sent_at, m.message_id) < (%s, %s)")
+        params.extend([anchor_row["sent_at"], anchor_row["message_id"]])
+        rows = self._fetch_ids(
+            filters=filters,
+            params=params,
+            order_sql="m.sent_at DESC, m.message_id DESC",
+            limit=n,
+        )
+        rows.reverse()
+        return rows
 
     # ------------------------------------------------------------------
-    # messages_after — n messages chronologically after anchor (exclusive).
+    # messages_after — topic-scoped visibility contract, chronological asc.
     # ------------------------------------------------------------------
     def messages_after(self, anchor: str, n: int) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT sent_at FROM messages WHERE id = %s",
-                    (anchor,),
-                )
-                anchor_row = cur.fetchone()
-                if anchor_row is None:
-                    return []
-                cur.execute(
-                    "SELECT id FROM messages "
-                    "WHERE sent_at > %s "
-                    "ORDER BY sent_at ASC, id ASC "
-                    "LIMIT %s",
-                    (anchor_row[0], n),
-                )
-                rows = cur.fetchall()
-        return [r[0] for r in rows]
+        anchor_row = self._fetch_scope_row(anchor)
+        if anchor_row is None:
+            return []
+        filters, params = self._view_filters(anchor_row, include_topic=True)
+        filters.append("(m.sent_at, m.message_id) > (%s, %s)")
+        params.extend([anchor_row["sent_at"], anchor_row["message_id"]])
+        return self._fetch_ids(
+            filters=filters,
+            params=params,
+            order_sql="m.sent_at ASC, m.message_id ASC",
+            limit=n,
+        )
 
     # ------------------------------------------------------------------
-    # open_thread — all messages in a thread, chronological order.
+    # open_thread — thread-scoped visible rows, chronological ascending.
     # ------------------------------------------------------------------
     def open_thread(self, anchor: str | None, thread_id: str) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM messages WHERE thread_id = %s "
-                    "ORDER BY sent_at ASC, id ASC",
-                    (thread_id,),
-                )
-                rows = cur.fetchall()
-        return [r[0] for r in rows]
+        del anchor  # The M0 harness carries thread_id directly.
+        scope_row = self._scope_row_for_thread(thread_id)
+        if scope_row is None:
+            return []
+        filters, params = self._view_filters(scope_row, include_thread=True)
+        return self._fetch_ids(
+            filters=filters,
+            params=params,
+            order_sql="m.sent_at ASC, m.message_id ASC",
+        )
 
     # ------------------------------------------------------------------
-    # scroll — n messages centered on anchor (±n/2, chronological,
-    # anchor included).
+    # scroll — approximate the M0 centered-thread window using the same
+    # thread-scoped visibility filters as open_thread.
     # ------------------------------------------------------------------
     def scroll(self, anchor: str, n: int) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT sent_at FROM messages WHERE id = %s",
-                    (anchor,),
-                )
-                anchor_row = cur.fetchone()
-                if anchor_row is None:
-                    return []
-                sent = anchor_row[0]
-                half = n // 2
-                # Count messages before and after.
-                cur.execute(
-                    "SELECT COUNT(*) FROM messages WHERE sent_at < %s",
-                    (sent,),
-                )
-                before_count = cur.fetchone()[0]
-                cur.execute(
-                    "SELECT COUNT(*) FROM messages WHERE sent_at > %s",
-                    (sent,),
-                )
-                after_count = cur.fetchone()[0]
-                # Adjust window.
-                if after_count < half:
-                    before_take = half + (half - after_count)
-                else:
-                    before_take = half
-                before_take = min(before_take, before_count)
-                after_take = min(half, after_count)
-                # If still short on total, extend after.
-                total = before_take + 1 + after_take
-                if total < n:
-                    after_take = min(after_count, n - before_take - 1)
-                # Fetch before.
-                cur.execute(
-                    "SELECT id FROM messages WHERE sent_at < %s "
-                    "ORDER BY sent_at DESC, id DESC LIMIT %s",
-                    (sent, before_take),
-                )
-                before_rows = cur.fetchall()
-                before_ids = [r[0] for r in reversed(before_rows)]
-                # Fetch anchor + after.
-                cur.execute(
-                    "SELECT id FROM messages WHERE sent_at >= %s "
-                    "ORDER BY sent_at ASC, id ASC LIMIT %s",
-                    (sent, after_take + 1),
-                )
-                after_rows = cur.fetchall()
-                after_ids = [r[0] for r in after_rows]
-        return before_ids + after_ids
+        anchor_row = self._fetch_scope_row(anchor)
+        if anchor_row is None:
+            return []
+        filters, params = self._view_filters(anchor_row, include_thread=True)
+        thread_rows = self._fetch_ids(
+            filters=filters,
+            params=params,
+            order_sql="m.sent_at ASC, m.message_id ASC",
+        )
+        try:
+            anchor_idx = thread_rows.index(anchor)
+        except ValueError:
+            return []
+        half = n // 2
+        start = max(0, anchor_idx - half)
+        end = min(len(thread_rows), anchor_idx + half + 1)
+        after_count = end - anchor_idx - 1
+        if after_count < half:
+            start = max(0, start - (half - after_count))
+        end = min(len(thread_rows), start + n)
+        return thread_rows[start:end]
 
     # ------------------------------------------------------------------
-    # topic_recent — n most-recent messages in a topic, chronological.
+    # topic_recent — newest-first to match the M2 handler contract.
     # ------------------------------------------------------------------
     def topic_recent(self, topic_id: str, n: int) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT id FROM messages WHERE topic_id = %s "
-                    "ORDER BY sent_at DESC, id DESC "
-                    "LIMIT %s",
-                    (topic_id, n),
-                )
-                rows = cur.fetchall()
-        result = [r[0] for r in rows]
-        result.reverse()  # chronological ascending
-        return result
+        scope_row = self._scope_row_for_topic(topic_id)
+        if scope_row is None:
+            return []
+        filters, params = self._view_filters(scope_row, include_topic=True)
+        return self._fetch_ids(
+            filters=filters,
+            params=params,
+            order_sql="m.sent_at DESC, m.message_id DESC",
+            limit=n,
+        )
 
     # ------------------------------------------------------------------
-    # before_message_id — n messages chronologically before a specific
-    # message id (exclusive).
+    # before_message_id — alias the M0 helper onto topic-scoped before.
     # ------------------------------------------------------------------
     def before_message_id(self, anchor_id: str, n: int) -> list[str]:
-        import psycopg
-
-        with psycopg.connect(self._db_url) as conn:
-            with conn.cursor() as cur:
-                cur.execute(
-                    "SELECT sent_at FROM messages WHERE id = %s",
-                    (anchor_id,),
-                )
-                anchor_row = cur.fetchone()
-                if anchor_row is None:
-                    return []
-                cur.execute(
-                    "SELECT id FROM messages "
-                    "WHERE sent_at < %s "
-                    "ORDER BY sent_at DESC, id DESC "
-                    "LIMIT %s",
-                    (anchor_row[0], n),
-                )
-                rows = cur.fetchall()
-        result = [r[0] for r in rows]
-        result.reverse()  # chronological ascending
-        return result
+        return self.messages_before(anchor_id, n)
 
     # ------------------------------------------------------------------
-    # recent_before_current — n most-recent messages chronologically
-    # before anchor (exclusive), sorted chronologically ascending.
+    # recent_before_current — alias onto topic-scoped before.
     # ------------------------------------------------------------------
     def recent_before_current(self, anchor: str, n: int) -> list[str]:
         return self.messages_before(anchor, n)

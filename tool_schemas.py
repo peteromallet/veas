@@ -278,6 +278,157 @@ class SearchMessagesOutput(BaseModel):
     truncated: bool
 
 
+# --- message navigation / rich search ---
+
+
+class MessageSpeaker(BaseModel):
+    label: str = Field(description="Resolved human-readable speaker label.")
+    user_id: UUID | None = Field(
+        default=None, description="Resolved speaker user id when known."
+    )
+    direction: Literal["inbound", "outbound"]
+
+
+class MessageNavHit(BaseModel):
+    message_id: UUID
+    cursor: str = Field(
+        description="Opaque nav cursor that can be passed back to `scroll`."
+    )
+    speaker: MessageSpeaker
+    sent_at: datetime
+    sent_at_time: TemporalReference | None = None
+    charge: Charge = Charge.routine
+    edited_at: datetime | None = None
+    edit_history_original: str | None = Field(
+        default=None,
+        description="Original pre-edit text when the backend can safely surface it.",
+    )
+    header: str = Field(
+        description="One-line spoken-summary-friendly header such as 'You, Tuesday 9:14pm:'."
+    )
+    content: str = Field(description="Full renderable message content for nav results.")
+
+
+class SearchMatchType(str, Enum):
+    exact = "exact"
+    semantic = "semantic"
+    both = "both"
+
+
+class SearchHit(BaseModel):
+    message_id: UUID
+    cursor: str = Field(
+        description="Opaque nav cursor for opening or scrolling around this hit."
+    )
+    speaker: MessageSpeaker
+    sent_at: datetime
+    sent_at_time: TemporalReference | None = None
+    charge: Charge = Charge.routine
+    edited_at: datetime | None = None
+    edit_history_original: str | None = Field(
+        default=None,
+        description="Original pre-edit text when the backend can safely surface it.",
+    )
+    header: str = Field(
+        description="One-line spoken-summary-friendly header for the hit."
+    )
+    snippet: str = Field(description="Snippet or excerpt explaining the match.")
+    match_type: SearchMatchType
+    why_matched: str | None = Field(
+        default=None,
+        description="Short explanation of the exact or semantic match.",
+    )
+
+
+class MessagesBeforeInput(BaseModel):
+    anchor: UUID | Literal["current"] = Field(
+        description="Message anchor id or 'current' hot-context edge."
+    )
+    n: int = Field(default=10, ge=1, le=100)
+
+
+class MessagesBeforeOutput(BaseModel):
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    cursor: str | None = Field(
+        default=None, description="Opaque nav cursor for continued scrolling."
+    )
+
+
+class MessagesAfterInput(BaseModel):
+    anchor: UUID | Literal["current"] = Field(
+        description="Message anchor id or 'current' hot-context edge."
+    )
+    n: int = Field(default=10, ge=1, le=100)
+
+
+class MessagesAfterOutput(BaseModel):
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    cursor: str | None = Field(
+        default=None, description="Opaque nav cursor for continued scrolling."
+    )
+
+
+class OpenThreadInput(BaseModel):
+    around: UUID | dt_date | Literal["latest"] = Field(
+        description="Thread anchor message id, ISO local date, or 'latest'."
+    )
+    n: int = Field(default=10, ge=1, le=100)
+
+
+class OpenThreadOutput(BaseModel):
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    cursor: str | None = Field(
+        default=None, description="Opaque nav cursor for continued scrolling."
+    )
+
+
+class ScrollInput(BaseModel):
+    cursor: str = Field(description="Opaque nav cursor returned by another nav tool.")
+    direction: Literal["older", "newer"]
+    n: int = Field(default=10, ge=1, le=100)
+
+
+class ScrollOutput(BaseModel):
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    cursor: str | None = Field(
+        default=None, description="Opaque nav cursor for the next scroll call."
+    )
+
+
+class TopicRecentInput(BaseModel):
+    topic_id: UUID | None = Field(
+        default=None, description="Optional explicit topic id; defaults to current topic."
+    )
+    n: int = Field(default=10, ge=1, le=100)
+
+
+class TopicRecentOutput(BaseModel):
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    cursor: str | None = Field(
+        default=None, description="Opaque nav cursor for continued scrolling."
+    )
+
+
+class SearchInput(BaseModel):
+    query: str = Field(min_length=1, description="Free-text query to search for.")
+    mode: Literal["exact", "semantic"] = "semantic"
+    scope: Literal["thread", "topic"] = "topic"
+    limit: int = Field(default=10, ge=1, le=100)
+    cursor: str | None = Field(
+        default=None,
+        description="Opaque search-page cursor from a previous `search` page.",
+    )
+
+
+class SearchOutput(BaseModel):
+    hits: list[SearchHit] = Field(default_factory=list)
+    truncated: bool = False
+    next_cursor: str | None = Field(
+        default=None,
+        description="Opaque search-page cursor for the next page, if more results exist.",
+    )
+
+
 # --- search_emojis ---
 
 
@@ -2443,6 +2594,12 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "submit_live_debrief": (SubmitLiveDebriefInput, SubmitLiveDebriefOutput),
     # read
     "search_messages": (SearchMessagesInput, SearchMessagesOutput),
+    "messages_before": (MessagesBeforeInput, MessagesBeforeOutput),
+    "messages_after": (MessagesAfterInput, MessagesAfterOutput),
+    "open_thread": (OpenThreadInput, OpenThreadOutput),
+    "scroll": (ScrollInput, ScrollOutput),
+    "topic_recent": (TopicRecentInput, TopicRecentOutput),
+    "search": (SearchInput, SearchOutput),
     "search_emojis": (SearchEmojisInput, SearchEmojisOutput),
     "recent_activity": (RecentActivityInput, RecentActivityOutput),
     "list_themes": (ListThemesInput, ListThemesOutput),

@@ -86,7 +86,6 @@ def build_coach_spec() -> BotSpec:
                 "send_bridge_candidate",
                 "list_bridge_candidates",
                 "escalate_to_partner",
-                "search_messages",
                 "recent_activity",
                 # Pregnancy tools: coach is career, not pregnancy.
                 "set_pregnancy_edd",

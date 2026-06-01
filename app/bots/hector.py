@@ -130,7 +130,6 @@ _COACH_EXCLUSIONS = frozenset({
     "list_bridge_candidates",
     "escalate_to_partner",
     # Dyad-only read tools:
-    "search_messages",
     "recent_activity",
     # Pregnancy tools (Tante Rosi only):
     "set_pregnancy_edd",
