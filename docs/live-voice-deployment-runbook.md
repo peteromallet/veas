@@ -40,7 +40,10 @@ Required:
 
 | Var | Value |
 |---|---|
+| `ENV_NAME` | `production` (also accepted as prod by the boot guard: `staging`, or any non-dev value; a Railway deploy that omits `ENV_NAME` is treated as production via the `RAILWAY_*` deploy signal) |
+| `LIVE_VOICE_AUTH_ENABLED` | `true` — gates **all** ownership/operator checks. The lifespan boot guard **refuses to start** when the environment is production/staging and this is off (fail-closed). |
 | `LIVE_VOICE_JWT_SECRET` | strong random — `openssl rand -hex 32` |
+| `LIVE_VOICE_OPS_USER_IDS` | comma-separated UUIDs of operators allowed to hit `/api/live/ops/*`. Empty ⇒ no operator can reach ops endpoints (fail-closed). |
 | `OPENAI_API_KEY` | real `sk-…` |
 | `ANTHROPIC_API_KEY` | real `sk-ant-…` |
 | `LIVE_VOICE_WS_AUTH_REQUIRED` | `1` (require magic-link JWT for WS) |
@@ -64,8 +67,18 @@ curl -sf https://veas-production.up.railway.app/api/live/healthz | jq .
 curl -sf https://veas-production.up.railway.app/api/live/config | jq .
 # Expect: { "auth_mode": "magic_link", "magic_link_enabled": true, "openai_voice_enabled": true, ... }
 
-curl -sf https://veas-production.up.railway.app/api/live/ops/metrics | jq .
-# Expect: real latency_ms / spend_usd_today / active_sessions
+# Ops endpoints are auth-gated: get_current_user (Bearer JWT, else 401) PLUS
+# the LIVE_VOICE_OPS_USER_IDS operator allow-list (else 403). A bare,
+# unauthenticated curl MUST be rejected:
+curl -s -o /dev/null -w '%{http_code}\n' https://veas-production.up.railway.app/api/live/ops/metrics
+# Expect: 401  (no Authorization header). If this returns 200, auth is OFF —
+# the boot guard should have prevented this deploy; investigate immediately.
+
+# With a valid operator Bearer token (user_id in LIVE_VOICE_OPS_USER_IDS):
+curl -sf -H "Authorization: Bearer $OPERATOR_JWT" \
+  https://veas-production.up.railway.app/api/live/ops/metrics | jq .
+# Expect: real latency_ms / spend_usd_today / active_sessions.
+# A valid-but-non-operator token returns 403.
 ```
 
 ## 5. Browser verification

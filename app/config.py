@@ -15,6 +15,23 @@ _KNOWN_EMBEDDING_DIMENSIONS: dict[tuple[str, str], int] = {
     ("local", "BAAI/bge-small-en-v1.5"): 384,
 }
 
+# Environment-variable names that a Railway-deployed container sets in every
+# running instance.  Their mere presence is a positive signal that we are in a
+# real deploy, which ``Settings.is_production`` treats as production unless
+# ``ENV_NAME`` explicitly opts out (see ``_DEV_OPT_OUT_ENV_NAMES``).
+_RAILWAY_DEPLOY_SIGNAL_VARS: tuple[str, ...] = (
+    "RAILWAY_ENVIRONMENT",
+    "RAILWAY_PROJECT_ID",
+    "RAILWAY_SERVICE_ID",
+)
+
+
+def _railway_deploy_signal_present() -> bool:
+    """True when any Railway deploy marker is present in the environment."""
+    return any(
+        os.environ.get(var, "").strip() for var in _RAILWAY_DEPLOY_SIGNAL_VARS
+    )
+
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
 
@@ -69,6 +86,13 @@ class Settings(BaseSettings):
     live_voice_whisper_model: str = ""
     live_voice_whisper_language: str = "en"
     live_voice_auth_enabled: bool = False
+    # Comma-separated allow-list of operator user-ids (UUIDs) permitted to hit
+    # the ``/api/live/ops/*`` debug / metrics endpoints.  These leak aggregate
+    # ops data and full session transcripts, so they require BOTH a valid
+    # authenticated caller (``get_current_user``) AND membership in this list.
+    # Empty (the default) means no operator is configured, which — when auth is
+    # enabled — denies every caller (fail-closed).
+    live_voice_ops_user_ids: str = ""
     consult_model: str = ""  # Bounded read-only consult loop model; defaults to conversational_model.
     consult_max_tool_iterations: int = Field(default=3, ge=0, le=10)
     nonchat_default_max_tool_iterations: int = Field(default=100, ge=0, le=2000)
@@ -240,6 +264,75 @@ class Settings(BaseSettings):
                 bot_id = m.group(1).lower()
                 result[bot_id] = value
         return result
+
+    # Environment names that explicitly opt OUT of production treatment.  An
+    # operator who sets ``ENV_NAME`` to one of these is consciously declaring a
+    # developer / CI environment, even inside a deployed Railway container.
+    #
+    # NOTE: ``staging`` is deliberately NOT in this set.  Staging holds
+    # real-ish data, so the live-voice auth boot guard must fire there too;
+    # staging is treated as production-equivalent for auth purposes.
+    _DEV_OPT_OUT_ENV_NAMES: frozenset[str] = frozenset(
+        {"local", "test", "tests", "dev", "development", "ci"}
+    )
+
+    @property
+    def is_production(self) -> bool:
+        """True when the running environment should be treated as production.
+
+        Two independent, fail-SAFE signals drive this:
+
+        1. **Positive deploy signal (Railway).**  Railway injects ``RAILWAY_*``
+           vars into every deployed container.  If any is present we treat the
+           process as production UNLESS ``ENV_NAME`` is *explicitly* set to a
+           recognised developer / CI value (local / dev / development / test /
+           ci).  This closes the fail-OPEN where a real deploy simply never set
+           ``ENV_NAME`` (default ``"local"``) and slipped past the guard.
+
+        2. **Explicit env-name.**  Independent of Railway, any ``env_name``
+           that is not a recognised dev opt-out (including ``staging`` and the
+           empty string) is treated as production so security guards engage.
+
+        Local dev (no ``RAILWAY_*`` present + default ``env_name="local"``)
+        resolves to non-production, so nothing changes for developers.
+        """
+        name = self.env_name.strip().lower()
+        is_dev_opt_out = name in self._DEV_OPT_OUT_ENV_NAMES
+        if _railway_deploy_signal_present():
+            # Inside a real Railway deploy, the dev opt-out only applies when
+            # ENV_NAME was set *explicitly* in the environment.  A deploy that
+            # simply forgot ENV_NAME leaves ``env_name`` at its "local" default,
+            # which must NOT shield it — that was the fail-OPEN.  So require an
+            # explicit env-var to honour the opt-out; otherwise it's production.
+            explicit_dev_opt_out = (
+                is_dev_opt_out and os.environ.get("ENV_NAME", "").strip() != ""
+            )
+            return not explicit_dev_opt_out
+        # No deploy signal: fall back to explicit env-name inference (staging
+        # and any unrecognised name — including "" — count as production).
+        return not is_dev_opt_out
+
+    @cached_property
+    def live_voice_ops_user_id_set(self) -> frozenset[str]:
+        """Parsed allow-list of operator user-ids (lowercased UUID strings).
+
+        Splits ``live_voice_ops_user_ids`` on commas, strips whitespace, drops
+        empties, and normalises each entry to a canonical lowercase UUID string
+        so membership checks are case-insensitive.  Entries that are not valid
+        UUIDs are dropped (and would never match a real caller id).
+        """
+        from uuid import UUID as _UUID
+
+        result: set[str] = set()
+        for raw in self.live_voice_ops_user_ids.split(","):
+            candidate = raw.strip()
+            if not candidate:
+                continue
+            try:
+                result.add(str(_UUID(candidate)))
+            except ValueError:
+                continue
+        return frozenset(result)
 
     @model_validator(mode="after")
     def default_consult_model(self) -> "Settings":
