@@ -336,7 +336,8 @@ async def _fetch_semantic_prior(
     ranked_results = [
         result
         for result in retrieval_results
-        if result.message_id not in excluded_message_ids
+        if result.message_id is not None
+        and result.message_id not in excluded_message_ids
     ][:HOT_CONTEXT_SEMANTIC_PRIOR_CAP]
     if not ranked_results:
         return []

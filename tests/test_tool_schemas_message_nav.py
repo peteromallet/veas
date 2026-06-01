@@ -16,6 +16,7 @@ from tool_schemas import (
     SearchMessagesInput,
     SearchOutput,
     SearchMatchType,
+    SourceMessagesInput,
     TOOL_REGISTRY,
     TopicRecentInput,
 )
@@ -28,6 +29,7 @@ def test_message_nav_and_search_tools_are_registered() -> None:
         "open_thread": "OpenThreadInput",
         "scroll": "ScrollInput",
         "topic_recent": "TopicRecentInput",
+        "source_messages": "SourceMessagesInput",
         "search": "SearchInput",
     }
 
@@ -52,9 +54,11 @@ def test_message_nav_inputs_accept_expected_anchor_shapes() -> None:
 def test_search_input_and_output_cover_paging_and_match_metadata() -> None:
     search_input = SearchInput(query="repair attempt", mode="semantic", scope="thread")
     assert search_input.limit == 10
+    assert "source_weight_map" not in SearchInput.model_fields
 
+    message_id = uuid4()
     hit = SearchHit(
-        message_id=uuid4(),
+        message_id=message_id,
         cursor="nav-cursor",
         speaker=MessageSpeaker(label="You", user_id=uuid4(), direction="inbound"),
         sent_at=datetime.now(UTC),
@@ -69,7 +73,37 @@ def test_search_input_and_output_cover_paging_and_match_metadata() -> None:
     output = SearchOutput(hits=[hit], truncated=True, next_cursor="page-2")
 
     assert output.hits[0].match_type == SearchMatchType.both
+    assert output.hits[0].message_id == message_id
+    assert output.hits[0].source_type == "message"
+    assert output.hits[0].source_id == message_id
     assert output.next_cursor == "page-2"
+
+
+def test_search_hit_accepts_non_message_source_identity() -> None:
+    source_id = uuid4()
+    hit = SearchHit(
+        message_id=None,
+        source_type="memory",
+        source_id=source_id,
+        cursor="source-cursor",
+        speaker=MessageSpeaker(label="Memory", user_id=None, direction="inbound"),
+        sent_at=datetime.now(UTC),
+        header="Memory:",
+        snippet="remembered repair pattern",
+        match_type=SearchMatchType.semantic,
+    )
+
+    assert hit.message_id is None
+    assert hit.source_type == "memory"
+    assert hit.source_id == source_id
+
+
+def test_source_messages_input_accepts_unknown_source_type_for_structured_result() -> None:
+    source_id = uuid4()
+    args = SourceMessagesInput(source_type="unknown", source_id=source_id)
+
+    assert args.source_type == "unknown"
+    assert args.source_id == source_id
 
 
 def test_message_nav_hit_exposes_render_and_edit_metadata() -> None:
@@ -104,4 +138,3 @@ def test_search_messages_input_remains_backward_compatible() -> None:
                 "end": datetime(2026, 6, 1, 9, 0, tzinfo=UTC),
             },
         )
-

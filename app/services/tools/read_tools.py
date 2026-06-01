@@ -93,6 +93,8 @@ from tool_schemas import (
     SearchEmojisOutput,
     ScrollInput,
     ScrollOutput,
+    SourceMessagesInput,
+    SourceMessagesOutput,
     ListAllRemindersInput,
     ListAllRemindersOutput,
     ReminderItem,
@@ -334,6 +336,22 @@ def _decode_search_page_cursor(cursor: str) -> dict[str, Any]:
     return _decode_cursor(cursor, expected_kind="search_page")
 
 
+def _encode_search_source_cursor(
+    *,
+    source_type: str,
+    source_id: UUID,
+    scope: Literal["thread", "topic"],
+) -> str:
+    return _encode_cursor(
+        {
+            "kind": "search_source",
+            "source_type": source_type,
+            "source_id": str(source_id),
+            "scope": scope,
+        }
+    )
+
+
 def _reject_search_args(
     *,
     field: str,
@@ -412,6 +430,11 @@ def _searchable_view_scope_filters(
     thread_owner_user_id: UUID | None = None,
     dyad_id: UUID | None = None,
 ) -> tuple[list[str], list[Any], int]:
+    """Message-only ``v_searchable_messages m`` filters for nav/search_messages.
+
+    Unified non-message search hydration must use a source-keyed
+    ``v_searchable_content sc`` path instead of these ``m.*`` predicates.
+    """
     if ctx.bot_id is None:
         raise ValueError("TurnContext is missing bot_id")
     request = RetrievalQuery(
@@ -704,6 +727,21 @@ def _why_matched(
     return "Matched exact words in the message text."
 
 
+_SEARCH_SOURCE_LABELS = {
+    "memory": "Memory",
+    "artifact": "Artifact",
+    "observation": "Observation",
+    "distillation": "Distillation",
+}
+_SOURCE_MESSAGES_SUPPORTED_TYPES = {"observation", "distillation"}
+
+
+def _clean_uuid_list(value_: Any) -> list[UUID]:
+    if not isinstance(value_, list):
+        return []
+    return [item for item in value_ if isinstance(item, UUID)]
+
+
 def _search_scope_kwargs(
     ctx: TurnContext, scope: Literal["thread", "topic"]
 ) -> tuple[UUID | None, UUID | None]:
@@ -761,6 +799,296 @@ async def _hydrate_search_rows(
         *params,
     )
     return [dict(row) for row in rows]
+
+
+async def _fetch_search_source_safety_rows(
+    ctx: TurnContext, *, source_keys: list[tuple[str, UUID]]
+) -> dict[tuple[str, UUID], dict[str, Any]]:
+    rows_by_source: dict[tuple[str, UUID], dict[str, Any]] = {}
+    by_type: dict[str, list[UUID]] = {}
+    for source_type, source_id in source_keys:
+        if source_type in _SEARCH_SOURCE_LABELS:
+            by_type.setdefault(source_type, []).append(source_id)
+
+    if by_type.get("memory"):
+        rows = await ctx.pool.fetch(
+            """
+            SELECT
+                'memory'::text AS source_type,
+                id AS source_id,
+                status,
+                visibility,
+                recorded_by_bot_id AS bot_id,
+                content
+            FROM mediator.memories
+            WHERE id = ANY($1::uuid[])
+            """,
+            by_type["memory"],
+        )
+        rows_by_source.update(
+            {(str(row["source_type"]), row["source_id"]): dict(row) for row in rows}
+        )
+
+    if by_type.get("artifact"):
+        rows = await ctx.pool.fetch(
+            """
+            SELECT
+                'artifact'::text AS source_type,
+                id AS source_id,
+                bot_id,
+                artifact_type,
+                deleted_at
+            FROM mediator.conversation_artifacts
+            WHERE id = ANY($1::uuid[])
+            """,
+            by_type["artifact"],
+        )
+        rows_by_source.update(
+            {(str(row["source_type"]), row["source_id"]): dict(row) for row in rows}
+        )
+
+    if by_type.get("observation"):
+        rows = await ctx.pool.fetch(
+            """
+            SELECT
+                'observation'::text AS source_type,
+                id AS source_id,
+                status,
+                recorded_by_bot_id AS bot_id,
+                COALESCE(supporting_message_ids, '{}'::uuid[]) AS supporting_message_ids,
+                content
+            FROM mediator.observations
+            WHERE id = ANY($1::uuid[])
+            """,
+            by_type["observation"],
+        )
+        rows_by_source.update(
+            {(str(row["source_type"]), row["source_id"]): dict(row) for row in rows}
+        )
+
+    if by_type.get("distillation"):
+        rows = await ctx.pool.fetch(
+            """
+            SELECT
+                'distillation'::text AS source_type,
+                id AS source_id,
+                status,
+                visibility,
+                recorded_by_bot_id AS bot_id,
+                COALESCE(supporting_message_ids, '{}'::uuid[]) AS supporting_message_ids,
+                content
+            FROM mediator.distillations
+            WHERE id = ANY($1::uuid[])
+            """,
+            by_type["distillation"],
+        )
+        rows_by_source.update(
+            {(str(row["source_type"]), row["source_id"]): dict(row) for row in rows}
+        )
+
+    return rows_by_source
+
+
+async def _visible_search_supporting_message_ids(
+    ctx: TurnContext,
+    *,
+    source_safety_rows: dict[tuple[str, UUID], dict[str, Any]],
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None,
+    thread_owner_user_id: UUID | None,
+) -> set[UUID]:
+    supporting_ids: list[UUID] = []
+    seen: set[UUID] = set()
+    for row in source_safety_rows.values():
+        for message_id in _clean_uuid_list(row.get("supporting_message_ids")):
+            if message_id in seen:
+                continue
+            seen.add(message_id)
+            supporting_ids.append(message_id)
+    if not supporting_ids:
+        return set()
+    rows = await _hydrate_search_rows(
+        ctx,
+        message_ids=supporting_ids,
+        scope=scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    return {row["message_id"] for row in rows}
+
+
+def _search_source_render_authorized(
+    source_row: Any,
+    safety_row: dict[str, Any] | None,
+    visible_supporting_message_ids: set[UUID],
+    bot_id: str,
+) -> bool:
+    source_type = str(value(source_row, "source_type", ""))
+    if source_type not in _SEARCH_SOURCE_LABELS or safety_row is None:
+        return False
+    if value(source_row, "source_id") != safety_row.get("source_id"):
+        return False
+    safety_bot_id = safety_row.get("bot_id")
+    if safety_bot_id is not None and safety_bot_id != bot_id:
+        return False
+    if not (value(source_row, "content", "") or "").strip():
+        return False
+
+    if source_type == "memory":
+        return (
+            safety_row.get("status", "active") == "active"
+            and safety_row.get("visibility", "private") == "private"
+        )
+    if source_type == "artifact":
+        return safety_row.get("deleted_at") is None
+    if source_type == "observation":
+        supporting_ids = _clean_uuid_list(safety_row.get("supporting_message_ids"))
+        return (
+            safety_row.get("status", "active") == "active"
+            and bool(supporting_ids)
+            and any(message_id in visible_supporting_message_ids for message_id in supporting_ids)
+        )
+    if source_type == "distillation":
+        supporting_ids = _clean_uuid_list(safety_row.get("supporting_message_ids"))
+        return (
+            safety_row.get("status", "active") == "active"
+            and safety_row.get("visibility", "private") == "private"
+            and bool(supporting_ids)
+            and any(message_id in visible_supporting_message_ids for message_id in supporting_ids)
+        )
+    return False
+
+
+async def _hydrate_search_source_rows(
+    ctx: TurnContext,
+    *,
+    source_keys: list[tuple[str, UUID]],
+    scope: Literal["thread", "topic"],
+    topic_id: UUID | None,
+    thread_owner_user_id: UUID | None,
+) -> list[dict[str, Any]]:
+    if not source_keys:
+        return []
+
+    source_types = [source_type for source_type, _source_id in source_keys]
+    source_ids = [source_id for _source_type, source_id in source_keys]
+    clauses = [
+        "sc.source_type <> 'message'",
+        "sc.source_type IN ('memory', 'observation', 'distillation', 'artifact')",
+        "(sc.bot_id = $1 OR (sc.source_type = 'distillation' AND sc.bot_id IS NULL))",
+    ]
+    params: list[Any] = [ctx.bot_id or ""]
+    if scope == "topic":
+        clauses.append(f"sc.topic_id = ${len(params) + 1}")
+        params.append(topic_id)
+    else:
+        clauses.append(f"sc.thread_owner_user_id = ${len(params) + 1}")
+        params.append(thread_owner_user_id)
+    if ctx.dyad_id is not None:
+        clauses.append(
+            f"(sc.dyad_id = ${len(params) + 1} OR sc.dyad_id IS NULL)"
+        )
+        params.append(ctx.dyad_id)
+
+    source_types_param = len(params) + 1
+    params.append(source_types)
+    source_ids_param = len(params) + 1
+    params.append(source_ids)
+
+    rows = await ctx.pool.fetch(
+        f"""
+        WITH ranked_sources AS (
+            SELECT ranked.source_type, ranked.source_id, ranked.ordinality
+            FROM unnest(
+                ${source_types_param}::text[],
+                ${source_ids_param}::uuid[]
+            ) WITH ORDINALITY AS ranked(source_type, source_id, ordinality)
+        )
+        SELECT
+            sc.source_type,
+            sc.source_id,
+            sc.message_id,
+            sc.sender_id,
+            sc.recipient_id,
+            sc.thread_owner_user_id,
+            sc.thread_owner_partner_share,
+            sc.bot_id,
+            sc.topic_id,
+            sc.dyad_id,
+            sc.sent_at,
+            sc.source_created_at,
+            sc.source_updated_at,
+            sc.sort_at,
+            sc.canonical_text AS content
+        FROM ranked_sources
+        JOIN mediator.v_searchable_content sc
+          ON sc.source_type = ranked_sources.source_type
+         AND sc.source_id = ranked_sources.source_id
+        WHERE {" AND ".join(clauses)}
+        ORDER BY ranked_sources.ordinality ASC
+        """,
+        *params,
+    )
+    return [dict(row) for row in rows]
+
+
+async def _hydrate_source_messages_source_row(
+    ctx: TurnContext, *, source_type: str, source_id: UUID
+) -> dict[str, Any] | None:
+    rows = await _hydrate_search_source_rows(
+        ctx,
+        source_keys=[(source_type, source_id)],
+        scope="topic",
+        topic_id=ctx.primary_topic_id,
+        thread_owner_user_id=None,
+    )
+    return rows[0] if rows else None
+
+
+def _render_search_source_hit(
+    row: Any,
+    ctx: TurnContext,
+    *,
+    scope: Literal["thread", "topic"],
+    match_type: SearchMatchType,
+    snippet: str,
+    why_matched: str | None = None,
+    timezone: str | None = None,
+) -> SearchHit:
+    source_type = str(value(row, "source_type"))
+    source_id = value(row, "source_id")
+    sent_at = (
+        _coerce_datetime(value(row, "sent_at"))
+        or _coerce_datetime(value(row, "source_updated_at"))
+        or _coerce_datetime(value(row, "source_created_at"))
+        or _coerce_datetime(value(row, "sort_at"))
+    )
+    if source_id is None or sent_at is None:
+        raise ValueError("search source row is missing source_id or timestamp")
+    label = _SEARCH_SOURCE_LABELS.get(source_type)
+    if label is None:
+        raise ValueError("unsupported search source_type")
+    speaker = MessageSpeaker(label=label, user_id=None, direction="outbound")
+    return SearchHit(
+        message_id=None,
+        source_type=source_type,
+        source_id=source_id,
+        cursor=_encode_search_source_cursor(
+            source_type=source_type,
+            source_id=source_id,
+            scope=scope,
+        ),
+        speaker=speaker,
+        sent_at=sent_at,
+        sent_at_time=_time(sent_at, ctx, timezone=timezone),
+        charge="routine",
+        edited_at=None,
+        edit_history_original=None,
+        header=_spoken_header(label, sent_at=sent_at, ctx=ctx, timezone=timezone),
+        snippet=snippet,
+        match_type=match_type,
+        why_matched=why_matched,
+    )
 
 
 def _message_select_sql(where_sql: str, *, order_sql: str, limit_param: int) -> str:
@@ -1035,6 +1363,100 @@ async def messages_after(
     )
 
 
+async def source_messages(
+    ctx: TurnContext, args: SourceMessagesInput
+) -> SourceMessagesOutput:
+    logger.info("read tool source_messages turn_id=%s", ctx.turn_id)
+    source_type = (args.source_type or "").strip()
+    source_id = args.source_id
+    if source_type in {"memory", "artifact"}:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="unsupported",
+            reason=f"{source_type} sources do not link to supporting messages.",
+        )
+    if source_type not in _SOURCE_MESSAGES_SUPPORTED_TYPES:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="unsupported",
+            reason="source_type is not supported by source_messages.",
+        )
+
+    source_row = await _hydrate_source_messages_source_row(
+        ctx, source_type=source_type, source_id=source_id
+    )
+    if source_row is None:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="not_found",
+            reason="source is not searchable or visible in the current topic.",
+        )
+
+    safety_rows = await _fetch_search_source_safety_rows(
+        ctx, source_keys=[(source_type, source_id)]
+    )
+    safety_row = safety_rows.get((source_type, source_id))
+    if safety_row is None:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="not_found",
+            reason="source metadata is unavailable.",
+        )
+    supporting_ids = _clean_uuid_list(safety_row.get("supporting_message_ids"))
+    if not supporting_ids:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="no_link",
+            reason="source has no supporting_message_ids.",
+        )
+
+    rows = await _hydrate_search_rows(
+        ctx,
+        message_ids=supporting_ids,
+        scope="topic",
+        topic_id=ctx.primary_topic_id,
+        thread_owner_user_id=None,
+    )
+    if not rows:
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="no_link",
+            reason="no supporting messages are visible in the current topic.",
+        )
+
+    visible_ids = {row["message_id"] for row in rows}
+    if not _search_source_render_authorized(
+        source_row, safety_row, visible_ids, ctx.bot_id or ""
+    ):
+        return SourceMessagesOutput(
+            source_type=source_type,
+            source_id=source_id,
+            status="not_found",
+            reason="source is not authorized for this viewer.",
+        )
+
+    return SourceMessagesOutput(
+        source_type=source_type,
+        source_id=source_id,
+        status="ok",
+        messages=[
+            _render_message_nav_hit(
+                row,
+                ctx,
+                scope="topic",
+                topic_id=ctx.primary_topic_id,
+            )
+            for row in rows
+        ],
+    )
+
+
 async def open_thread(ctx: TurnContext, args: OpenThreadInput) -> OpenThreadOutput:
     logger.info("read tool open_thread turn_id=%s", ctx.turn_id)
     anchor_row = await _resolve_thread_anchor_row(ctx, args.around)
@@ -1242,26 +1664,81 @@ async def search(ctx: TurnContext, args: Any) -> Any:
     )
     page_ranked = ranked[rank_offset : rank_offset + args.limit + 1]
     page_results = page_ranked[: args.limit]
+    message_ids = [
+        result.message_id
+        for result in page_results
+        if result.source_type == "message" and result.message_id is not None
+    ]
+    source_keys = [
+        (result.source_type, result.source_id)
+        for result in page_results
+        if result.source_type != "message" and result.source_id is not None
+    ]
     hydrated_rows = await _hydrate_search_rows(
         ctx,
-        message_ids=[result.message_id for result in page_results],
+        message_ids=message_ids,
+        scope=args.scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    hydrated_source_rows = await _hydrate_search_source_rows(
+        ctx,
+        source_keys=source_keys,
+        scope=args.scope,
+        topic_id=topic_id,
+        thread_owner_user_id=thread_owner_user_id,
+    )
+    source_safety_rows = await _fetch_search_source_safety_rows(
+        ctx, source_keys=source_keys
+    )
+    visible_supporting_message_ids = await _visible_search_supporting_message_ids(
+        ctx,
+        source_safety_rows=source_safety_rows,
         scope=args.scope,
         topic_id=topic_id,
         thread_owner_user_id=thread_owner_user_id,
     )
     rows_by_id = {row["message_id"]: row for row in hydrated_rows}
+    rows_by_source = {
+        (str(row["source_type"]), row["source_id"]): row
+        for row in hydrated_source_rows
+    }
     hits = []
     for result in page_results:
-        row = rows_by_id.get(result.message_id)
+        if result.source_type == "message":
+            row = rows_by_id.get(result.message_id)
+            if row is None:
+                continue
+            hits.append(
+                _render_search_hit(
+                    row,
+                    ctx,
+                    scope=args.scope,
+                    topic_id=topic_id,
+                    thread_owner_user_id=thread_owner_user_id,
+                    match_type=SearchMatchType(result.match_type),
+                    snippet=_search_snippet(row, query),
+                    why_matched=_why_matched(
+                        match_type=result.match_type,
+                        semantic_degraded=result.semantic_degraded,
+                    ),
+                )
+            )
+            continue
+
+        row = rows_by_source.get((result.source_type, result.source_id))
         if row is None:
             continue
+        safety_row = source_safety_rows.get((result.source_type, result.source_id))
+        if not _search_source_render_authorized(
+            row, safety_row, visible_supporting_message_ids, ctx.bot_id or ""
+        ):
+            continue
         hits.append(
-            _render_search_hit(
+            _render_search_source_hit(
                 row,
                 ctx,
                 scope=args.scope,
-                topic_id=topic_id,
-                thread_owner_user_id=thread_owner_user_id,
                 match_type=SearchMatchType(result.match_type),
                 snippet=_search_snippet(row, query),
                 why_matched=_why_matched(

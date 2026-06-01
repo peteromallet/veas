@@ -315,8 +315,22 @@ class SearchMatchType(str, Enum):
     both = "both"
 
 
+SearchSourceType = Literal["message", "memory", "observation", "distillation", "artifact"]
+
+
 class SearchHit(BaseModel):
-    message_id: UUID
+    message_id: UUID | None = Field(
+        default=None,
+        description="Backing message id for message hits; null for non-message sources.",
+    )
+    source_type: SearchSourceType = Field(
+        default="message",
+        description="Retrieval source family for this hit.",
+    )
+    source_id: UUID | None = Field(
+        default=None,
+        description="Stable id of the retrieval source within source_type.",
+    )
     cursor: str = Field(
         description="Opaque nav cursor for opening or scrolling around this hit."
     )
@@ -338,6 +352,16 @@ class SearchHit(BaseModel):
         default=None,
         description="Short explanation of the exact or semantic match.",
     )
+
+    @model_validator(mode="after")
+    def _default_message_source_identity(self) -> "SearchHit":
+        if self.source_id is None and self.source_type == "message":
+            self.source_id = self.message_id
+        if self.source_type == "message" and self.message_id is None:
+            raise ValueError("message hits require message_id")
+        if self.source_id is None:
+            raise ValueError("search hits require source_id")
+        return self
 
 
 class MessagesBeforeInput(BaseModel):
@@ -406,6 +430,24 @@ class TopicRecentOutput(BaseModel):
     messages: list[MessageNavHit] = Field(default_factory=list)
     cursor: str | None = Field(
         default=None, description="Opaque nav cursor for continued scrolling."
+    )
+
+
+class SourceMessagesInput(BaseModel):
+    source_type: str = Field(
+        description="Retrieval source family from a search hit, such as observation or distillation."
+    )
+    source_id: UUID = Field(description="Stable id of the retrieval source.")
+
+
+class SourceMessagesOutput(BaseModel):
+    source_type: str
+    source_id: UUID
+    status: Literal["ok", "unsupported", "not_found", "no_link"]
+    messages: list[MessageNavHit] = Field(default_factory=list)
+    reason: str | None = Field(
+        default=None,
+        description="Short reason when source messages cannot be returned.",
     )
 
 
@@ -2600,6 +2642,7 @@ TOOL_REGISTRY: dict[str, tuple[type[BaseModel], type]] = {
     "open_thread": (OpenThreadInput, OpenThreadOutput),
     "scroll": (ScrollInput, ScrollOutput),
     "topic_recent": (TopicRecentInput, TopicRecentOutput),
+    "source_messages": (SourceMessagesInput, SourceMessagesOutput),
     "search": (SearchInput, SearchOutput),
     "search_emojis": (SearchEmojisInput, SearchEmojisOutput),
     "recent_activity": (RecentActivityInput, RecentActivityOutput),

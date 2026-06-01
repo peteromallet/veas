@@ -719,3 +719,51 @@ def test_db_retriever_maps_exact_and_hybrid_query_types(
         retriever.close()
 
     assert modes == ["exact", "hybrid", "hybrid", "hybrid", "hybrid"]
+
+
+def test_db_retriever_skips_non_message_results_in_sync_output(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+
+    class FakePool:
+        async def close(self) -> None:
+            pass
+
+    async def create_pool(database_url: str, **kwargs: object) -> object:
+        return FakePool()
+
+    fake_asyncpg.create_pool = create_pool  # type: ignore[attr-defined]
+
+    fake_retrieval = types.ModuleType("app.services.retrieval")
+    message_id = uuid4()
+
+    class RetrievalQuery:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    async def hybrid_search(pool: object, request: object) -> list[object]:
+        return [
+            types.SimpleNamespace(message_id=None, source_type="memory", source_id=uuid4()),
+            types.SimpleNamespace(message_id=message_id, source_type="message", source_id=message_id),
+        ]
+
+    fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
+    fake_retrieval.hybrid_search = hybrid_search  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("DIRECT_DATABASE_URL", "postgresql://direct.example/db")
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+    monkeypatch.setitem(sys.modules, "app.services.retrieval", fake_retrieval)
+
+    retriever = DbBackedRetriever(_make_test_corpus())
+    try:
+        assert retriever.retrieve(
+            "query",
+            scope="all",
+            limit=5,
+            viewer_user_id=str(uuid4()),
+        ) == [str(message_id)]
+    finally:
+        retriever.close()

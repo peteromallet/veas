@@ -9,7 +9,7 @@ from uuid import UUID, uuid4
 import pytest
 
 from app.services import retrieval
-from app.services.retrieval import RetrievalQuery, hybrid_search
+from app.services.retrieval import RetrievalQuery, RetrievalResult, hybrid_search
 
 
 class RecordingPool:
@@ -190,7 +190,9 @@ def _visibility_contract_row_visible(
         return False
     if row["topic_id"] != topic_id:
         return False
-    if row["dyad_id"] != dyad_id:
+    if row["dyad_id"] != dyad_id and not (
+        row.get("source_type") != "message" and row["dyad_id"] is None
+    ):
         return False
     if thread_owner_user_id is not None and row["thread_owner_user_id"] != thread_owner_user_id:
         return False
@@ -203,6 +205,10 @@ def _visibility_contract_row_visible(
         return False
     if row["thread_owner_user_id"] != viewer_id and row["thread_owner_partner_share"] != "opt_in":
         return False
+    if row.get("source_type") in {"memory", "distillation"} and (
+        row["thread_owner_partner_share"] is not None
+    ):
+        return False
     if row.get("active_oob_severity") in {"firm", "hard"}:
         return False
     return True
@@ -210,18 +216,25 @@ def _visibility_contract_row_visible(
 
 def _assert_retrieval_visibility_sql(sql: str) -> None:
     compact = " ".join(sql.split())
-    assert "mediator.v_searchable_messages m" in compact
+    assert "mediator.v_searchable_content sc" in compact
+    assert "mediator.v_searchable_messages m" not in compact
     assert "FROM mediator.messages" not in compact
-    assert "m.bot_id =" in compact
-    assert "m.topic_id =" in compact
-    assert "m.dyad_id =" in compact
-    assert "m.thread_owner_user_id =" in compact
-    assert "m.thread_owner_user_id = ANY(" in compact
-    assert "(m.sender_id = ANY(" in compact
-    assert "OR m.recipient_id = ANY(" in compact
-    assert "m.thread_owner_partner_share = 'opt_in'" in compact
+    assert "sc.bot_id IS NOT NULL" in compact
+    assert "sc.bot_id =" in compact
+    assert "sc.primary_topic_id =" in compact
+    assert "ANY(sc.topic_ids)" in compact
+    assert "sc.dyad_id IS NOT NULL" not in compact
+    assert "sc.dyad_id =" in compact
+    assert "sc.source_type <> 'message' AND sc.dyad_id IS NULL" in compact
+    assert "sc.thread_owner_user_id IS NOT NULL" in compact
+    assert "sc.thread_owner_user_id =" in compact
+    assert "sc.thread_owner_user_id = ANY(" in compact
+    assert "(sc.sender_id IS NOT NULL AND sc.sender_id = ANY(" in compact
+    assert "OR (sc.recipient_id IS NOT NULL AND sc.recipient_id = ANY(" in compact
+    assert "sc.thread_owner_partner_share = 'opt_in'" in compact
+    assert "sc.source_type NOT IN ('memory', 'distillation') OR sc.thread_owner_partner_share IS NULL" in compact
     assert "FROM mediator.out_of_bounds x" in compact
-    assert "x.owner_id = m.thread_owner_user_id" in compact
+    assert "x.owner_id = sc.thread_owner_user_id" in compact
     assert "x.status = 'active'" in compact
     assert "x.severity IN ('firm', 'hard')" in compact
 
@@ -244,6 +257,7 @@ def _settings(**overrides):
         "query_embed_cache_ttl_s": 300,
         "query_embed_cache_max_entries": 1024,
         "retrieval_hnsw_ef_search": 80,
+        "retrieval_source_weight_map": {"message": 1.0},
     }
     base.update(overrides)
     return SimpleNamespace(**base)
@@ -254,6 +268,42 @@ def clear_query_embedding_cache():
     retrieval._QUERY_EMBEDDING_CACHE.clear()
     yield
     retrieval._QUERY_EMBEDDING_CACHE.clear()
+
+
+def test_retrieval_result_defaults_message_source_identity_for_legacy_callers():
+    message_id = uuid4()
+
+    result = RetrievalResult(
+        message_id=message_id,
+        match_type="exact",
+        rrf_score=None,
+        keyword_rank=1,
+        semantic_rank=None,
+        semantic_degraded=False,
+    )
+
+    assert result.message_id == message_id
+    assert result.source_type == "message"
+    assert result.source_id == message_id
+
+
+def test_retrieval_result_allows_explicit_non_message_source_identity():
+    source_id = uuid4()
+
+    result = RetrievalResult(
+        message_id=None,
+        source_type="memory",
+        source_id=source_id,
+        match_type="semantic",
+        rrf_score=0.25,
+        keyword_rank=None,
+        semantic_rank=1,
+        semantic_degraded=False,
+    )
+
+    assert result.message_id is None
+    assert result.source_type == "memory"
+    assert result.source_id == source_id
 
 
 @pytest.mark.anyio
@@ -314,20 +364,26 @@ async def test_exact_mode_sql_uses_searchable_view_normalized_rank_and_stable_or
 
     assert pool.sql is not None
     compact = " ".join(pool.sql.split())
-    assert "FROM mediator.v_searchable_messages m" in pool.sql
+    assert "FROM mediator.v_searchable_content sc" in pool.sql
     assert "websearch_to_tsquery('simple'::regconfig, $1)" in pool.sql
-    assert "ts_rank(m.search_tsv, query.tsq, 32)" in pool.sql
+    assert "ts_rank(sc.search_tsv, query.tsq, 32)" in pool.sql
+    assert "sc.canonical_text AS source_text" in pool.sql
+    assert "sc.source_created_at" in pool.sql
+    assert "sc.source_updated_at" in pool.sql
     assert "row_number() OVER" in pool.sql
-    assert "m.sent_at DESC" in pool.sql
-    assert "m.message_id DESC" in pool.sql
-    assert "m.search_tsv @@ query.tsq" in pool.sql
-    assert "m.content" not in compact
-    assert "m.canonical_text" not in compact
+    assert "sc.sort_at DESC" in pool.sql
+    assert "sc.source_id DESC" in pool.sql
+    assert "sc.search_tsv @@ query.tsq" in pool.sql
+    assert "sc.content" not in compact
+    assert compact.count("sc.canonical_text") == 1
     assert "semantic_rank" not in compact
     assert "rrf_score" not in compact
-    assert "m.thread_owner_user_id = ANY($4::uuid[])" in pool.sql
-    assert "(m.sender_id = ANY($4::uuid[]) OR m.recipient_id = ANY($4::uuid[]))" in compact
-    assert "(m.thread_owner_user_id = $3 OR m.thread_owner_partner_share = 'opt_in')" in compact
+    assert "sc.thread_owner_user_id = ANY($4::uuid[])" in pool.sql
+    assert (
+        "((sc.sender_id IS NOT NULL AND sc.sender_id = ANY($4::uuid[])) "
+        "OR (sc.recipient_id IS NOT NULL AND sc.recipient_id = ANY($4::uuid[])))"
+    ) in compact
+    assert "(sc.thread_owner_user_id = $3 OR sc.thread_owner_partner_share = 'opt_in')" in compact
     assert "FROM mediator.out_of_bounds x" in pool.sql
     assert "x.status = 'active'" in pool.sql
     assert "x.severity IN ('firm', 'hard')" in pool.sql
@@ -351,7 +407,7 @@ async def test_exact_mode_sql_handles_null_or_empty_source_text_via_search_tsv_o
 
     assert pool.sql is not None
     compact = " ".join(pool.sql.split())
-    assert "m.search_tsv @@ query.tsq" in compact
+    assert "sc.search_tsv @@ query.tsq" in compact
     assert "coalesce(" not in compact
     assert "ILIKE" not in compact
     assert "media_analysis" not in compact
@@ -602,8 +658,8 @@ async def test_hybrid_semantic_ann_sets_hnsw_and_fetches_ann_in_same_transaction
     assert fetch_event[:3] == ("fetch", 1, 1)
     assert "FROM mediator.content_embeddings e" in fetch_event[3]
     assert "JOIN mediator.v_searchable_content sc" in fetch_event[3]
-    assert "sc.source_type = 'message'" in fetch_event[3]
-    assert "JOIN mediator.v_searchable_messages m" in fetch_event[3]
+    assert "sc.source_type = 'message'" not in fetch_event[3]
+    assert "JOIN mediator.v_searchable_messages m" not in fetch_event[3]
     assert "e.embedding <=> $1" in fetch_event[3]
 
 
@@ -622,17 +678,16 @@ async def test_hybrid_semantic_sql_joins_searchable_view_and_orders_by_cosine_wi
     compact = " ".join(pool.sql.split())
     assert "FROM mediator.content_embeddings e" in pool.sql
     assert "JOIN mediator.v_searchable_content sc" in pool.sql
-    assert "JOIN mediator.v_searchable_messages m" in pool.sql
-    assert "ON m.message_id = sc.message_id" in pool.sql
-    assert "sc.source_type = 'message'" in pool.sql
+    assert "JOIN mediator.v_searchable_messages m" not in pool.sql
+    assert "sc.source_type = 'message'" not in pool.sql
     assert "e.model = $2" in pool.sql
     assert "e.dimension = $3" in pool.sql
     assert "e.embedding <=> $1 AS cosine_distance" in pool.sql
     assert "e.embedding <=> $1 ASC" in pool.sql
-    assert "m.sent_at DESC" in pool.sql
-    assert "m.message_id DESC" in pool.sql
-    assert "m.thread_owner_user_id = ANY($6::uuid[])" in pool.sql
-    assert "(m.thread_owner_user_id = $5 OR m.thread_owner_partner_share = 'opt_in')" in compact
+    assert "sc.sort_at DESC" in pool.sql
+    assert "sc.source_id DESC" in pool.sql
+    assert "sc.thread_owner_user_id = ANY($6::uuid[])" in pool.sql
+    assert "(sc.thread_owner_user_id = $5 OR sc.thread_owner_partner_share = 'opt_in')" in compact
     assert "FROM mediator.out_of_bounds x" in pool.sql
     assert "row_number() OVER" in pool.sql
     assert "ORDER BY semantic_rank ASC" in pool.sql
@@ -698,6 +753,301 @@ async def test_hybrid_mode_fuses_keyword_and_semantic_results_with_rrf_metadata_
     assert pool.fetch_calls == 2
 
 
+@pytest.mark.anyio
+async def test_exact_mode_ranks_unified_keyword_sources_without_semantic_work():
+    message_id = UUID("00000000-0000-4000-8000-000000000041")
+    memory_id = UUID("00000000-0000-4000-8000-000000000042")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    pool = RecordingPool(
+        [
+            {
+                "source_type": "memory",
+                "source_id": memory_id,
+                "message_id": None,
+                "sent_at": sent_at,
+                "keyword_score": 0.9,
+                "keyword_rank": 1,
+            },
+            {
+                "source_type": "message",
+                "source_id": message_id,
+                "message_id": message_id,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 2,
+            },
+        ]
+    )
+
+    results = await hybrid_search(pool, _query(mode="exact", limit=5), settings=_settings())
+
+    assert [(result.source_type, result.source_id, result.message_id) for result in results] == [
+        ("memory", memory_id, None),
+        ("message", message_id, message_id),
+    ]
+    assert [result.match_type for result in results] == ["exact", "exact"]
+    assert all(result.rrf_score is None for result in results)
+    assert pool.fetch_calls == 1
+
+
+@pytest.mark.anyio
+async def test_hybrid_mode_ranks_unified_semantic_only_sources():
+    memory_id = UUID("00000000-0000-4000-8000-000000000043")
+    observation_id = UUID("00000000-0000-4000-8000-000000000044")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    pool = RecordingPool(
+        [
+            [],
+            [
+                {
+                    "source_type": "memory",
+                    "source_id": memory_id,
+                    "message_id": None,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.1,
+                    "semantic_rank": 1,
+                },
+                {
+                    "source_type": "observation",
+                    "source_id": observation_id,
+                    "message_id": None,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.2,
+                    "semantic_rank": 2,
+                },
+            ],
+        ]
+    )
+
+    results = await hybrid_search(
+        pool,
+        _query(mode="hybrid", limit=5),
+        embedder=RecordingEmbedder(),
+        settings=_settings(),
+    )
+
+    assert [(result.source_type, result.source_id) for result in results] == [
+        ("memory", memory_id),
+        ("observation", observation_id),
+    ]
+    assert [result.match_type for result in results] == ["semantic", "semantic"]
+    assert [result.semantic_rank for result in results] == [1, 2]
+    assert all(result.message_id is None for result in results)
+
+
+@pytest.mark.anyio
+async def test_hybrid_mode_uses_configured_source_weights_without_public_request_fields():
+    message_id = UUID("00000000-0000-4000-8000-000000000011")
+    memory_id = UUID("00000000-0000-4000-8000-000000000012")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    pool = RecordingPool(
+        [
+            [],
+            [
+                {
+                    "source_type": "message",
+                    "source_id": message_id,
+                    "message_id": message_id,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.1,
+                    "semantic_rank": 1,
+                },
+                {
+                    "source_type": "memory",
+                    "source_id": memory_id,
+                    "message_id": None,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.2,
+                    "semantic_rank": 2,
+                },
+            ],
+        ]
+    )
+
+    results = await hybrid_search(
+        pool,
+        _query(mode="hybrid", limit=2),
+        embedder=RecordingEmbedder(),
+        settings=_settings(retrieval_source_weight_map={"message": 1.0, "memory": 2.0}),
+    )
+
+    assert [result.source_type for result in results] == ["memory", "message"]
+    assert results[0].message_id is None
+    assert results[0].source_id == memory_id
+    assert results[0].rrf_score == pytest.approx(2.0 / 62)
+    assert not hasattr(RetrievalQuery, "source_weight_map")
+
+
+@pytest.mark.anyio
+async def test_source_weight_map_flips_order_and_unmapped_sources_default_to_one():
+    message_id = UUID("00000000-0000-4000-8000-000000000045")
+    observation_id = UUID("00000000-0000-4000-8000-000000000046")
+    artifact_id = UUID("00000000-0000-4000-8000-000000000047")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    semantic_rows = [
+        {
+            "source_type": "message",
+            "source_id": message_id,
+            "message_id": message_id,
+            "sent_at": sent_at,
+            "semantic_rank": 1,
+        },
+        {
+            "source_type": "observation",
+            "source_id": observation_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "semantic_rank": 2,
+        },
+        {
+            "source_type": "artifact",
+            "source_id": artifact_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "semantic_rank": 3,
+        },
+    ]
+
+    unweighted = retrieval._fuse_rrf_results(
+        keyword_rows=[],
+        semantic_rows=semantic_rows,
+        semantic_degraded=False,
+        limit=3,
+        source_weight_map={"message": 1.0},
+    )
+    weighted = retrieval._fuse_rrf_results(
+        keyword_rows=[],
+        semantic_rows=semantic_rows,
+        semantic_degraded=False,
+        limit=3,
+        source_weight_map={"message": 1.0, "observation": 2.0},
+    )
+
+    assert [result.source_type for result in unweighted] == [
+        "message",
+        "observation",
+        "artifact",
+    ]
+    assert [result.source_type for result in weighted] == [
+        "observation",
+        "message",
+        "artifact",
+    ]
+    assert weighted[2].rrf_score == pytest.approx(1.0 / 63)
+
+
+@pytest.mark.anyio
+async def test_hybrid_mode_internal_source_weight_override_wins_over_config():
+    message_id = UUID("00000000-0000-4000-8000-000000000021")
+    memory_id = UUID("00000000-0000-4000-8000-000000000022")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    pool = RecordingPool(
+        [
+            [],
+            [
+                {
+                    "source_type": "message",
+                    "source_id": message_id,
+                    "message_id": message_id,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.1,
+                    "semantic_rank": 1,
+                },
+                {
+                    "source_type": "memory",
+                    "source_id": memory_id,
+                    "message_id": None,
+                    "sent_at": sent_at,
+                    "cosine_distance": 0.2,
+                    "semantic_rank": 2,
+                },
+            ],
+        ]
+    )
+
+    results = await hybrid_search(
+        pool,
+        _query(mode="hybrid", limit=2),
+        embedder=RecordingEmbedder(),
+        settings=_settings(retrieval_source_weight_map={"message": 1.0, "memory": 5.0}),
+        source_weight_map={"message": 1.0, "memory": 0.5},
+    )
+
+    assert [result.source_type for result in results] == ["message", "memory"]
+    assert results[1].rrf_score == pytest.approx(0.5 / 62)
+
+
+@pytest.mark.parametrize("mode", ["exact", "hybrid"])
+@pytest.mark.anyio
+async def test_retrieval_ranks_null_message_distillation_and_observation_sources(mode: str):
+    observation_id = UUID("00000000-0000-4000-8000-000000000031")
+    distillation_id = UUID("00000000-0000-4000-8000-000000000032")
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    keyword_rows = [
+        {
+            "source_type": "observation",
+            "source_id": observation_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "keyword_score": 0.8,
+            "keyword_rank": 1,
+        },
+        {
+            "source_type": "distillation",
+            "source_id": distillation_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "keyword_score": 0.7,
+            "keyword_rank": 2,
+        },
+    ]
+    semantic_rows = [
+        {
+            "source_type": "observation",
+            "source_id": observation_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "cosine_distance": 0.1,
+            "semantic_rank": 1,
+        },
+        {
+            "source_type": "distillation",
+            "source_id": distillation_id,
+            "message_id": None,
+            "sent_at": sent_at,
+            "cosine_distance": 0.2,
+            "semantic_rank": 2,
+        },
+    ]
+    pool = RecordingPool(keyword_rows if mode == "exact" else [keyword_rows, semantic_rows])
+
+    results = await hybrid_search(
+        pool,
+        _query(
+            mode=mode,
+            viewer_user_id=UUID("00000000-0000-4000-8000-000000000020"),
+            partner_user_id=UUID("00000000-0000-4000-8000-000000000021"),
+            topic_id=UUID("00000000-0000-4000-8000-000000000010"),
+            dyad_id=UUID("00000000-0000-4000-8000-000000000012"),
+            limit=2,
+        ),
+        embedder=RecordingEmbedder(),
+        settings=_settings(),
+    )
+
+    assert [(result.source_type, result.source_id) for result in results] == [
+        ("observation", observation_id),
+        ("distillation", distillation_id),
+    ]
+    assert [result.message_id for result in results] == [None, None]
+    assert pool.fetch_sqls
+    for sql in pool.fetch_sqls:
+        compact = " ".join(sql.split())
+        assert "(sc.dyad_id =" in compact
+        assert "OR (sc.source_type <> 'message' AND sc.dyad_id IS NULL)" in compact
+        assert "x.severity IN ('firm', 'hard')" in compact
+
+
 @pytest.mark.parametrize("mode", ["exact", "hybrid"])
 @pytest.mark.anyio
 async def test_retriever_visibility_denied_and_control_rows_are_gated_in_every_mode(mode: str):
@@ -709,6 +1059,7 @@ async def test_retriever_visibility_denied_and_control_rows_are_gated_in_every_m
     other_id = UUID("00000000-0000-4000-8000-000000000099")
     base_row = {
         "bot_id": "mediator",
+        "source_type": "message",
         "topic_id": topic_id,
         "dyad_id": dyad_id,
         "thread_owner_user_id": viewer_id,
@@ -747,6 +1098,31 @@ async def test_retriever_visibility_denied_and_control_rows_are_gated_in_every_m
         ),
         ("allowed own-thread control", base_row, True),
         ("allowed soft-OOB control", {**base_row, "active_oob_severity": "soft"}, True),
+        (
+            "allowed observation with null dyad",
+            {**base_row, "source_type": "observation", "dyad_id": None},
+            True,
+        ),
+        (
+            "allowed distillation with null dyad",
+            {
+                **base_row,
+                "source_type": "distillation",
+                "dyad_id": None,
+                "thread_owner_partner_share": None,
+            },
+            True,
+        ),
+        (
+            "firm OOB message remains denied",
+            {**base_row, "source_type": "message", "active_oob_severity": "firm"},
+            False,
+        ),
+        (
+            "hard OOB message remains denied",
+            {**base_row, "source_type": "message", "active_oob_severity": "hard"},
+            False,
+        ),
         (
             "allowed partner opt-in control",
             {
@@ -831,12 +1207,16 @@ def test_rrf_fusion_computes_scores_and_match_metadata_for_exact_semantic_and_bo
     results = retrieval._fuse_rrf_results(
         keyword_rows=[
             {
+                "source_type": "message",
+                "source_id": both_id,
                 "message_id": both_id,
                 "sent_at": sent_at,
                 "keyword_score": 0.9,
                 "keyword_rank": 1,
             },
             {
+                "source_type": "message",
+                "source_id": exact_only_id,
                 "message_id": exact_only_id,
                 "sent_at": sent_at,
                 "keyword_score": 0.5,
@@ -845,11 +1225,15 @@ def test_rrf_fusion_computes_scores_and_match_metadata_for_exact_semantic_and_bo
         ],
         semantic_rows=[
             {
+                "source_type": "message",
+                "source_id": semantic_only_id,
                 "message_id": semantic_only_id,
                 "sent_at": sent_at,
                 "semantic_rank": 1,
             },
             {
+                "source_type": "message",
+                "source_id": both_id,
                 "message_id": both_id,
                 "sent_at": sent_at,
                 "semantic_rank": 4,
@@ -912,6 +1296,77 @@ def test_rrf_fusion_applies_limit_after_sorting_and_propagates_semantic_degraded
     assert all(result.semantic_rank is None for result in results)
 
 
+def test_rrf_fusion_keeps_message_only_tie_break_order_stable():
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    newer_message_id = UUID("00000000-0000-4000-8000-000000000211")
+    older_message_id = UUID("00000000-0000-4000-8000-000000000210")
+
+    results = retrieval._fuse_rrf_results(
+        keyword_rows=[
+            {
+                "message_id": older_message_id,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 1,
+            },
+            {
+                "message_id": newer_message_id,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 1,
+            },
+        ],
+        semantic_rows=[],
+        semantic_degraded=False,
+        limit=10,
+    )
+
+    assert [result.message_id for result in results] == [newer_message_id, older_message_id]
+
+
+def test_rrf_fusion_uses_source_identity_tie_break_for_non_message_hits():
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    shared_identity = UUID("00000000-0000-4000-8000-000000000221")
+
+    results = retrieval._fuse_rrf_results(
+        keyword_rows=[
+            {
+                "source_type": "artifact",
+                "source_id": shared_identity,
+                "message_id": None,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 1,
+            },
+            {
+                "source_type": "observation",
+                "source_id": shared_identity,
+                "message_id": None,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 1,
+            },
+            {
+                "source_type": "message",
+                "source_id": shared_identity,
+                "message_id": shared_identity,
+                "sent_at": sent_at,
+                "keyword_score": 0.8,
+                "keyword_rank": 1,
+            },
+        ],
+        semantic_rows=[],
+        semantic_degraded=False,
+        limit=10,
+    )
+
+    assert [(result.source_type, result.source_id) for result in results] == [
+        ("artifact", shared_identity),
+        ("message", shared_identity),
+        ("observation", shared_identity),
+    ]
+
+
 @pytest.mark.anyio
 async def test_hybrid_mode_degrades_to_keyword_only_on_provider_error():
     message_id = uuid4()
@@ -936,7 +1391,7 @@ async def test_hybrid_mode_degrades_to_keyword_only_on_provider_error():
     assert [result.message_id for result in results] == [message_id]
     assert results[0].semantic_degraded is True
     compact = " ".join((pool.sql or "").split())
-    assert "FROM mediator.v_searchable_messages m" in pool.sql
+    assert "FROM mediator.v_searchable_content sc" in pool.sql
     assert "semantic_rank" not in compact
     assert "rrf_score" not in compact
 
@@ -1054,21 +1509,6 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
         )
         await conn.execute(
             """
-            CREATE TABLE mediator.v_searchable_messages (
-                message_id uuid PRIMARY KEY,
-                bot_id text NOT NULL,
-                sender_id uuid,
-                recipient_id uuid,
-                topic_id uuid,
-                thread_owner_user_id uuid,
-                thread_owner_partner_share text,
-                dyad_id uuid,
-                sent_at timestamptz NOT NULL
-            )
-            """
-        )
-        await conn.execute(
-            """
             CREATE TABLE mediator.v_searchable_content (
                 source_type text NOT NULL,
                 source_id uuid NOT NULL,
@@ -1080,7 +1520,14 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
                 thread_owner_user_id uuid,
                 thread_owner_partner_share text,
                 dyad_id uuid,
-                sent_at timestamptz NOT NULL
+                sent_at timestamptz NOT NULL,
+                canonical_text text NOT NULL,
+                search_tsv tsvector NOT NULL,
+                sort_at timestamptz NOT NULL,
+                primary_topic_id uuid,
+                topic_ids uuid[] NOT NULL DEFAULT ARRAY[]::uuid[],
+                source_created_at timestamptz NOT NULL,
+                source_updated_at timestamptz NOT NULL
             )
             """
         )
@@ -1099,25 +1546,23 @@ async def test_hybrid_semantic_ann_runs_against_pgvector_when_available():
         older_message_id = uuid4()
         await conn.execute(
             """
-            INSERT INTO mediator.v_searchable_messages (
-                message_id, bot_id, sender_id, recipient_id,
-                thread_owner_user_id, thread_owner_partner_share, sent_at
-            )
-            VALUES ($1, 'mediator', $3, $3, $3, 'unset', '2025-06-01T12:00:00Z'),
-                   ($2, 'mediator', $3, $3, $3, 'unset', '2025-06-01T11:00:00Z')
-            """,
-            message_id,
-            older_message_id,
-            viewer_id,
-        )
-        await conn.execute(
-            """
             INSERT INTO mediator.v_searchable_content (
                 source_type, source_id, message_id, bot_id, sender_id, recipient_id,
-                thread_owner_user_id, thread_owner_partner_share, sent_at
+                thread_owner_user_id, thread_owner_partner_share, sent_at,
+                canonical_text, search_tsv, sort_at, source_created_at, source_updated_at
             )
-            VALUES ('message', $1, $1, 'mediator', $3, $3, $3, 'unset', '2025-06-01T12:00:00Z'),
-                   ('message', $2, $2, 'mediator', $3, $3, $3, 'unset', '2025-06-01T11:00:00Z')
+            VALUES (
+                'message', $1, $1, 'mediator', $3, $3, $3, 'unset',
+                '2025-06-01T12:00:00Z', 'deploy crash',
+                to_tsvector('simple'::regconfig, 'deploy crash'),
+                '2025-06-01T12:00:00Z', '2025-06-01T12:00:00Z', '2025-06-01T12:00:00Z'
+            ),
+            (
+                'message', $2, $2, 'mediator', $3, $3, $3, 'unset',
+                '2025-06-01T11:00:00Z', 'older deployment note',
+                to_tsvector('simple'::regconfig, 'older deployment note'),
+                '2025-06-01T11:00:00Z', '2025-06-01T11:00:00Z', '2025-06-01T11:00:00Z'
+            )
             """,
             message_id,
             older_message_id,

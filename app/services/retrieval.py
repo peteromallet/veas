@@ -11,6 +11,7 @@ import time
 import unicodedata
 from collections import OrderedDict
 from dataclasses import dataclass
+from collections.abc import Mapping
 from typing import Any, Literal
 from uuid import UUID
 
@@ -41,8 +42,8 @@ _QUERY_EMBEDDING_CACHE: OrderedDict[tuple[str, str], _CachedQueryEmbedding] = Or
 class RetrievalQuery:
     """Inputs shared by exact and hybrid retrieval.
 
-    ``thread_owner_user_id`` is the thread scope used by
-    ``mediator.v_searchable_messages``.  ``dyad_id`` is accepted now so later
+    ``thread_owner_user_id`` is the thread scope used by the searchable content
+    view.  ``dyad_id`` is accepted now so later
     visibility tasks can tighten cross-thread/cross-partner rules without
     changing the public call shape.
     """
@@ -60,7 +61,7 @@ class RetrievalQuery:
 
 @dataclass(frozen=True, slots=True)
 class RetrievalResult:
-    message_id: UUID
+    message_id: UUID | None
     match_type: MatchType
     rrf_score: float | None
     keyword_rank: int | None
@@ -68,6 +69,20 @@ class RetrievalResult:
     semantic_degraded: bool
     keyword_score: float | None = None
     sent_at: Any | None = None
+    source_type: str = "message"
+    source_id: UUID | None = None
+
+    def __post_init__(self) -> None:
+        source_type = self.source_type.strip() if self.source_type else "message"
+        source_id = self.source_id
+        if source_id is None and self.message_id is not None and source_type == "message":
+            source_id = self.message_id
+        if source_type == "message" and self.message_id is None and source_id is not None:
+            object.__setattr__(self, "message_id", source_id)
+        if source_id is None:
+            raise ValueError("RetrievalResult.source_id is required for non-message results")
+        object.__setattr__(self, "source_type", source_type)
+        object.__setattr__(self, "source_id", source_id)
 
 
 RRF_K = 60
@@ -79,6 +94,7 @@ async def hybrid_search(
     *,
     embedder: Embedder | None = None,
     settings: Settings | None = None,
+    source_weight_map: Mapping[str, float] | None = None,
 ) -> list[RetrievalResult]:
     """Run production retrieval for *request*.
 
@@ -92,6 +108,9 @@ async def hybrid_search(
 
     if request.mode == "exact":
         return await _keyword_search(pool, request, semantic_degraded=False)
+
+    settings = settings or get_settings()
+    source_weights = _resolve_source_weight_map(settings, source_weight_map)
 
     prepared_embedding = await _prepare_query_embedding(
         request.query,
@@ -113,6 +132,7 @@ async def hybrid_search(
         semantic_rows=semantic_rows,
         semantic_degraded=False,
         limit=_positive_limit(request.limit),
+        source_weight_map=source_weights,
     )
 
 
@@ -198,19 +218,24 @@ async def _keyword_search(
 ) -> list[RetrievalResult]:
     limit = _positive_limit(request.limit)
     rows = await _fetch_keyword_matches(pool, request, limit=limit)
-    return [
-        RetrievalResult(
-            message_id=row["message_id"],
-            match_type="exact",
-            rrf_score=None,
-            keyword_rank=row["keyword_rank"],
-            semantic_rank=None,
-            semantic_degraded=semantic_degraded,
-            keyword_score=float(row["keyword_score"]),
-            sent_at=row["sent_at"],
+    results: list[RetrievalResult] = []
+    for row in rows:
+        source_type, source_id, message_id = _source_identity_from_row(row)
+        results.append(
+            RetrievalResult(
+                message_id=message_id,
+                match_type="exact",
+                rrf_score=None,
+                keyword_rank=row["keyword_rank"],
+                semantic_rank=None,
+                semantic_degraded=semantic_degraded,
+                keyword_score=float(row["keyword_score"]),
+                sent_at=row["sent_at"],
+                source_type=source_type,
+                source_id=source_id,
+            )
         )
-        for row in rows
-    ]
+    return results
 
 
 async def _fetch_keyword_matches(
@@ -219,7 +244,7 @@ async def _fetch_keyword_matches(
     *,
     limit: int,
 ) -> list[Any]:
-    filters, params, next_param = _visibility_filters(
+    filters, params, next_param = _retrieval_visibility_filters(
         request,
         initial_params=[request.query],
         next_param=2,
@@ -235,23 +260,33 @@ async def _fetch_keyword_matches(
         ),
         keyword_matches AS (
             SELECT
-                m.message_id,
-                m.sent_at,
-                ts_rank(m.search_tsv, query.tsq, 32) AS keyword_score,
+                sc.source_type,
+                sc.source_id,
+                sc.message_id,
+                sc.sent_at,
+                sc.source_created_at,
+                sc.source_updated_at,
+                sc.canonical_text AS source_text,
+                ts_rank(sc.search_tsv, query.tsq, 32) AS keyword_score,
                 row_number() OVER (
                     ORDER BY
-                        ts_rank(m.search_tsv, query.tsq, 32) DESC,
-                        m.sent_at DESC,
-                        m.message_id DESC
+                        ts_rank(sc.search_tsv, query.tsq, 32) DESC,
+                        sc.sort_at DESC,
+                        sc.source_id DESC
                 ) AS keyword_rank
-            FROM mediator.v_searchable_messages m
+            FROM mediator.v_searchable_content sc
             CROSS JOIN query
-            WHERE m.search_tsv @@ query.tsq
+            WHERE sc.search_tsv @@ query.tsq
               AND {where_clause}
         )
         SELECT
+            source_type,
+            source_id,
             message_id,
             sent_at,
+            source_created_at,
+            source_updated_at,
+            source_text,
             keyword_score,
             keyword_rank
         FROM keyword_matches
@@ -278,19 +313,24 @@ async def _semantic_search(
         settings=settings,
         limit=limit,
     )
-    return [
-        RetrievalResult(
-            message_id=row["message_id"],
-            match_type="semantic",
-            rrf_score=None,
-            keyword_rank=None,
-            semantic_rank=row["semantic_rank"],
-            semantic_degraded=False,
-            keyword_score=None,
-            sent_at=row["sent_at"],
+    results: list[RetrievalResult] = []
+    for row in rows:
+        source_type, source_id, message_id = _source_identity_from_row(row)
+        results.append(
+            RetrievalResult(
+                message_id=message_id,
+                match_type="semantic",
+                rrf_score=None,
+                keyword_rank=None,
+                semantic_rank=row["semantic_rank"],
+                semantic_degraded=False,
+                keyword_score=None,
+                sent_at=row["sent_at"],
+                source_type=source_type,
+                source_id=source_id,
+            )
         )
-        for row in rows
-    ]
+    return results
 
 
 async def _fetch_semantic_matches(
@@ -311,7 +351,7 @@ async def _fetch_semantic_matches(
         prepared_embedding.model,
         prepared_embedding.dimension,
     ]
-    visibility_filters, params, next_param = _visibility_filters(
+    visibility_filters, params, next_param = _retrieval_visibility_filters(
         request,
         initial_params=params,
         next_param=4,
@@ -325,25 +365,26 @@ async def _fetch_semantic_matches(
     sql = f"""
         WITH semantic_matches AS (
             SELECT
-                m.message_id,
-                m.sent_at,
+                sc.source_type,
+                sc.source_id,
+                sc.message_id,
+                sc.sent_at,
                 e.embedding <=> $1 AS cosine_distance,
                 row_number() OVER (
                     ORDER BY
                         e.embedding <=> $1 ASC,
-                        m.sent_at DESC,
-                        m.message_id DESC
+                        sc.sort_at DESC,
+                        sc.source_id DESC
                 ) AS semantic_rank
             FROM mediator.content_embeddings e
             JOIN mediator.v_searchable_content sc
               ON sc.source_type = e.source_type
              AND sc.source_id = e.source_id
-             AND sc.source_type = 'message'
-            JOIN mediator.v_searchable_messages m
-              ON m.message_id = sc.message_id
             WHERE {where_clause}
         )
         SELECT
+            source_type,
+            source_id,
             message_id,
             sent_at,
             cosine_distance,
@@ -363,20 +404,24 @@ async def _fetch_semantic_matches(
     return list(rows)
 
 
-def _visibility_filters(
+def _retrieval_visibility_filters(
     request: RetrievalQuery,
     *,
     initial_params: list[Any],
     next_param: int,
 ) -> tuple[list[str], list[Any], int]:
-    """Return SQL predicates equivalent to the legacy raw-message read gates.
+    """Return source-aware retrieval predicates for ``v_searchable_content sc``.
 
-    Deleted/search-suppressed rows are intentionally delegated to
-    ``mediator.v_searchable_messages``.  M1 also excludes any active firm/hard
-    OOB owned by the message thread owner.  Product policy for finer-grained
-    OOB-scoped retrieval is not settled yet, so this conservative rule prevents
-    semantic retrieval from surfacing protected raw material until that policy
-    is clarified.
+    Retrieval is allowed to rank unified source identities, but final rendering
+    must still prove source-specific authorization and suppress any hit it
+    cannot safely hydrate. This helper is only the coarse retrieval contract.
+
+    The contract is intentionally null-safe and deny-by-default: nullable source
+    arms must carry a matching bot, topic, participant, thread owner, partner
+    share, dyad, and OOB owner shape before they can rank. M1 excludes
+    dyad_shareable memory/distillation rows in ``v_searchable_content``; the
+    explicit source-type guard below defensively rejects unexpected shareable
+    rows if a future view broadens that surface.
     """
 
     params = list(initial_params)
@@ -397,21 +442,26 @@ def _visibility_filters(
     next_param += 1
 
     filters = [
-        f"m.bot_id = ${bot_param}",
-        f"m.thread_owner_user_id = ANY(${participants_param}::uuid[])",
+        f"sc.source_type IN ('message', 'memory', 'observation', 'distillation', 'artifact')",
+        f"sc.bot_id IS NOT NULL",
+        f"sc.bot_id = ${bot_param}",
+        f"sc.thread_owner_user_id IS NOT NULL",
+        f"sc.thread_owner_user_id = ANY(${participants_param}::uuid[])",
         (
-            f"(m.sender_id = ANY(${participants_param}::uuid[]) "
-            f"OR m.recipient_id = ANY(${participants_param}::uuid[]))"
+            f"((sc.sender_id IS NOT NULL AND sc.sender_id = ANY(${participants_param}::uuid[])) "
+            f"OR (sc.recipient_id IS NOT NULL AND sc.recipient_id = ANY(${participants_param}::uuid[])))"
         ),
         (
-            f"(m.thread_owner_user_id = ${viewer_param} "
-            "OR m.thread_owner_partner_share = 'opt_in')"
+            f"(sc.thread_owner_user_id = ${viewer_param} "
+            "OR sc.thread_owner_partner_share = 'opt_in')"
         ),
+        "sc.source_type NOT IN ('memory', 'distillation') OR sc.thread_owner_partner_share IS NULL",
         """
         NOT EXISTS (
             SELECT 1
             FROM mediator.out_of_bounds x
-            WHERE x.owner_id = m.thread_owner_user_id
+            WHERE sc.thread_owner_user_id IS NOT NULL
+              AND x.owner_id = sc.thread_owner_user_id
               AND x.status = 'active'
               AND x.severity IN ('firm', 'hard')
         )
@@ -419,17 +469,22 @@ def _visibility_filters(
     ]
 
     if request.topic_id is not None:
-        filters.append(f"m.topic_id = ${next_param}")
+        filters.append(
+            f"(sc.primary_topic_id = ${next_param} OR ${next_param} = ANY(sc.topic_ids))"
+        )
         params.append(request.topic_id)
         next_param += 1
 
     if request.thread_owner_user_id is not None:
-        filters.append(f"m.thread_owner_user_id = ${next_param}")
+        filters.append(f"sc.thread_owner_user_id = ${next_param}")
         params.append(request.thread_owner_user_id)
         next_param += 1
 
     if request.dyad_id is not None:
-        filters.append(f"m.dyad_id = ${next_param}")
+        filters.append(
+            f"(sc.dyad_id = ${next_param} "
+            f"OR (sc.source_type <> 'message' AND sc.dyad_id IS NULL))"
+        )
         params.append(request.dyad_id)
         next_param += 1
 
@@ -442,12 +497,16 @@ def _fuse_rrf_results(
     semantic_rows: list[Any],
     semantic_degraded: bool,
     limit: int,
+    source_weight_map: Mapping[str, float] | None = None,
 ) -> list[RetrievalResult]:
-    by_message_id: dict[UUID, dict[str, Any]] = {}
+    source_weights = _resolve_source_weight_map(None, source_weight_map)
+    by_source: dict[tuple[str, UUID], dict[str, Any]] = {}
 
     for row in keyword_rows:
-        message_id = row["message_id"]
-        by_message_id[message_id] = {
+        source_type, source_id, message_id = _source_identity_from_row(row)
+        by_source[(source_type, source_id)] = {
+            "source_type": source_type,
+            "source_id": source_id,
             "message_id": message_id,
             "sent_at": row["sent_at"],
             "keyword_score": float(row["keyword_score"]),
@@ -456,10 +515,12 @@ def _fuse_rrf_results(
         }
 
     for row in semantic_rows:
-        message_id = row["message_id"]
-        existing = by_message_id.setdefault(
-            message_id,
+        source_type, source_id, message_id = _source_identity_from_row(row)
+        existing = by_source.setdefault(
+            (source_type, source_id),
             {
+                "source_type": source_type,
+                "source_id": source_id,
                 "message_id": message_id,
                 "sent_at": row["sent_at"],
                 "keyword_score": None,
@@ -472,14 +533,15 @@ def _fuse_rrf_results(
             existing["sent_at"] = row["sent_at"]
 
     fused = []
-    for item in by_message_id.values():
+    for item in by_source.values():
         keyword_rank = item["keyword_rank"]
         semantic_rank = item["semantic_rank"]
+        source_weight = source_weights.get(item["source_type"], 1.0)
         rrf_score = 0.0
         if keyword_rank is not None:
-            rrf_score += 1.0 / (RRF_K + keyword_rank)
+            rrf_score += source_weight * (1.0 / (RRF_K + keyword_rank))
         if semantic_rank is not None:
-            rrf_score += 1.0 / (RRF_K + semantic_rank)
+            rrf_score += source_weight * (1.0 / (RRF_K + semantic_rank))
         match_type: MatchType
         if keyword_rank is not None and semantic_rank is not None:
             match_type = "both"
@@ -497,6 +559,8 @@ def _fuse_rrf_results(
                 semantic_degraded=semantic_degraded,
                 keyword_score=item["keyword_score"],
                 sent_at=item["sent_at"],
+                source_type=item["source_type"],
+                source_id=item["source_id"],
             )
         )
 
@@ -505,9 +569,62 @@ def _fuse_rrf_results(
         key=lambda result: (
             -(result.rrf_score or 0.0),
             -_sort_timestamp(result.sent_at),
-            -result.message_id.int,
+            _rrf_identity_sort_key(result),
         ),
     )[:limit]
+
+
+def _rrf_identity_sort_key(result: RetrievalResult) -> tuple[int, str, int]:
+    identity = result.source_id
+    if result.source_type == "message" and result.message_id is not None:
+        identity = result.message_id
+    return (
+        -(identity.int if identity is not None else 0),
+        result.source_type,
+        -(result.source_id.int if result.source_id is not None else 0),
+    )
+
+
+def _source_identity_from_row(row: Any) -> tuple[str, UUID, UUID | None]:
+    message_id = _row_get(row, "message_id")
+    source_type = _row_get(row, "source_type") or "message"
+    source_id = _row_get(row, "source_id") or message_id
+    if source_id is None:
+        raise ValueError("retrieval row is missing source_id and message_id")
+    return str(source_type), source_id, message_id
+
+
+def _row_get(row: Any, key: str) -> Any:
+    if hasattr(row, "get"):
+        return row.get(key)
+    try:
+        return row[key]
+    except (KeyError, TypeError):
+        return None
+
+
+def _resolve_source_weight_map(
+    settings: Settings | None,
+    override: Mapping[str, float] | None = None,
+) -> dict[str, float]:
+    raw_weights: Mapping[str, float]
+    if override is not None:
+        raw_weights = override
+    elif settings is None:
+        raw_weights = {}
+    else:
+        raw_weights = getattr(settings, "retrieval_source_weight_map", None) or {}
+
+    weights = {"message": 1.0}
+    for source_type, weight in raw_weights.items():
+        source_key = str(source_type).strip()
+        if not source_key:
+            continue
+        numeric_weight = float(weight)
+        if numeric_weight <= 0:
+            continue
+        weights[source_key] = numeric_weight
+    return weights
 
 
 def _sort_timestamp(value: Any) -> float:

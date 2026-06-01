@@ -394,7 +394,11 @@ class DbBackedRetriever:
             limit=limit,
         )
         results = await retrieval.hybrid_search(pool, request)
-        return [str(result.message_id) for result in results]
+        return [
+            str(result.message_id)
+            for result in results
+            if result.message_id is not None
+        ]
 
     async def _get_pool(self) -> Any:
         if self._pool is not None:
