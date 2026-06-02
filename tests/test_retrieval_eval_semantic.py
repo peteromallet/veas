@@ -120,6 +120,11 @@ def _make_hybrid(corpus: Corpus) -> HybridRetriever:
     return HybridRetriever(corpus, semantic=sem)
 
 
+def _source_ids(ranked):
+    """Extract source_id strings from a list of RankedSourceKey objects."""
+    return [r.source_id for r in ranked]
+
+
 def test_semantic_runs_end_to_end_through_harness():
     corpus = _corpus()
     report = run_eval(_make_semantic(corpus), corpus, _golden())
@@ -143,7 +148,7 @@ def test_hybrid_runs_end_to_end_through_harness():
 def test_semantic_respects_thread_scope():
     corpus = _corpus()
     sem = _make_semantic(corpus)
-    ids = sem.retrieve("server crashed", "thread", thread_id="t_a", limit=10)
+    ids = _source_ids(sem.retrieve("server crashed", "thread", thread_id="t_a", limit=10))
     # m003 lives in t_b and must be excluded under thread scope.
     assert "m003" not in ids
     assert "m001" in ids
@@ -152,7 +157,7 @@ def test_semantic_respects_thread_scope():
 def test_semantic_respects_topic_scope_cross_thread():
     corpus = _corpus()
     sem = _make_semantic(corpus)
-    ids = sem.retrieve("server crashed", "topic", topic_id="top_x", limit=10)
+    ids = _source_ids(sem.retrieve("server crashed", "topic", topic_id="top_x", limit=10))
     # Both threads share top_x: cross-thread recall must include both.
     assert "m001" in ids
     assert "m003" in ids
@@ -164,9 +169,9 @@ def test_hybrid_fuses_keyword_and_semantic():
     baseline = IlikeBaselineRetriever(corpus)
     hybrid = _make_hybrid(corpus)
     # Keyword baseline finds exact substring "server crashed" (m001, m003).
-    kw = baseline.retrieve("server crashed", "all", limit=10)
+    kw = _source_ids(baseline.retrieve("server crashed", "all", limit=10))
     assert set(kw) == {"m001", "m003"}
-    fused = hybrid.retrieve("server crashed", "all", limit=10)
+    fused = _source_ids(hybrid.retrieve("server crashed", "all", limit=10))
     # RRF must surface the keyword hits at the top.
     assert set(fused[:2]) == {"m001", "m003"}
 

@@ -936,6 +936,100 @@ async def test_source_weight_map_flips_order_and_unmapped_sources_default_to_one
     assert weighted[2].rrf_score == pytest.approx(1.0 / 63)
 
 
+def test_source_weight_map_defaults_conversation_note_and_theme_to_one_when_unmapped():
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    message_id = UUID("00000000-0000-4000-8000-000000000048")
+    note_id = UUID("00000000-0000-4000-8000-000000000049")
+    theme_id = UUID("00000000-0000-4000-8000-000000000050")
+
+    results = retrieval._fuse_rrf_results(
+        keyword_rows=[],
+        semantic_rows=[
+            {
+                "source_type": "message",
+                "source_id": message_id,
+                "message_id": message_id,
+                "sent_at": sent_at,
+                "semantic_rank": 1,
+            },
+            {
+                "source_type": "conversation_note",
+                "source_id": note_id,
+                "message_id": None,
+                "sent_at": sent_at,
+                "semantic_rank": 2,
+            },
+            {
+                "source_type": "theme",
+                "source_id": theme_id,
+                "message_id": None,
+                "sent_at": sent_at,
+                "semantic_rank": 3,
+            },
+        ],
+        semantic_degraded=False,
+        limit=3,
+        source_weight_map={"message": 1.0},
+    )
+
+    assert [result.source_type for result in results] == [
+        "message",
+        "conversation_note",
+        "theme",
+    ]
+    assert results[1].rrf_score == pytest.approx(1.0 / 62)
+    assert results[2].rrf_score == pytest.approx(1.0 / 63)
+
+
+def test_source_weight_map_applies_to_conversation_note_and_theme_when_mapped():
+    sent_at = datetime(2025, 6, 1, 12, 0, tzinfo=UTC)
+    message_id = UUID("00000000-0000-4000-8000-000000000051")
+    note_id = UUID("00000000-0000-4000-8000-000000000052")
+    theme_id = UUID("00000000-0000-4000-8000-000000000053")
+
+    results = retrieval._fuse_rrf_results(
+        keyword_rows=[],
+        semantic_rows=[
+            {
+                "source_type": "message",
+                "source_id": message_id,
+                "message_id": message_id,
+                "sent_at": sent_at,
+                "semantic_rank": 1,
+            },
+            {
+                "source_type": "conversation_note",
+                "source_id": note_id,
+                "message_id": None,
+                "sent_at": sent_at,
+                "semantic_rank": 2,
+            },
+            {
+                "source_type": "theme",
+                "source_id": theme_id,
+                "message_id": None,
+                "sent_at": sent_at,
+                "semantic_rank": 3,
+            },
+        ],
+        semantic_degraded=False,
+        limit=3,
+        source_weight_map={
+            "message": 1.0,
+            "conversation_note": 2.0,
+            "theme": 4.0,
+        },
+    )
+
+    assert [result.source_type for result in results] == [
+        "theme",
+        "conversation_note",
+        "message",
+    ]
+    assert results[0].rrf_score == pytest.approx(4.0 / 63)
+    assert results[1].rrf_score == pytest.approx(2.0 / 62)
+
+
 @pytest.mark.anyio
 async def test_hybrid_mode_internal_source_weight_override_wins_over_config():
     message_id = UUID("00000000-0000-4000-8000-000000000021")

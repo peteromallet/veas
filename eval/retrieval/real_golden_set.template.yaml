@@ -7,9 +7,9 @@
 #   1. Copy it:   cp eval/retrieval/real_golden_set.template.yaml \
 #                    eval/retrieval/real_golden_set.yaml
 #   2. The copy `real_golden_set.yaml` is GITIGNORED — fill THAT one with real
-#      message ids you find via browse_corpus.py against your extracted
+#      ids you find via browse_corpus.py against your extracted
 #      real_corpus.yaml.
-#   3. See eval/retrieval/REAL_GOLDEN_SET.md for the full workflow, the
+#   3. See eval/retrieval/README.md §12 for the full workflow, the
 #      query_type taxonomy, and the launch gate.
 #
 # Every `expected_message_ids` value below is the literal placeholder
@@ -20,15 +20,31 @@
 # Schema (eval/retrieval/schema.py :: GoldenCase):
 #   id                   str, e.g. "RC01"
 #   query                str — the search query a user might issue
-#   expected_message_ids non-empty list[str] — ids that SHOULD be retrieved
+#   expected_source_keys list[SourceKey] — (source_type, source_id) pairs for
+#                         non-message targets (M4+).  The loader merges these
+#                         with expected_message_ids into a canonical list.
+#   expected_message_ids non-empty list[str] — message ids that SHOULD be retrieved
 #   scope                "thread" | "topic" | "all"
-#   query_type           "topic_recall" | "verbatim_quote" | "paraphrase" | "cross_thread"
+#   query_type           "topic_recall" | "verbatim_quote" | "paraphrase" |
+#                        "cross_thread" | "knowledge_recall" | "exact_source_quote"
+#   intent               (M4+) "know_about" | "exact_said"
 #   difficulty           (opt) "easy" | "medium" | "hard"
-#   fairness             (opt) "keyword_favored" | "semantic_favored" | "either" | "adversarial"
+#   fairness             (opt) "keyword_favored" | "semantic_favored" | "either" |
+#                        "adversarial"
 #   thread_id            REQUIRED iff scope == "thread"
 #   topic_id             REQUIRED iff scope == "topic"
 #   notes                (opt) str — why this case exists / what it probes
-#   extra_scope          (opt) dict — production scope filters (bot_id, etc.)
+#   extra_scope          (opt) dict — production scope filters for DB-backed
+#                        retrieval.  Required keys for DbBackedRetriever:
+#                          - viewer_user_id:  UUID of the searching user
+#                          - bot_id:          bot identifier (e.g. "mediator")
+#                          - topic_id:        UUID of the topic scope
+#                        Optional:
+#                          - partner_user_id:    UUID of partner (dyad scope)
+#                          - thread_owner_user_id: UUID for thread-scoped queries
+#                          - dyad_id:            UUID of the dyad
+#                          - query_type:         overrides the case-level query_type
+#                                                for production mode selection
 # =============================================================================
 
 cases:
@@ -99,3 +115,152 @@ cases:
       Cross-thread recall: the expected ids should span at least two distinct
       thread_ids. Verify in browse_corpus that the chosen ids really do come
       from different threads before committing them.
+
+  # ==========================================================================
+  # SOURCE-AWARE CASES (M4+, RC05–RC10)
+  # ==========================================================================
+  # These cases use expected_source_keys for non-message targets (memories,
+  # observations, distillations, artifacts, conversation notes, themes).
+  # They require --include-non-message when extracting the real corpus.
+  #
+  # extra_scope is REQUIRED for every source-aware case — the DbBackedRetriever
+  # needs viewer_user_id, bot_id, and topic_id at minimum.
+
+  # --- knowledge_recall: theme + conversation_note (scope=topic) ------------
+  - id: RC05
+    query: "what themes have been recurring about household chores"
+    expected_message_ids: []
+    expected_source_keys:
+      - source_type: theme
+        source_id: REPLACE_WITH_REAL_THEME_ID
+      - source_type: conversation_note
+        source_id: REPLACE_WITH_REAL_NOTE_ID
+    scope: topic
+    query_type: knowledge_recall
+    intent: know_about
+    difficulty: medium
+    fairness: semantic_favored
+    topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+      topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    notes: >-
+      Knowledge recall across theme and conversation_note. Pick a topic where
+      the bot has recorded both an active theme and at least one conversation
+      note about chores/household. The ILIKE baseline scores 0.0 on this by
+      design — it cannot reach non-message source keys.
+
+  # --- knowledge_recall: artifact (scope=topic) -----------------------------
+  - id: RC06
+    query: "what was in the last review summary about our communication"
+    expected_message_ids: []
+    expected_source_keys:
+      - source_type: artifact
+        source_id: REPLACE_WITH_REAL_ARTIFACT_ID
+    scope: topic
+    query_type: knowledge_recall
+    intent: know_about
+    difficulty: medium
+    fairness: adversarial
+    topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+      topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    notes: >-
+      Artifact-only recall. The artifact (e.g. a live review summary) contains
+      structured information the baseline ILIKE cannot reach. Baseline scores
+      0.0 by design.
+
+  # --- knowledge_recall: memory + observation (scope=all) -------------------
+  - id: RC07
+    query: "what do we know about the kids school schedule"
+    expected_message_ids:
+      - REPLACE_WITH_REAL_MESSAGE_ID
+    expected_source_keys:
+      - source_type: memory
+        source_id: REPLACE_WITH_REAL_MEMORY_ID
+      - source_type: observation
+        source_id: REPLACE_WITH_REAL_OBSERVATION_ID
+    scope: all
+    query_type: knowledge_recall
+    intent: know_about
+    difficulty: medium
+    fairness: either
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+    notes: >-
+      Mixed source-type recall: the expected results span a message the
+      baseline CAN find (lexical overlap on "school schedule") plus memory
+      and observation entries it cannot. The baseline gets partial credit;
+      the semantic win is measured by the additional sources.
+
+  # --- exact_source_quote: conversation_note (scope=topic) ------------------
+  - id: RC08
+    query: "rollback drill"
+    expected_message_ids: []
+    expected_source_keys:
+      - source_type: conversation_note
+        source_id: REPLACE_WITH_REAL_NOTE_ID
+    scope: topic
+    query_type: exact_source_quote
+    intent: exact_said
+    difficulty: easy
+    fairness: keyword_favored
+    topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+      topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    notes: >-
+      Exact quote lookup against a conversation note. The note text contains
+      the phrase "rollback drill" verbatim, so a lexical match should find it
+      IF the retriever can search conversation_notes. Baseline scores 0.0
+      since it only searches messages.
+
+  # --- deliberate low-weight theme case (scope=topic) -----------------------
+  - id: RC09
+    query: "what recurring patterns has the bot noticed about our finances"
+    expected_message_ids: []
+    expected_source_keys:
+      - source_type: theme
+        source_id: REPLACE_WITH_REAL_THEME_ID
+    scope: topic
+    query_type: knowledge_recall
+    intent: know_about
+    difficulty: hard
+    fairness: adversarial
+    topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+      topic_id: REPLACE_WITH_REAL_TOPIC_ID
+    notes: >-
+      Deliberate low-weight (theme-only, zero message fallback). The answer
+      lives entirely in a theme row the baseline cannot reach. Baseline must
+      score 0.0 — this is a pure-semantic measurement.
+
+  # --- mixed: artifact + message fallback (scope=all) -----------------------
+  - id: RC10
+    query: "what was the decision about auth cookies"
+    expected_message_ids:
+      - REPLACE_WITH_REAL_MESSAGE_ID
+    expected_source_keys:
+      - source_type: artifact
+        source_id: REPLACE_WITH_REAL_ARTIFACT_ID
+      - source_type: conversation_note
+        source_id: REPLACE_WITH_REAL_NOTE_ID
+    scope: all
+    query_type: knowledge_recall
+    intent: know_about
+    difficulty: medium
+    fairness: either
+    extra_scope:
+      viewer_user_id: REPLACE_WITH_REAL_USER_ID
+      bot_id: "mediator"
+    notes: >-
+      Mixed recall: the baseline can find the message (lexical overlap on
+      "auth cookies") but the artifact and conversation_note are the richer
+      answers. Semantic lift measured by the additional non-message sources.

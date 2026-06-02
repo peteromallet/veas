@@ -1016,8 +1016,86 @@ def audit_overlap(cases, by_id):
     return stats
 
 
+# ---------------------------------------------------------------------------
+# Non-message source entries (T24)
+#
+# Each source entry has a deterministic id (mem001.., obs001.., etc.), a
+# topic_id linking it to a message topic, and searchable text. These are
+# emitted alongside messages so source-aware retrievers can be tested.
+# Message-only adapters ignore these entries by design.
+# ---------------------------------------------------------------------------
+
+SOURCE_MEMORIES: list[dict] = [
+    {"id": "mem001", "topic_id": "topic_project_nexus", "content": "The OAuth2 integration is mostly done but token refresh edge cases need handling.", "visibility": "private"},
+    {"id": "mem002", "topic_id": "topic_project_nexus", "content": "Migration scripts are blocked on schema review — Jenkins flagged three compatibility issues.", "visibility": "private"},
+    {"id": "mem003", "topic_id": "topic_project_nexus", "content": "Rate limit was bumped from 50 to 75 requests per minute for staging.", "visibility": "private"},
+    {"id": "mem004", "topic_id": "topic_project_atlas", "content": "Atlas p95 query latency is around 4 seconds under load; the events table join is the bottleneck.", "visibility": "private"},
+    {"id": "mem005", "topic_id": "topic_weekend_plans", "content": "Blue Ridge hike: 6 AM Saturday, I’ll bring food, you bring water filters and first aid.", "visibility": "dyad_shareable"},
+    {"id": "mem006", "topic_id": "topic_relationship_friction", "content": "Sam feels the chores split has been lopsided and wants it to feel equal.", "visibility": "private"},
+    {"id": "mem007", "topic_id": "topic_travel_planning", "content": "Booked two direct seats to Lisbon, departing the 14th, returning the 23rd. Total fare $1840.", "visibility": "dyad_shareable"},
+    {"id": "mem008", "topic_id": "topic_project_orion", "content": "Orion beta rollout starts Monday at 1% with feature flags; rollback plan documented in the runbook.", "visibility": "private"},
+]
+
+SOURCE_OBSERVATIONS: list[dict] = [
+    {"id": "obs001", "topic_id": "topic_project_nexus", "content": "The null pointer exception at AuthService.java:342 was a missing null guard on session factory injection.", "confidence": "high", "significance": 4},
+    {"id": "obs002", "topic_id": "topic_project_nexus", "content": "Payment processor duplication was caused by an idempotency key collision under concurrent requests.", "confidence": "high", "significance": 5},
+    {"id": "obs003", "topic_id": "topic_project_atlas", "content": "Atlas ingestion worker pool exhausted DB connections at 09:14, cascading 503s for 22 minutes.", "confidence": "high", "significance": 5},
+    {"id": "obs004", "topic_id": "topic_relationship_friction", "content": "The $1200 car repair was unexpected and not communicated before the credit card bill arrived.", "confidence": "medium", "significance": 4},
+    {"id": "obs005", "topic_id": "topic_weekend_plans", "content": "Osso buco is a Thursday special at Luigi’s, not available on Saturday — mushroom risotto is the chef’s recommendation.", "confidence": "medium", "significance": 2},
+    {"id": "obs006", "topic_id": "topic_household_logistics", "content": "Kitchen faucet is leaking (third leak this year), bathroom fan is loud, bedroom window doesn’t latch.", "confidence": "high", "significance": 3},
+]
+
+SOURCE_DISTILLATIONS: list[dict] = [
+    {"id": "dst001", "topic_id": "topic_project_nexus", "content": "Nexus authentication: OAuth2 integration nearly complete, security review flagged local-storage token risk requiring httpOnly cookies.", "visibility": "private"},
+    {"id": "dst002", "topic_id": "topic_project_atlas", "content": "Atlas performance: query latency bottleneck is the events table join; daily partitioning is the leading candidate solution.", "visibility": "private"},
+    {"id": "dst003", "topic_id": "topic_weekend_plans", "content": "Saturday plan: Blue Ridge hike at 6 AM (food+water+first aid), then Luigi’s rooftop dinner at 7:30 PM (mushroom risotto if osso buco unavailable).", "visibility": "dyad_shareable"},
+    {"id": "dst004", "topic_id": "topic_relationship_friction", "content": "Relationship friction centers on unequal chores distribution and surprise expenses; both partners agree on setting a monthly budget and reminders.", "visibility": "private"},
+]
+
+SOURCE_ARTIFACTS: list[dict] = [
+    {"id": "art001", "topic_id": "topic_project_nexus", "title": "Security audit report", "summary": "Two high findings: auth tokens in browser local storage exposing XSS token theft, and no rate limit on login endpoint enabling brute force.", "artifact_type": "review_summary"},
+    {"id": "art002", "topic_id": "topic_project_atlas", "title": "Atlas outage postmortem", "summary": "Worker pool exhausted DB connection pool at 09:14 causing 22-minute 503 cascade; pool scaled from 6 to 12 workers to resolve.", "artifact_type": "review_summary"},
+    {"id": "art003", "topic_id": "topic_household_logistics", "title": "Apartment listing", "summary": "2-bed 2-bath with dishwasher and washer-dryer, 1100 sq ft, top of budget, 20 min further from downtown.", "artifact_type": "live_debrief"},
+]
+
+SOURCE_CONVERSATION_NOTES: list[dict] = [
+    {"id": "note001", "topic_id": "topic_project_nexus", "text": "[fact] The CI pipeline is green again after bumping the PostGIS extension version to 3.4."},
+    {"id": "note002", "topic_id": "topic_project_nexus", "text": "[decision] httpOnly secure cookies will replace local storage for auth tokens; rotate refresh token on every use."},
+    {"id": "note003", "topic_id": "topic_project_atlas", "text": "[open_loop] Daily partitioning prototype for the events table is due this week."},
+    {"id": "note004", "topic_id": "topic_relationship_friction", "text": "[decision] Monthly budget to be set this weekend; no more surprise expenses without a conversation first."},
+    {"id": "note005", "topic_id": "topic_weekend_plans", "text": "[fact] Blue Ridge trailhead parking fills up by 6:45 AM on Saturdays — arrive early."},
+]
+
+SOURCE_THEMES: list[dict] = [
+    {"id": "thm001", "topic_id": "topic_relationship_friction", "title": "Unequal household labor", "description": "One partner feels they carry a disproportionate share of chores; dishes and daily cleanup are recurring friction points.", "status": "active"},
+    {"id": "thm002", "topic_id": "topic_relationship_friction", "title": "Financial transparency", "description": "Surprise expenses without prior communication cause stress; both partners want shared visibility into spending.", "status": "active"},
+    {"id": "thm003", "topic_id": "topic_project_nexus", "title": "Technical debt in auth layer", "description": "Authentication tokens stored in local storage create XSS vulnerability; need migration to httpOnly cookies.", "status": "active"},
+    {"id": "thm004", "topic_id": "topic_weekend_plans", "title": "Blue Ridge hiking routine", "description": "The Saturday hiking routine has settled into 6 AM starts with shared food/water responsibility; weather preparedness is improving.", "status": "active"},
+]
+
+
+# ---------------------------------------------------------------------------
+# Non-message entry emitter
+# ---------------------------------------------------------------------------
+
+
+def build_sources():
+    """Build source-level entries keyed by collection name."""
+    return {
+        "memories": SOURCE_MEMORIES,
+        "observations": SOURCE_OBSERVATIONS,
+        "distillations": SOURCE_DISTILLATIONS,
+        "artifacts": SOURCE_ARTIFACTS,
+        "conversation_notes": SOURCE_CONVERSATION_NOTES,
+        "themes": SOURCE_THEMES,
+    }
+
+
+
+
 def write_yaml(msgs, golden):
-    corpus_doc = {"messages": msgs}
+    sources = build_sources()
+    corpus_doc = {"messages": msgs, **sources}
     golden_doc = {"cases": golden}
 
     class _S(str):
@@ -1054,7 +1132,10 @@ def write_yaml(msgs, golden):
 if __name__ == "__main__":
     msgs, by_id = build_corpus()
     golden = build_golden()
+    sources = build_sources()
     print(f"corpus messages: {len(msgs)}")
+    for name, entries in sources.items():
+        print(f"corpus {name}: {len(entries)}")
     print(f"threads: {len(THREADS)}  topics: {len(set(t['topic_id'] for t in THREADS))}")
     print(f"golden cases: {len(golden)}")
     from collections import Counter

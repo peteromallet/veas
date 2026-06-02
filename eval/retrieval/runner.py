@@ -26,11 +26,26 @@ from eval.retrieval.metrics import (
     aggregate,
     aggregate_by_difficulty,
     aggregate_by_fairness,
+    aggregate_by_intent,
     aggregate_by_query_type,
+    aggregate_by_source_type,
     recall_at_k,
     reciprocal_rank,
 )
 from eval.retrieval.schema import Corpus, GoldenSet
+
+
+def _source_key_id(source_type: str, source_id: str) -> str:
+    return f"{source_type}:{source_id}"
+
+
+def _expected_source_type_bucket(expected_source_key_ids: list[dict[str, str]]) -> str:
+    source_types = {item["source_type"] for item in expected_source_key_ids}
+    if not source_types:
+        return "unknown"
+    if len(source_types) == 1:
+        return next(iter(source_types))
+    return "mixed"
 
 
 # ---------------------------------------------------------------------------
@@ -46,6 +61,8 @@ class EvalReport(BaseModel):
     golden_set_path: str
     overall: dict[str, float | int]
     by_query_type: dict[str, dict[str, float | int]]
+    by_source_type: dict[str, dict[str, float | int]]
+    by_intent: dict[str, dict[str, float | int]]
     by_fairness: dict[str, dict[str, float | int]] | None = None
     by_difficulty: dict[str, dict[str, float | int]] | None = None
     per_case: list[dict[str, Any]]
@@ -84,7 +101,7 @@ def run_eval(
     for case in golden_set.cases:
         extra_scope = dict(case.extra_scope or {})
         extra_scope.setdefault("query_type", case.query_type)
-        ranked_ids = retriever.retrieve(
+        ranked_source_keys = retriever.retrieve(
             query=case.query,
             scope=case.scope,
             thread_id=case.thread_id,
@@ -92,16 +109,40 @@ def run_eval(
             limit=limit,
             **extra_scope,
         )
+        ranked_ids = [
+            result.source_id
+            for result in ranked_source_keys
+            if result.source_type == "message"
+        ]
+        ranked_source_key_ids = [
+            _source_key_id(result.source_type, result.source_id)
+            for result in ranked_source_keys
+        ]
+        expected_source_key_ids = [
+            _source_key_id(key.source_type, key.source_id)
+            for key in case.expected_source_keys
+        ]
+        expected_source_keys = [
+            key.model_dump(mode="json") for key in case.expected_source_keys
+        ]
+        source_type_bucket = _expected_source_type_bucket(expected_source_keys)
+        intent_bucket = case.intent or "unlabeled"
 
         case_result: dict[str, Any] = {
             "case_id": case.id,
             "query": case.query,
             "query_type": case.query_type,
+            "source_type": source_type_bucket,
+            "intent": intent_bucket,
             "scope": case.scope,
             "fairness": case.fairness or "unlabeled",
             "difficulty": case.difficulty or "unlabeled",
-            "expected_count": len(case.expected_message_ids),
-            "retrieved_count": len(ranked_ids),
+            "expected_count": len(case.expected_source_keys),
+            "retrieved_count": len(ranked_source_keys),
+            "ranked_source_keys": [
+                result.model_dump(mode="json") for result in ranked_source_keys
+            ],
+            "expected_source_keys": expected_source_keys,
             "ranked_ids": ranked_ids,
             "expected_ids": case.expected_message_ids,
             "notes": case.notes,
@@ -111,10 +152,10 @@ def run_eval(
         if ks:
             for k in ks:
                 case_result[f"recall_at_{k}"] = recall_at_k(
-                    ranked_ids, case.expected_message_ids, k
+                    ranked_source_key_ids, expected_source_key_ids, k
                 )
             case_result["reciprocal_rank"] = reciprocal_rank(
-                ranked_ids, case.expected_message_ids
+                ranked_source_key_ids, expected_source_key_ids
             )
 
         per_case_results.append(case_result)
@@ -122,6 +163,8 @@ def run_eval(
     if ks and per_case_results:
         overall = aggregate(per_case_results)
         by_query_type = aggregate_by_query_type(per_case_results)
+        by_source_type = aggregate_by_source_type(per_case_results)
+        by_intent = aggregate_by_intent(per_case_results)
         by_fairness = aggregate_by_fairness(per_case_results) or None
         by_difficulty = aggregate_by_difficulty(per_case_results) or None
     else:
@@ -133,6 +176,8 @@ def run_eval(
             "n": len(golden_set.cases),
         }
         by_query_type = {}
+        by_source_type = {}
+        by_intent = {}
         by_fairness = None
         by_difficulty = None
 
@@ -142,6 +187,8 @@ def run_eval(
         golden_set_path="",  # Filled by CLI wrapper or caller
         overall=overall,
         by_query_type=by_query_type,
+        by_source_type=by_source_type,
+        by_intent=by_intent,
         by_fairness=by_fairness,
         by_difficulty=by_difficulty,
         per_case=per_case_results,
@@ -244,6 +291,34 @@ def write_markdown_report(report: EvalReport, path: Path) -> None:
                         f"| {c.get('reciprocal_rank', 0):.4f} |"
                     )
                 lines.append(f"")
+
+    if report.by_source_type:
+        lines.append(f"## Per Source-Type Metrics")
+        lines.append(f"")
+        for source_type in sorted(report.by_source_type.keys()):
+            source_data = report.by_source_type[source_type]
+            lines.append(f"### {source_type}")
+            lines.append(f"")
+            lines.append(f"| Metric    | Value |")
+            lines.append(f"|-----------|-------|")
+            for mkey in sorted(k for k in source_data if k != "n"):
+                lines.append(f"| {mkey} | {source_data[mkey]:.4f} |")
+            lines.append(f"| n         | {source_data.get('n', 0)} |")
+            lines.append(f"")
+
+    if report.by_intent:
+        lines.append(f"## Per Intent Metrics")
+        lines.append(f"")
+        for intent in sorted(report.by_intent.keys()):
+            intent_data = report.by_intent[intent]
+            lines.append(f"### {intent}")
+            lines.append(f"")
+            lines.append(f"| Metric    | Value |")
+            lines.append(f"|-----------|-------|")
+            for mkey in sorted(k for k in intent_data if k != "n"):
+                lines.append(f"| {mkey} | {intent_data[mkey]:.4f} |")
+            lines.append(f"| n         | {intent_data.get('n', 0)} |")
+            lines.append(f"")
 
     # Fairness breakdown table (only when non-None and non-empty).
     if report.by_fairness:

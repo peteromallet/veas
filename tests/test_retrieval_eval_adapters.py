@@ -18,7 +18,15 @@ from eval.retrieval.adapters import (
     StubSemanticRetriever,
     message_text,
 )
-from eval.retrieval.schema import Corpus, CorpusMessage
+from eval.retrieval.schema import Corpus, CorpusMessage, RankedSourceKey
+
+
+def _source_ids(results: list[RankedSourceKey]) -> list[str]:
+    return [result.source_id for result in results]
+
+
+def _source_pairs(results: list[RankedSourceKey]) -> list[tuple[str, str, int]]:
+    return [(result.source_type, result.source_id, result.rank) for result in results]
 
 
 def _make_test_corpus() -> Corpus:
@@ -135,15 +143,15 @@ def test_baseline_finds_verbatim_substring_case_insensitive():
 
     # Exact case
     results = retriever.retrieve("server is down", scope="all", limit=50)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
 
     # Different case
     results = retriever.retrieve("SERVER IS DOWN", scope="all", limit=50)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
 
     # Mixed case
     results = retriever.retrieve("SeRvEr Is DoWn", scope="all", limit=50)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
 
 
 def test_baseline_respects_thread_scope():
@@ -153,9 +161,9 @@ def test_baseline_respects_thread_scope():
 
     # thread_a has m001 and m002 matching "server"
     results = retriever.retrieve("server", scope="thread", thread_id="thread_a", limit=50)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
     assert all(
-        corpus.messages[int(r[1:]) - 1].thread_id == "thread_a" for r in results
+        corpus.messages[int(result.source_id[1:]) - 1].thread_id == "thread_a" for result in results
     )
 
     # thread_b should not contain "server"
@@ -171,7 +179,7 @@ def test_baseline_respects_topic_scope():
     # topic_x has m001, m002 with "server"
     results = retriever.retrieve("server", scope="topic", topic_id="topic_x", limit=50)
     assert len(results) >= 1
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
 
     # topic_y should not contain "server"
     results_b = retriever.retrieve("server", scope="topic", topic_id="topic_y", limit=50)
@@ -195,7 +203,7 @@ def test_baseline_media_analysis_explanation_fallback():
 
     # "connection timeout" is only in m005's media_analysis.explanation
     results = retriever.retrieve("connection timeout", scope="all", limit=50)
-    assert "m005" in results
+    assert "m005" in _source_ids(results)
 
 
 def test_baseline_media_analysis_description_fallback():
@@ -205,7 +213,7 @@ def test_baseline_media_analysis_description_fallback():
 
     # "kubernetes" is only in m006's media_analysis.description
     results = retriever.retrieve("kubernetes", scope="all", limit=50)
-    assert "m006" in results
+    assert "m006" in _source_ids(results)
 
 
 def test_baseline_media_analysis_summary_fallback():
@@ -215,7 +223,7 @@ def test_baseline_media_analysis_summary_fallback():
 
     # "deployment to next tuesday" is only in m007's media_analysis.summary
     results = retriever.retrieve("deployment to next tuesday", scope="all", limit=50)
-    assert "m007" in results
+    assert "m007" in _source_ids(results)
 
 
 def test_baseline_paraphrase_only_query_returns_empty():
@@ -236,8 +244,9 @@ def test_baseline_tiebreaker_ordering_is_stable():
 
     # m008 and m009 share the same sent_at and both contain "message"
     results = retriever.retrieve("message", scope="all", limit=50)
-    m008_idx = results.index("m008") if "m008" in results else -1
-    m009_idx = results.index("m009") if "m009" in results else -1
+    result_ids = _source_ids(results)
+    m008_idx = result_ids.index("m008") if "m008" in result_ids else -1
+    m009_idx = result_ids.index("m009") if "m009" in result_ids else -1
     # m009 should come before m008 (id DESC tiebreaker)
     assert m009_idx < m008_idx
 
@@ -275,6 +284,17 @@ def test_stub_empty_corpus():
     corpus = Corpus(messages=[])
     retriever = StubSemanticRetriever(corpus)
     assert retriever.retrieve("test", scope="all", limit=50) == []
+
+
+def test_offline_adapters_return_ranked_message_source_keys() -> None:
+    corpus = _make_test_corpus()
+    baseline = IlikeBaselineRetriever(corpus)
+    stub = StubSemanticRetriever(corpus)
+
+    baseline_results = baseline.retrieve("server", scope="all", limit=5)
+    assert _source_pairs(baseline_results)[0] == ("message", "m001", 1)
+    assert [result.rank for result in baseline_results] == list(range(1, len(baseline_results) + 1))
+    assert stub.retrieve("server", scope="all", limit=5) == []
 
 
 # ---------------------------------------------------------------------------
@@ -415,7 +435,7 @@ def test_semantic_finds_paraphrase_baseline_misses():
     sem = _semantic_or_skip(corpus)
     # "production outage" is a paraphrase of m001 "The server is down in production".
     results = sem.retrieve("production outage", scope="all", limit=5)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
     # Baseline returns [] for the same query (verified in another test).
     assert IlikeBaselineRetriever(corpus).retrieve("production outage", scope="all", limit=5) == []
 
@@ -425,7 +445,8 @@ def test_semantic_respects_thread_scope():
     sem = _semantic_or_skip(corpus)
     results = sem.retrieve("anything", scope="thread", thread_id="thread_b", limit=50)
     assert all(
-        corpus.messages[int(r[1:]) - 1].thread_id == "thread_b" for r in results
+        corpus.messages[int(result.source_id[1:]) - 1].thread_id == "thread_b"
+        for result in results
     )
 
 
@@ -453,7 +474,7 @@ def test_hybrid_fuses_baseline_and_semantic():
         pytest.skip(f"semantic backend unavailable: {exc}")
     # Verbatim hit (baseline) plus paraphrase ability (semantic).
     results = hyb.retrieve("server is down", scope="all", limit=10)
-    assert "m001" in results
+    assert "m001" in _source_ids(results)
     # Deterministic.
     assert results == hyb.retrieve("server is down", scope="all", limit=10)
 
@@ -466,7 +487,8 @@ def test_hybrid_respects_scope():
         pytest.skip(f"semantic backend unavailable: {exc}")
     results = hyb.retrieve("game", scope="topic", topic_id="topic_y", limit=50)
     assert all(
-        corpus.messages[int(r[1:]) - 1].topic_id == "topic_y" for r in results
+        corpus.messages[int(result.source_id[1:]) - 1].topic_id == "topic_y"
+        for result in results
     )
 
 
@@ -523,10 +545,10 @@ def test_db_retriever_retrieve_returns_results():
     results = retriever.retrieve(
         "test", scope="all", limit=5
     )
-    # Results should be a list of strings (message ids).
+    # Results should be ranked source-key objects.
     assert isinstance(results, list)
     if results:
-        assert all(isinstance(r, str) for r in results)
+        assert all(isinstance(r, RankedSourceKey) for r in results)
         assert len(results) <= 5
 
 
@@ -572,8 +594,10 @@ def test_db_retriever_lazy_imports_production_retrieval_and_preserves_sync_api(
             self.__dict__.update(kwargs)
             calls.append(("query", kwargs))
 
-    async def hybrid_search(pool: object, request: object) -> list[object]:
-        calls.append(("hybrid_search", pool, request))
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
+        calls.append(("hybrid_search", pool, request, kwargs))
         return [types.SimpleNamespace(message_id=message_id)]
 
     fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
@@ -598,7 +622,7 @@ def test_db_retriever_lazy_imports_production_retrieval_and_preserves_sync_api(
     finally:
         retriever.close()
 
-    assert results == [str(message_id)]
+    assert _source_pairs(results) == [("message", str(message_id), 1)]
     assert pool_closed is True
     assert retriever._closed is True
     assert retriever._loop.is_closed() is True
@@ -607,12 +631,18 @@ def test_db_retriever_lazy_imports_production_retrieval_and_preserves_sync_api(
     create_call = calls[0]
     assert create_call[0] == "create_pool"
     assert create_call[1] == "postgresql://direct.example/db"
-    query_call = next(call for call in calls if isinstance(call, tuple) and call[0] == "query")
+    query_call = next(
+        call for call in calls if isinstance(call, tuple) and call[0] == "query"
+    )
     query_kwargs = query_call[1]
     assert query_kwargs["mode"] == "exact"
     assert query_kwargs["viewer_user_id"] == viewer_id
     assert query_kwargs["topic_id"] == topic_id
     assert query_kwargs["limit"] == 3
+    hybrid_call = next(
+        call for call in calls if isinstance(call, tuple) and call[0] == "hybrid_search"
+    )
+    assert hybrid_call[3]["source_weight_map"] is None
 
 
 def test_db_retriever_maps_paraphrase_cases_to_hybrid_mode(
@@ -640,7 +670,9 @@ def test_db_retriever_maps_paraphrase_cases_to_hybrid_mode(
             modes.append(str(kwargs["mode"]))
             self.message_id = UUID(int=0)
 
-    async def hybrid_search(pool: object, request: object) -> list[object]:
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
         return []
 
     fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
@@ -689,7 +721,9 @@ def test_db_retriever_maps_exact_and_hybrid_query_types(
         def __init__(self, **kwargs: object) -> None:
             modes.append(str(kwargs["mode"]))
 
-    async def hybrid_search(pool: object, request: object) -> list[object]:
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
         return []
 
     fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
@@ -721,7 +755,7 @@ def test_db_retriever_maps_exact_and_hybrid_query_types(
     assert modes == ["exact", "hybrid", "hybrid", "hybrid", "hybrid"]
 
 
-def test_db_retriever_skips_non_message_results_in_sync_output(
+def test_db_retriever_preserves_non_message_results_in_source_key_output(
     monkeypatch: pytest.MonkeyPatch,
 ):
     from eval.retrieval.adapters import DbBackedRetriever
@@ -739,14 +773,17 @@ def test_db_retriever_skips_non_message_results_in_sync_output(
 
     fake_retrieval = types.ModuleType("app.services.retrieval")
     message_id = uuid4()
+    memory_id = uuid4()
 
     class RetrievalQuery:
         def __init__(self, **kwargs: object) -> None:
             self.kwargs = kwargs
 
-    async def hybrid_search(pool: object, request: object) -> list[object]:
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
         return [
-            types.SimpleNamespace(message_id=None, source_type="memory", source_id=uuid4()),
+            types.SimpleNamespace(message_id=None, source_type="memory", source_id=memory_id),
             types.SimpleNamespace(message_id=message_id, source_type="message", source_id=message_id),
         ]
 
@@ -759,11 +796,153 @@ def test_db_retriever_skips_non_message_results_in_sync_output(
 
     retriever = DbBackedRetriever(_make_test_corpus())
     try:
-        assert retriever.retrieve(
+        results = retriever.retrieve(
             "query",
             scope="all",
             limit=5,
             viewer_user_id=str(uuid4()),
-        ) == [str(message_id)]
+        )
     finally:
         retriever.close()
+
+    assert _source_pairs(results) == [
+        ("memory", str(memory_id), 1),
+        ("message", str(message_id), 2),
+    ]
+
+
+def test_db_retriever_preserves_all_non_message_source_types_in_ranked_keys(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    """DbBackedRetriever maps conversation_note, theme, and artifact results
+    to RankedSourceKey objects — they are NOT filtered out or collapsed
+    to message_id."""
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+
+    class FakePool:
+        async def close(self) -> None:
+            pass
+
+    async def create_pool(database_url: str, **kwargs: object) -> object:
+        return FakePool()
+
+    fake_asyncpg.create_pool = create_pool  # type: ignore[attr-defined]
+
+    fake_retrieval = types.ModuleType("app.services.retrieval")
+    note_id = uuid4()
+    theme_id = uuid4()
+    artifact_id = uuid4()
+
+    class RetrievalQuery:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
+        return [
+            types.SimpleNamespace(
+                message_id=None,
+                source_type="conversation_note",
+                source_id=note_id,
+            ),
+            types.SimpleNamespace(
+                message_id=None,
+                source_type="theme",
+                source_id=theme_id,
+            ),
+            types.SimpleNamespace(
+                message_id=None,
+                source_type="artifact",
+                source_id=artifact_id,
+            ),
+        ]
+
+    fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
+    fake_retrieval.hybrid_search = hybrid_search  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("DIRECT_DATABASE_URL", "postgresql://direct.example/db")
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+    monkeypatch.setitem(sys.modules, "app.services.retrieval", fake_retrieval)
+
+    retriever = DbBackedRetriever(_make_test_corpus())
+    try:
+        results = retriever.retrieve(
+            "query",
+            scope="all",
+            limit=5,
+            viewer_user_id=str(uuid4()),
+        )
+    finally:
+        retriever.close()
+
+    assert _source_pairs(results) == [
+        ("conversation_note", str(note_id), 1),
+        ("theme", str(theme_id), 2),
+        ("artifact", str(artifact_id), 3),
+    ]
+
+
+def test_db_retriever_passes_source_weight_map_override_to_production_hybrid_search(
+    monkeypatch: pytest.MonkeyPatch,
+):
+    from eval.retrieval.adapters import DbBackedRetriever
+
+    fake_asyncpg = types.ModuleType("asyncpg")
+    received_kwargs: list[dict[str, object]] = []
+
+    class FakePool:
+        async def close(self) -> None:
+            pass
+
+    async def create_pool(database_url: str, **kwargs: object) -> object:
+        return FakePool()
+
+    fake_asyncpg.create_pool = create_pool  # type: ignore[attr-defined]
+
+    fake_retrieval = types.ModuleType("app.services.retrieval")
+    message_id = uuid4()
+
+    class RetrievalQuery:
+        def __init__(self, **kwargs: object) -> None:
+            self.kwargs = kwargs
+
+    async def hybrid_search(
+        pool: object, request: object, **kwargs: object
+    ) -> list[object]:
+        received_kwargs.append(dict(kwargs))
+        return [
+            types.SimpleNamespace(
+                message_id=message_id,
+                source_type="message",
+                source_id=message_id,
+            )
+        ]
+
+    fake_retrieval.RetrievalQuery = RetrievalQuery  # type: ignore[attr-defined]
+    fake_retrieval.hybrid_search = hybrid_search  # type: ignore[attr-defined]
+
+    monkeypatch.setenv("DIRECT_DATABASE_URL", "postgresql://direct.example/db")
+    monkeypatch.setitem(sys.modules, "asyncpg", fake_asyncpg)
+    monkeypatch.setitem(sys.modules, "app.services.retrieval", fake_retrieval)
+
+    retriever = DbBackedRetriever(
+        _make_test_corpus(),
+        source_weight_map={"theme": 0.25, "conversation_note": 1.15},
+    )
+    try:
+        results = retriever.retrieve(
+            "query",
+            scope="all",
+            limit=5,
+            viewer_user_id=str(uuid4()),
+        )
+    finally:
+        retriever.close()
+
+    assert _source_pairs(results) == [("message", str(message_id), 1)]
+    assert received_kwargs == [
+        {"source_weight_map": {"theme": 0.25, "conversation_note": 1.15}}
+    ]

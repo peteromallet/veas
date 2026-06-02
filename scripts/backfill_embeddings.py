@@ -86,6 +86,26 @@ LEFT JOIN covered USING (source_type)
 ORDER BY searchable.source_type
 """
 
+SOURCE_TYPE_COUNTS_SQL = """
+WITH searchable AS (
+    SELECT source_type, count(*)::bigint AS searchable_count
+    FROM mediator.v_searchable_content
+    GROUP BY source_type
+),
+embeddings AS (
+    SELECT source_type, count(*)::bigint AS embedding_count
+    FROM mediator.content_embeddings
+    GROUP BY source_type
+)
+SELECT
+    COALESCE(searchable.source_type, embeddings.source_type) AS source_type,
+    COALESCE(searchable.searchable_count, 0)::bigint AS searchable_count,
+    COALESCE(embeddings.embedding_count, 0)::bigint AS embedding_count
+FROM searchable
+FULL OUTER JOIN embeddings USING (source_type)
+ORDER BY source_type
+"""
+
 HNSW_INDEX_SQL = """
 CREATE INDEX CONCURRENTLY IF NOT EXISTS idx_content_embeddings_hnsw_embedding
 ON mediator.content_embeddings
@@ -124,6 +144,13 @@ class Coverage:
         if self.total == 0:
             return 1.0
         return self.covered / self.total
+
+
+@dataclass(frozen=True)
+class SourceTypeCount:
+    source_type: str
+    searchable_count: int
+    embedding_count: int
 
 
 def _utc_now() -> datetime:
@@ -177,6 +204,18 @@ async def fetch_coverage(conn: Any, *, model: str, dimension: int) -> list[Cover
             source_type=str(row["source_type"]),
             total=int(row["total"]),
             covered=int(row["covered"]),
+        )
+        for row in rows
+    ]
+
+
+async def fetch_source_type_counts(conn: Any) -> list[SourceTypeCount]:
+    rows = await conn.fetch(SOURCE_TYPE_COUNTS_SQL)
+    return [
+        SourceTypeCount(
+            source_type=str(row["source_type"]),
+            searchable_count=int(row["searchable_count"]),
+            embedding_count=int(row["embedding_count"]),
         )
         for row in rows
     ]
@@ -378,6 +417,14 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
     )
     embedder = embedder_from_settings(settings)
     async with _direct_connection(database_url) as conn:
+        before_source_counts = await fetch_source_type_counts(conn)
+        for count in before_source_counts:
+            logger.info(
+                "source counts before source_type=%s searchable=%d embeddings=%d",
+                count.source_type,
+                count.searchable_count,
+                count.embedding_count,
+            )
         before_rows = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
         for coverage in before_rows:
             logger.info(
@@ -397,6 +444,7 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
             dry_run=args.dry_run,
         )
         after_rows = await fetch_coverage(conn, model=embedder.model_name, dimension=embedder.dimension)
+        after_source_counts = await fetch_source_type_counts(conn)
         logger.info(
             "backfill done dry_run=%s scanned=%d embedded=%d pending=%d current=%d failed=%d",
             args.dry_run,
@@ -423,6 +471,13 @@ async def _run(args: argparse.Namespace, *, settings: Settings | None = None) ->
             after.ratio,
             args.coverage_threshold,
         )
+        for count in after_source_counts:
+            logger.info(
+                "source counts after source_type=%s searchable=%d embeddings=%d",
+                count.source_type,
+                count.searchable_count,
+                count.embedding_count,
+            )
         if args.build_index_concurrently:
             logger.info("building HNSW index concurrently outside an explicit transaction")
             await build_hnsw_index_concurrently(conn)

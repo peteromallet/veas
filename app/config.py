@@ -199,7 +199,7 @@ class Settings(BaseSettings):
     # Source-type multipliers applied inside retrieval RRF fusion.  The default
     # is intentionally inert for M2 because only message sources are rendered.
     retrieval_source_weight_map: dict[str, float] = Field(
-        default_factory=lambda: {"message": 1.0}
+        default_factory=lambda: {"message": 1.0, "conversation_note": 1.0, "theme": 0.5}
     )
     embedding_worker_enabled: bool = False
     embedding_worker_poll_interval_s: float = Field(default=5.0, gt=0.0, le=300.0)

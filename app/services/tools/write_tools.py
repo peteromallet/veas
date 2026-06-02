@@ -35,6 +35,7 @@ from app.services.embeddings import (
     canonical_distillation_embedding_text,
     canonical_memory_embedding_text,
     canonical_observation_embedding_text,
+    canonical_theme_embedding_text,
     content_hash,
 )
 from app.services import discord, scoring
@@ -354,6 +355,74 @@ async def _sync_distillation_embedding_after_revise(
         source_id=old_distillation_id,
     )
     await _sync_distillation_embedding_after_create(ctx, new_distillation_id)
+
+
+def _theme_is_searchable(row: Any | None) -> bool:
+    if row is None:
+        return False
+    return (
+        row.get("status") == "active"
+        and row.get("_has_active_topic") is True
+        and bool(canonical_theme_embedding_text(row.get("title"), row.get("description")))
+    )
+
+
+def _theme_content_hash(row: Any) -> str:
+    return content_hash(
+        canonical_theme_embedding_text(row.get("title"), row.get("description"))
+    )
+
+
+async def _fetch_theme_embedding_state(pool: Any, theme_id: Any) -> Any | None:
+    return await pool.fetchrow(
+        """
+        SELECT
+            t.id, t.title, t.description, t.status,
+            t.recorded_by_bot_id,
+            EXISTS (
+                SELECT 1 FROM artifact_topics at
+                WHERE at.artifact_table = 'themes'
+                  AND at.artifact_id = t.id
+                  AND at.status = 'active'
+            ) AS _has_active_topic
+        FROM themes t
+        WHERE t.id = $1
+        """,
+        theme_id,
+    )
+
+
+async def _sync_theme_embedding_after_create(
+    ctx: TurnContext, theme_id: Any
+) -> None:
+    row = await _fetch_theme_embedding_state(ctx.pool, theme_id)
+    if _theme_is_searchable(row):
+        await enqueue_content_embed(
+            ctx.pool,
+            source_type="theme",
+            source_id=row["id"],
+            content_hash=_theme_content_hash(row),
+        )
+
+
+async def _sync_theme_embedding_after_update(
+    ctx: TurnContext, theme_id: Any
+) -> None:
+    row = await _fetch_theme_embedding_state(ctx.pool, theme_id)
+    if _theme_is_searchable(row):
+        await enqueue_content_reembed(
+            ctx.pool,
+            source_type="theme",
+            source_id=row["id"],
+            content_hash=_theme_content_hash(row),
+        )
+    else:
+        await enqueue_content_embedding_drop(
+            ctx.pool,
+            source_type="theme",
+            source_id=theme_id,
+        )
+
 
 SCORING_PROMPT_VERSION = scoring.SCORING_PROMPT_VERSION
 _BRIDGE_RESOLVED_STATUSES = {"sent", "declined", "blocked", "addressed", "expired"}
@@ -1262,6 +1331,7 @@ async def create_theme(ctx: TurnContext, args: CreateThemeInput) -> CreateThemeO
     )
     result = CreateThemeOutput(id=row["id"])
     await _log_tool_call(ctx, "create_theme", args, started, result)
+    await _sync_theme_embedding_after_create(ctx, row["id"])
     return result
 
 
@@ -1286,6 +1356,7 @@ async def update_theme(ctx: TurnContext, args: UpdateThemeInput) -> UpdateThemeO
     )
     result = UpdateThemeOutput(id=row["id"])
     await _log_tool_call(ctx, "update_theme", args, started, result)
+    await _sync_theme_embedding_after_update(ctx, row["id"])
     return result
 
 

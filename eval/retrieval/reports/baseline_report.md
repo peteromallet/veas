@@ -3,18 +3,18 @@
 - **Adapter:** IlikeBaselineRetriever
 - **Corpus:** /Users/peteromalley/Documents/Veas/eval/retrieval/corpus.yaml
 - **Golden Set:** /Users/peteromalley/Documents/Veas/eval/retrieval/golden_set.yaml
-- **Generated:** 2026-06-02T01:21:57.700650+00:00
-- **Cases:** 70
+- **Generated:** 2026-06-02T03:56:43.198123+00:00
+- **Cases:** 80
 
 ## Overall Metrics
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.6600 |
-| recall@1 | 0.3383 |
-| recall@10 | 0.5098 |
-| recall@5 | 0.5017 |
-| n         | 70 |
+| mrr | 0.5775 |
+| recall@1 | 0.2960 |
+| recall@10 | 0.4460 |
+| recall@5 | 0.4390 |
+| n         | 80 |
 
 ## Per Query-Type Metrics
 
@@ -46,6 +46,46 @@
 | GC48 | audit findings | topic | 4 | 2 | 0.0000 | 0.2500 | 0.2500 | 0.5000 |
 | GC49 | Atlas is down | topic | 4 | 1 | 0.2500 | 0.2500 | 0.2500 | 1.0000 |
 | GC50 | other apartments | topic | 4 | 1 | 0.2500 | 0.2500 | 0.2500 | 1.0000 |
+
+### exact_source_quote
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 2 |
+
+#### Cases
+
+| Case ID | Query | Scope | Expected | Retrieved | Recall@1 | Recall@5 | Recall@10 | MRR |
+|---------|-------|-------|----------|-----------|----------|----------|-----------|-----|
+| GC74 | what was said about the Atlas outage | all | 7 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC77 | what decision on auth cookies | all | 3 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+
+### knowledge_recall
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 8 |
+
+#### Cases
+
+| Case ID | Query | Scope | Expected | Retrieved | Recall@1 | Recall@5 | Recall@10 | MRR |
+|---------|-------|-------|----------|-----------|----------|----------|-----------|-----|
+| GC71 | auth token security | all | 7 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC72 | Blue Ridge hiking plans | all | 7 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC73 | household responsibilities and money | all | 8 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC75 | chores split | all | 1 | 1 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC76 | financial surprises | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC78 | apartment features | all | 3 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC79 | CI pipeline status | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
+| GC80 | weekly routine hiking | all | 1 | 0 | 0.0000 | 0.0000 | 0.0000 | 0.0000 |
 
 ### paraphrase
 
@@ -148,6 +188,80 @@
 | GC69 | dishwasher | all | 2 | 3 | 0.5000 | 0.5000 | 0.5000 | 1.0000 |
 | GC70 | feature flags | all | 2 | 1 | 0.5000 | 0.5000 | 0.5000 | 1.0000 |
 
+## Per Source-Type Metrics
+
+### conversation_note
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 1 |
+
+### message
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.6600 |
+| recall@1 | 0.3383 |
+| recall@10 | 0.5098 |
+| recall@5 | 0.5017 |
+| n         | 70 |
+
+### mixed
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 6 |
+
+### theme
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 3 |
+
+## Per Intent Metrics
+
+### exact_said
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 2 |
+
+### know_about
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.0000 |
+| recall@1 | 0.0000 |
+| recall@10 | 0.0000 |
+| recall@5 | 0.0000 |
+| n         | 8 |
+
+### unlabeled
+
+| Metric    | Value |
+|-----------|-------|
+| mrr | 0.6600 |
+| recall@1 | 0.3383 |
+| recall@10 | 0.5098 |
+| recall@5 | 0.5017 |
+| n         | 70 |
+
 ## Per Fairness Metrics
 
 ### adversarial
@@ -158,17 +272,17 @@
 | recall@1 | 0.0000 |
 | recall@10 | 0.0000 |
 | recall@5 | 0.0000 |
-| n         | 5 |
+| n         | 9 |
 
 ### either
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.6179 |
-| recall@1 | 0.2504 |
-| recall@10 | 0.3734 |
-| recall@5 | 0.3639 |
-| n         | 42 |
+| mrr | 0.5521 |
+| recall@1 | 0.2238 |
+| recall@10 | 0.3337 |
+| recall@5 | 0.3252 |
+| n         | 47 |
 
 ### keyword_favored
 
@@ -188,7 +302,7 @@
 | recall@1 | 0.0000 |
 | recall@10 | 0.0000 |
 | recall@5 | 0.0000 |
-| n         | 1 |
+| n         | 2 |
 
 ## Per Difficulty Metrics
 
@@ -210,14 +324,14 @@
 | recall@1 | 0.0000 |
 | recall@10 | 0.0000 |
 | recall@5 | 0.0000 |
-| n         | 6 |
+| n         | 11 |
 
 ### medium
 
 | Metric    | Value |
 |-----------|-------|
-| mrr | 0.6179 |
-| recall@1 | 0.2504 |
-| recall@10 | 0.3734 |
-| recall@5 | 0.3639 |
-| n         | 42 |
+| mrr | 0.5521 |
+| recall@1 | 0.2238 |
+| recall@10 | 0.3337 |
+| recall@5 | 0.3252 |
+| n         | 47 |

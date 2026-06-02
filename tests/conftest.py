@@ -169,6 +169,8 @@ class FakePool:
         self.tool_calls = []
         self.memories = {}
         self.themes = {}
+        self.conversations = {}
+        self.conversation_notes = {}
         self.watch_items = {}
         self.observations = {}
         self.distillations = {}
@@ -462,6 +464,94 @@ class FakePool:
                 "payload": payload,
             }
 
+        if source_type == "conversation_note":
+            row = self.conversation_notes.get(source_id)
+            if row is None:
+                return None
+            text = row.get("text") or ""
+            if not text.strip():
+                return None
+            created_at = row.get("created_at")
+            conversation = getattr(self, "conversations", {}).get(
+                row.get("conversation_id"), {}
+            )
+            topic_id = row.get("topic_id") or conversation.get("topic_id")
+            bot_id = row.get("bot_id") or conversation.get("bot_id")
+            user_id = row.get("user_id") or conversation.get("user_id")
+            partner_share = row.get("thread_owner_partner_share")
+            if partner_share is None and user_id is not None and bot_id is not None:
+                partner_share = self.user_bot_state.get((user_id, bot_id), {}).get(
+                    "partner_share"
+                )
+            return {
+                "source_type": "conversation_note",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": user_id,
+                "recipient_id": None,
+                "bot_id": bot_id,
+                "topic_id": topic_id,
+                "dyad_id": conversation.get("dyad_id"),
+                "thread_owner_user_id": user_id,
+                "thread_owner_partner_share": partner_share or "unset",
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": None,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": created_at,
+            }
+
+        if source_type == "theme":
+            row = self.themes.get(source_id)
+            if row is None or row.get("status", "active") != "active":
+                return None
+            title = row.get("title")
+            description = row.get("description")
+            parts = [part for part in (title, description) if part is not None]
+            text = "\n".join(str(part) for part in parts).strip()
+            if not text:
+                return None
+            created_at = row.get("created_at") or row.get("first_seen_at")
+            updated_at = row.get("updated_at") or created_at
+            topic_id = self.artifact_topics.get(("themes", source_id)) or row.get("topic_id")
+            return {
+                "source_type": "theme",
+                "source_id": source_id,
+                "message_id": None,
+                "direction": None,
+                "canonical_text": text,
+                "sent_at": created_at,
+                "sender_id": row.get("about_user_id"),
+                "recipient_id": None,
+                "bot_id": row.get("recorded_by_bot_id"),
+                "topic_id": topic_id,
+                "dyad_id": None,
+                "thread_owner_user_id": row.get("about_user_id"),
+                "thread_owner_partner_share": None,
+                "active_oob_severity": None,
+                "charge": "routine",
+                "edited_at": None,
+                "edit_history": None,
+                "content": text,
+                "media_type": None,
+                "media_analysis": None,
+                "sort_at": created_at,
+                "primary_topic_id": topic_id,
+                "topic_ids": [topic_id] if topic_id else [],
+                "source_created_at": created_at,
+                "source_updated_at": updated_at,
+            }
+
         return None
 
     def _canonical_artifact_text(self, row: dict[str, Any]) -> str:
@@ -523,6 +613,8 @@ class FakePool:
             ("observation", self.observations),
             ("distillation", self.distillations),
             ("artifact", self.conversation_artifacts),
+            ("conversation_note", self.conversation_notes),
+            ("theme", self.themes),
         )
         rows: list[dict[str, Any]] = []
         for source_type, source_rows in source_maps:

@@ -14,7 +14,11 @@ from app.services.embed_jobs import (
     enqueue_embed_job,
     enqueue_reembed_job,
 )
-from app.services.embeddings import canonical_content_hash
+from app.services.embeddings import (
+    canonical_content_hash,
+    canonical_conversation_note_embedding_text,
+    content_hash as _content_hash,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -145,4 +149,68 @@ async def enqueue_message_embedding_drop(pool: Any, *, message_id: UUID) -> None
         source_type="message",
         source_id=message_id,
         message_id=message_id,
+    )
+
+
+def _conversation_note_is_searchable(text: str | None) -> bool:
+    """A conversation note is searchable when its trimmed text is non-empty."""
+    return bool((text or "").strip())
+
+
+def _conversation_note_content_hash(text: str | None) -> str:
+    return _content_hash(canonical_conversation_note_embedding_text(text))
+
+
+async def enqueue_conversation_note_embed(
+    pool: Any,
+    *,
+    note_id: UUID,
+    text: str | None,
+) -> None:
+    """Best-effort enqueue after a conversation note is created or made non-empty."""
+    if not _conversation_note_is_searchable(text):
+        return
+    await enqueue_content_embed(
+        pool,
+        source_type="conversation_note",
+        source_id=note_id,
+        content_hash=_conversation_note_content_hash(text),
+    )
+
+
+async def enqueue_conversation_note_reembed(
+    pool: Any,
+    *,
+    note_id: UUID,
+    text: str | None,
+) -> None:
+    """Best-effort enqueue after conversation note text changes.
+
+    Reembeds when text becomes searchable; drops when text becomes empty.
+    """
+    if _conversation_note_is_searchable(text):
+        await enqueue_content_reembed(
+            pool,
+            source_type="conversation_note",
+            source_id=note_id,
+            content_hash=_conversation_note_content_hash(text),
+        )
+    else:
+        await enqueue_content_embedding_drop(
+            pool,
+            source_type="conversation_note",
+            source_id=note_id,
+        )
+
+
+async def enqueue_conversation_note_drop(
+    pool: Any,
+    *,
+    note_id: UUID,
+) -> None:
+    """Best-effort enqueue after a conversation note is deleted or emptied."""
+    await enqueue_content_embedding_drop(
+        pool,
+        source_type="conversation_note",
+        source_id=note_id,
     )

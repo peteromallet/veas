@@ -114,6 +114,8 @@ class HotContextPool:
         ]
         self.messages[-1]["id"] = self.trigger_id
         self.messages[-1]["charge"] = "charged"
+        self.conversation_notes = {}
+        self.conversation_artifacts = {}
         self.bridge_candidates = []
         self.bot_turns = []
         self.feedback = []
@@ -325,6 +327,80 @@ class HotContextPool:
                 )
             rows.sort(key=lambda row: row["created_at"], reverse=True)
             return rows[:5]
+        if "WITH ranked_sources AS" in compact and "JOIN mediator.v_searchable_content sc" in compact:
+            source_types = args[-2]
+            source_ids = args[-1]
+            rows = []
+            themes_by_id = {row["id"]: row for row in self.themes}
+            for source_type, source_id in zip(source_types, source_ids, strict=True):
+                if source_type == "conversation_note":
+                    row = self.conversation_notes.get(source_id)
+                    if row is None or not str(row.get("text") or "").strip():
+                        continue
+                    rows.append(
+                        {
+                            "source_type": "conversation_note",
+                            "source_id": source_id,
+                            "message_id": None,
+                            "sent_at": row.get("created_at"),
+                            "source_created_at": row.get("created_at"),
+                            "source_updated_at": row.get("created_at"),
+                            "sort_at": row.get("created_at"),
+                            "content": row.get("text"),
+                        }
+                    )
+                elif source_type == "theme":
+                    row = themes_by_id.get(source_id)
+                    if row is None or row.get("status", "active") != "active":
+                        continue
+                    content = "\n".join(
+                        part for part in (row.get("title"), row.get("description")) if part
+                    ).strip()
+                    if not content:
+                        continue
+                    rows.append(
+                        {
+                            "source_type": "theme",
+                            "source_id": source_id,
+                            "message_id": None,
+                            "sent_at": row.get("last_active_at"),
+                            "source_created_at": row.get("first_seen_at")
+                            or row.get("last_active_at"),
+                            "source_updated_at": row.get("last_reinforced_at")
+                            or row.get("last_active_at"),
+                            "sort_at": row.get("last_active_at"),
+                            "content": content,
+                        }
+                    )
+                elif source_type == "artifact":
+                    row = self.conversation_artifacts.get(source_id)
+                    if row is None or row.get("deleted_at") is not None:
+                        continue
+                    payload = row.get("payload") or {}
+                    content = "\n".join(
+                        part.strip()
+                        for part in (
+                            payload.get("summary"),
+                            payload.get("review_summary"),
+                            payload.get("notes"),
+                        )
+                        if isinstance(part, str) and part.strip()
+                    )
+                    if not content:
+                        continue
+                    rows.append(
+                        {
+                            "source_type": "artifact",
+                            "source_id": source_id,
+                            "message_id": None,
+                            "sent_at": row.get("created_at"),
+                            "source_created_at": row.get("created_at"),
+                            "source_updated_at": row.get("created_at"),
+                            "sort_at": row.get("created_at"),
+                            "content": content,
+                        }
+                    )
+            return rows
         if "FROM bot_turns bt" in compact and "final_output_message_id IS NULL" in compact:
             # Silent-turns hot-context block. The real query joins
             # tool_calls; the fake pool doesn't track silent turns, so
@@ -1149,6 +1225,226 @@ async def test_semantic_prior_hydration_error_degrades(
     assert all(item.get("source") == "topic_recent" for item in hc.relevant_prior)
 
 
+async def test_semantic_prior_hydrates_non_message_rows_without_losing_message_hits(
+    hot_context_seed, monkeypatch
+):
+    pool, user, partner = hot_context_seed
+    note_id = uuid4()
+    theme_id = uuid4()
+    artifact_id = uuid4()
+    message_id = pool.messages[0]["id"]
+    pool.conversation_notes[note_id] = {
+        "id": note_id,
+        "text": "Conversation note about the deployment rollback",
+        "created_at": pool.now - timedelta(minutes=70),
+    }
+    pool.themes.append(
+        {
+            "id": theme_id,
+            "title": "Deployment reliability",
+            "description": "Need rollback drills and clearer incident comms",
+            "status": "active",
+            "sentiment": "mixed",
+            "health": "tender",
+            "first_seen_at": pool.now - timedelta(days=3),
+            "last_reinforced_at": pool.now - timedelta(minutes=80),
+            "last_active_at": pool.now - timedelta(minutes=80),
+        }
+    )
+    pool.conversation_artifacts[artifact_id] = {
+        "id": artifact_id,
+        "artifact_type": "review_summary",
+        "payload": {
+            "summary": "Artifact summary about the deployment rollback timeline",
+            "notes": "Include the rollback drill follow-up",
+        },
+        "created_at": pool.now - timedelta(minutes=75),
+        "deleted_at": None,
+    }
+
+    async def fake_hybrid_search(_pool, request):
+        return [
+            RetrievalResult(
+                message_id=None,
+                source_type="conversation_note",
+                source_id=note_id,
+                match_type="semantic",
+                rrf_score=0.91,
+                keyword_rank=None,
+                semantic_rank=1,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=None,
+                source_type="theme",
+                source_id=theme_id,
+                match_type="semantic",
+                rrf_score=0.82,
+                keyword_rank=None,
+                semantic_rank=2,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=None,
+                source_type="artifact",
+                source_id=artifact_id,
+                match_type="semantic",
+                rrf_score=0.77,
+                keyword_rank=None,
+                semantic_rank=3,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=message_id,
+                source_type="message",
+                source_id=message_id,
+                match_type="semantic",
+                rrf_score=0.73,
+                keyword_rank=None,
+                semantic_rank=4,
+                semantic_degraded=False,
+            ),
+        ]
+
+    monkeypatch.setattr("app.services.hot_context.hybrid_search", fake_hybrid_search)
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+
+    by_id = {item["id"]: item for item in hc.relevant_prior}
+    assert by_id[note_id]["source_type"] == "conversation_note"
+    assert by_id[note_id]["content"] == "Conversation note about the deployment rollback"
+    assert by_id[note_id]["retrieval"]["rrf_score"] == 0.91
+    assert by_id[theme_id]["source_type"] == "theme"
+    assert "Deployment reliability" in by_id[theme_id]["content"]
+    assert by_id[theme_id]["retrieval"]["rrf_score"] == 0.82
+    assert by_id[artifact_id]["source_type"] == "artifact"
+    assert "deployment rollback timeline" in by_id[artifact_id]["content"]
+    assert by_id[artifact_id]["retrieval"]["rrf_score"] == 0.77
+    assert by_id[message_id]["source"] == "topic_recent"
+    assert by_id[message_id]["retrieval"]["rrf_score"] == 0.73
+
+    text = render_hot_context(hc)
+    assert "[conversation_note] [semantic, rrf=0.9100]" in text
+    assert "[theme] [semantic, rrf=0.8200]" in text
+    assert "[artifact] [semantic, rrf=0.7700]" in text
+
+
+async def test_semantic_prior_non_message_rows_stay_absent_when_not_returned_or_hidden(
+    hot_context_seed, monkeypatch
+):
+    pool, user, partner = hot_context_seed
+    returned_note_id = uuid4()
+    absent_theme_id = uuid4()
+    hidden_note_id = uuid4()
+    hidden_theme_id = uuid4()
+    hidden_artifact_id = uuid4()
+
+    pool.conversation_notes[returned_note_id] = {
+        "id": returned_note_id,
+        "text": "Returned note stays in relevant prior",
+        "created_at": pool.now - timedelta(minutes=65),
+    }
+    pool.conversation_notes[hidden_note_id] = {
+        "id": hidden_note_id,
+        "text": "   ",
+        "created_at": pool.now - timedelta(minutes=64),
+    }
+    pool.themes.append(
+        {
+            "id": absent_theme_id,
+            "title": "Not returned theme",
+            "description": "Should stay absent because retrieval never surfaced it",
+            "status": "active",
+            "sentiment": "mixed",
+            "health": "tender",
+            "first_seen_at": pool.now - timedelta(days=4),
+            "last_reinforced_at": pool.now - timedelta(minutes=90),
+            "last_active_at": pool.now - timedelta(minutes=90),
+        }
+    )
+    pool.themes.append(
+        {
+            "id": hidden_theme_id,
+            "title": "Hidden theme",
+            "description": "Dormant theme should fail hydration",
+            "status": "dormant",
+            "sentiment": "mixed",
+            "health": "tender",
+            "first_seen_at": pool.now - timedelta(days=4),
+            "last_reinforced_at": pool.now - timedelta(minutes=95),
+            "last_active_at": pool.now - timedelta(minutes=95),
+        }
+    )
+    pool.conversation_artifacts[hidden_artifact_id] = {
+        "id": hidden_artifact_id,
+        "artifact_type": "review_summary",
+        "payload": {"summary": "Deleted artifact should fail hydration"},
+        "created_at": pool.now - timedelta(minutes=68),
+        "deleted_at": pool.now - timedelta(minutes=1),
+    }
+
+    async def fake_hybrid_search(_pool, request):
+        return [
+            RetrievalResult(
+                message_id=None,
+                source_type="conversation_note",
+                source_id=returned_note_id,
+                match_type="semantic",
+                rrf_score=0.88,
+                keyword_rank=None,
+                semantic_rank=1,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=None,
+                source_type="conversation_note",
+                source_id=hidden_note_id,
+                match_type="semantic",
+                rrf_score=0.71,
+                keyword_rank=None,
+                semantic_rank=2,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=None,
+                source_type="theme",
+                source_id=hidden_theme_id,
+                match_type="semantic",
+                rrf_score=0.67,
+                keyword_rank=None,
+                semantic_rank=3,
+                semantic_degraded=False,
+            ),
+            RetrievalResult(
+                message_id=None,
+                source_type="artifact",
+                source_id=hidden_artifact_id,
+                match_type="semantic",
+                rrf_score=0.63,
+                keyword_rank=None,
+                semantic_rank=4,
+                semantic_degraded=False,
+            ),
+        ]
+
+    monkeypatch.setattr("app.services.hot_context.hybrid_search", fake_hybrid_search)
+
+    hc = await build_hot_context(pool, user, partner, [pool.trigger_id])
+
+    prior_ids = {item["id"] for item in hc.relevant_prior}
+    assert returned_note_id in prior_ids
+    assert hidden_note_id not in prior_ids
+    assert hidden_theme_id not in prior_ids
+    assert hidden_artifact_id not in prior_ids
+    assert absent_theme_id not in prior_ids
+
+    text = render_hot_context(hc)
+    assert "[conversation_note] [semantic, rrf=0.8800]" in text
+    assert "Deleted artifact should fail hydration" not in text
+    assert "Dormant theme should fail hydration" not in text
+    assert "Not returned theme" not in text
+
+
 async def test_build_hot_context_surfaces_reactions_since_previous_turn(
     hot_context_seed,
 ):
@@ -1822,7 +2118,7 @@ def test_render_hot_context_previous_topic_section_has_navigation_cues(monkeypat
     assert text.index("## Previous on this topic") < text.index(
         "## Your silent turns since the user's last message"
     )
-    assert "Use message ids below as cursor anchors with read tools to explore further back." in text
+    assert "Use ids below as cursor anchors with read tools to explore further back." in text
     assert f"id={str(prior_id)[:14]}" in text
     assert "source=semantic [semantic, rrf=0.4321]" in text
     assert "older topic context " in text

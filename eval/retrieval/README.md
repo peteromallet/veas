@@ -230,6 +230,50 @@ score nonzero:
 Run `python -m eval.retrieval._generate_fixtures` — it validates all
 `expected_message_ids` exist and prints the per-type fairness audit.
 
+### Source-aware golden cases (M4, GC71–GC80)
+
+The golden set includes 10 **source-aware** cases (GC71–GC80) that exercise
+the `expected_source_keys` contract added in the M4 milestone. These cases
+reference non-message corpus entries — memories, observations, distillations,
+artifacts, conversation notes, and themes — alongside traditional message ids.
+
+Key design properties:
+
+| Property | Detail |
+|---|---|
+| **Intent labels** | `know_about` (semantic knowledge recall) or `exact_said` (exact wording lookup). The runner reports intent-stratified metrics. |
+| **Non-message source types** | All six non-message types appear across the 10 cases: memory, observation, distillation, artifact, conversation_note, theme. |
+| **Deliberate low-weight theme cases** | GC75, GC76, and GC80 expect **only** a theme source key with **zero message fallback**. The ILIKE baseline *must* score 0.0 on these by design — they are a pure-semantic measurement. |
+| **Message fallback** | Cases that do include `expected_message_ids` use message ids the baseline CAN find (lexical overlap exists). The semantic win must come from the non-message sources the baseline cannot reach. |
+| **`query_type`** | `knowledge_recall` for `know_about`; `exact_source_quote` for `exact_said`. Both types are recognized by the runner and appear in `by_query_type` aggregate tables. |
+| **`fairness`** | `adversarial` for zero-overlap theme/note-only cases; `either` for mixed source-type cases with lexical overlap; `semantic_favored` for cases where the baseline can only reach a minority of expected sources. |
+| **Backward compatibility** | The loader's `_normalize_expected_keys` validator merges `expected_source_keys` and `expected_message_ids` into a single canonical list. Legacy message-only cases continue to work unchanged. |
+
+To add a new source-aware case, include both `expected_source_keys` (for
+non-message targets) and `expected_message_ids` (for the message-only subset):
+
+```yaml
+- id: GC99
+  query: "your query"
+  expected_message_ids:
+  - m001
+  expected_source_keys:
+  - source_type: memory
+    source_id: mem001
+  - source_type: theme
+    source_id: thm001
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: medium
+  fairness: either
+  notes: "Optional notes."
+```
+
+Source keys that are not messages are accepted by the loader without requiring
+corpus-row validation (the synthetic corpus has non-message entries but the
+current loader only cross-checks `source_type='message'` ids).
+
 ## 5. How to run
 
 ### Prerequisites
@@ -856,3 +900,87 @@ python -m eval.retrieval.hotcontext_eval --selector reference --assert-m3-gate
 ```
 
 All three exit 0 when quality bars are met — suitable for CI gating.
+
+## 12. Real-data gate #2 (M4: non-message extraction)
+
+### Purpose
+
+Gate #2 validates that the retrieval eval harness can measure **non-message**
+recall (memories, observations, distillations, artifacts, conversation notes,
+themes) against a real production database — not just the synthetic corpus.
+
+### ⚠️ Privacy: Sanitized-only reporting
+
+The `extract_real_corpus.py` script reads **REAL, intimate user data** and
+writes it to disk.  All outputs are **gitignored** (see `.gitignore` lines
+covering `eval/retrieval/real_*.yaml`).  The script prints only sanitized
+aggregates (message count, thread count, topic count, date range, non-message
+row count) — **never raw content**.  When labeling is complete, delete the
+extracted files:
+
+```bash
+rm eval/retrieval/real_corpus.yaml
+rm eval/retrieval/real_golden_set.yaml
+```
+
+### Extracting a real corpus with non-message rows
+
+```bash
+# Messages only (backward-compatible, gate #1)
+python -m eval.retrieval.extract_real_corpus \
+    --limit 300 --since 2025-01-01 \
+    --out eval/retrieval/real_corpus.yaml
+
+# Include non-message searchable rows (gate #2)
+python -m eval.retrieval.extract_real_corpus \
+    --limit 300 --since 2025-01-01 \
+    --include-non-message --non-message-limit 100 \
+    --source-types memory,observation,theme,conversation_note,artifact \
+    --out eval/retrieval/real_corpus.yaml
+```
+
+The output YAML includes:
+- `messages`: list of CorpusMessage-compatible entries (as before)
+- `non_message_sources`: list of entries with `source_type`, `id`, `topic_id`,
+  `content`, `created_at`, `bot_id`, and `dyad_id` — the `extra_scope` fields
+  needed for DbBackedRetriever golden cases
+
+### Building a source-aware real golden set
+
+1. Extract the corpus with `--include-non-message`.
+2. Browse it with `python -m eval.retrieval.browse_corpus`.
+3. Copy the template: `cp eval/retrieval/real_golden_set.template.yaml eval/retrieval/real_golden_set.yaml`
+4. Fill in real ids for RC01–RC10 (see template comments).
+5. Cases RC05–RC10 use `expected_source_keys` for non-message targets and
+   require `extra_scope` with `viewer_user_id`, `bot_id`, and `topic_id`.
+6. Run the eval: `python -m eval.retrieval.runner --adapter db --golden eval/retrieval/real_golden_set.yaml`
+7. Delete the files when done.
+
+### Source-type gating
+
+The `--source-types` flag accepts a comma-separated list.  The default
+(`memory,observation,distillation,artifact,conversation_note,theme`) extracts
+all six non-message families.  Narrow with e.g.
+`--source-types theme,conversation_note` for targeted extraction.
+
+### Bounded extraction
+
+- `--limit` (default 300): max messages extracted.  **Never unbounded.**
+- `--non-message-limit` (default 100): max non-message rows extracted.
+  **Never unbounded.**
+- Both limits are enforced at parse time; values ≤ 0 are rejected.
+
+### Gitignore coverage
+
+The following patterns in `.gitignore` protect real-data outputs:
+
+```
+eval/retrieval/real_corpus.yaml
+eval/retrieval/real_golden_set.yaml
+eval/retrieval/real_*.yaml
+!eval/retrieval/real_golden_set.template.yaml
+```
+
+The template (`real_golden_set.template.yaml`) is the **only** committed file
+with `real_` prefix — it contains **zero real data**, only placeholder strings.
+All other `real_*.yaml` files are ignored.

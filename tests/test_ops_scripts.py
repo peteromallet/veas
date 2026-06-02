@@ -8,10 +8,12 @@ from scripts.backfill_embeddings import (
     COVERAGE_SQL,
     HNSW_INDEX_SQL,
     SELECT_CANDIDATES_SQL,
+    SOURCE_TYPE_COUNTS_SQL,
     UPSERT_EMBEDDING_SQL,
     backfill_embeddings,
     build_hnsw_index_concurrently,
     direct_database_url_from_env,
+    fetch_source_type_counts,
 )
 from app.services.embeddings import content_hash
 
@@ -57,6 +59,9 @@ def test_backfill_embeddings_source_safety_contract() -> None:
     assert "source_type" in SELECT_CANDIDATES_SQL
     assert "source_id" in SELECT_CANDIDATES_SQL
     assert "GROUP BY source_type" in COVERAGE_SQL
+    assert "FROM mediator.v_searchable_content" in SOURCE_TYPE_COUNTS_SQL
+    assert "FROM mediator.content_embeddings" in SOURCE_TYPE_COUNTS_SQL
+    assert "FULL OUTER JOIN" in SOURCE_TYPE_COUNTS_SQL
     assert "content_hash(" in source
     assert "$3::vector" in UPSERT_EMBEDDING_SQL
     assert "ON CONFLICT (source_type, source_id)" in UPSERT_EMBEDDING_SQL
@@ -86,6 +91,23 @@ class FakeBackfillConn:
 
     async def fetch(self, sql: str, *args):
         self.fetch_calls.append((sql, args))
+        if sql == SOURCE_TYPE_COUNTS_SQL:
+            searchable_counts: dict[str, int] = {}
+            embedding_counts: dict[str, int] = {}
+            for row in self.rows:
+                source_type = row["source_type"]
+                searchable_counts[source_type] = searchable_counts.get(source_type, 0) + 1
+            for source_type, _source_id in self.upserts:
+                embedding_counts[source_type] = embedding_counts.get(source_type, 0) + 1
+            all_source_types = sorted(set(searchable_counts) | set(embedding_counts))
+            return [
+                {
+                    "source_type": source_type,
+                    "searchable_count": searchable_counts.get(source_type, 0),
+                    "embedding_count": embedding_counts.get(source_type, 0),
+                }
+                for source_type in all_source_types
+            ]
         cursor_type, cursor_id, limit = args
         rows = [
             row
@@ -156,6 +178,10 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
     current_text = "already current\n\n\n"
     stale_text = "edited\n\n\n"
     memory_text = "private memory"
+    note_id = UUID("00000000-0000-0000-0000-000000000005")
+    theme_id = UUID("00000000-0000-0000-0000-000000000006")
+    note_text = "note about the deployment rollback"
+    theme_text = "Deployment reliability\nRollback drills and incident comms"
     conn = FakeBackfillConn(
         [
             {
@@ -194,6 +220,24 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
                 "existing_model": None,
                 "existing_dimension": None,
             },
+            {
+                "source_type": "conversation_note",
+                "source_id": note_id,
+                "message_id": None,
+                "canonical_text": note_text,
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
+            {
+                "source_type": "theme",
+                "source_id": theme_id,
+                "message_id": None,
+                "canonical_text": theme_text,
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
         ]
     )
     embedder = FakeBackfillEmbedder()
@@ -207,18 +251,75 @@ async def test_backfill_embeddings_upserts_only_missing_or_stale_rows(anyio_back
         sleep=_no_sleep,
     )
 
-    assert totals.scanned == 4
+    assert totals.scanned == 6
     assert totals.skipped_current == 1
-    assert totals.embedded == 3
-    assert embedder.calls == [[memory_text], [stale_text, ""]]
+    assert totals.embedded == 5
+    assert [text for batch in embedder.calls for text in batch] == [
+        note_text,
+        memory_text,
+        stale_text,
+        "",
+        theme_text,
+    ]
     assert set(conn.upserts) == {
+        ("conversation_note", note_id),
         ("message", stale_id),
         ("message", missing_id),
         ("memory", memory_id),
+        ("theme", theme_id),
     }
+    assert conn.upserts[("conversation_note", note_id)]["content_hash"] == content_hash(note_text)
     assert conn.upserts[("message", stale_id)]["content_hash"] == content_hash(stale_text)
     assert conn.upserts[("message", missing_id)]["content_hash"] == content_hash("")
     assert conn.upserts[("memory", memory_id)]["content_hash"] == content_hash(memory_text)
+    assert conn.upserts[("theme", theme_id)]["content_hash"] == content_hash(theme_text)
+
+
+async def test_fetch_source_type_counts_reports_searchable_and_embedding_rows(anyio_backend) -> None:
+    message_id = UUID("00000000-0000-0000-0000-000000000021")
+    note_id = UUID("00000000-0000-0000-0000-000000000022")
+    theme_id = UUID("00000000-0000-0000-0000-000000000023")
+    conn = FakeBackfillConn(
+        [
+            {
+                "source_type": "message",
+                "source_id": message_id,
+                "message_id": message_id,
+                "canonical_text": "hello",
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
+            {
+                "source_type": "conversation_note",
+                "source_id": note_id,
+                "message_id": None,
+                "canonical_text": "note",
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
+            {
+                "source_type": "theme",
+                "source_id": theme_id,
+                "message_id": None,
+                "canonical_text": "theme",
+                "existing_content_hash": None,
+                "existing_model": None,
+                "existing_dimension": None,
+            },
+        ]
+    )
+    conn.upserts[("message", message_id)] = {"content_hash": "a"}
+    conn.upserts[("theme", theme_id)] = {"content_hash": "b"}
+
+    rows = await fetch_source_type_counts(conn)
+
+    assert [(row.source_type, row.searchable_count, row.embedding_count) for row in rows] == [
+        ("conversation_note", 1, 0),
+        ("message", 1, 1),
+        ("theme", 1, 1),
+    ]
 
 
 async def test_backfill_hnsw_index_build_uses_concurrent_statement_without_transaction(anyio_backend) -> None:

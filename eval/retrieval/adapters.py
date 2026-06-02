@@ -22,11 +22,12 @@ import asyncio
 import importlib
 import os
 import threading
+from collections.abc import Mapping
 from concurrent.futures import Future
 from typing import TYPE_CHECKING, Any, Protocol
 from uuid import UUID
 
-from eval.retrieval.schema import Corpus, CorpusMessage, Scope
+from eval.retrieval.schema import Corpus, CorpusMessage, RankedSourceKey, Scope
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from eval.retrieval.embeddings import MiniLMEmbedder
@@ -83,8 +84,8 @@ class Retriever(Protocol):
         topic_id: str | None,
         limit: int,
         **extra_scope: Any,
-    ) -> list[str]:
-        """Retrieve ranked message ids for a query.
+    ) -> list[RankedSourceKey]:
+        """Retrieve ranked source keys for a query.
 
         Args:
             query: The search query string.
@@ -97,9 +98,18 @@ class Retriever(Protocol):
                 Ignored by offline adapters.
 
         Returns:
-            Ordered list of message ids (rank 1 = index 0), truncated to limit.
+            Ordered list of ranked source keys (rank 1 = index 0), truncated to
+            limit. Message-only adapters still return ``source_type='message'``
+            keys so legacy eval fixtures preserve their prior behavior.
         """
         ...
+
+
+def _ranked_message_keys(message_ids: list[str]) -> list[RankedSourceKey]:
+    return [
+        RankedSourceKey(source_type="message", source_id=message_id, rank=rank)
+        for rank, message_id in enumerate(message_ids, start=1)
+    ]
 
 
 class IlikeBaselineRetriever:
@@ -132,7 +142,7 @@ class IlikeBaselineRetriever:
         topic_id: str | None = None,
         limit: int = 50,
         **extra_scope: Any,
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         query_lower = query.lower()
 
         # Apply scope filter first.
@@ -172,7 +182,7 @@ class IlikeBaselineRetriever:
         matches.sort(key=lambda m: (m.sent_at, m.id), reverse=True)
 
         # Slice to limit.
-        return [m.id for m in matches[:limit]]
+        return _ranked_message_keys([m.id for m in matches[:limit]])
 
 
 class StubSemanticRetriever:
@@ -194,7 +204,7 @@ class StubSemanticRetriever:
         topic_id: str | None = None,
         limit: int = 50,
         **extra_scope: Any,
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         return []
 
 
@@ -231,7 +241,7 @@ class SemanticRetriever:
         topic_id: str | None = None,
         limit: int = 50,
         **extra_scope: Any,
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         candidates = _scope_filter(self._messages, scope, thread_id, topic_id)
         if not candidates:
             return []
@@ -245,7 +255,7 @@ class SemanticRetriever:
 
         # Sort by (score DESC, sent_at DESC, id DESC) deterministically.
         scored.sort(key=lambda t: (t[0], t[1].sent_at, t[1].id), reverse=True)
-        return [m.id for _, m in scored[:limit]]
+        return _ranked_message_keys([m.id for _, m in scored[:limit]])
 
 
 class HybridRetriever:
@@ -286,7 +296,7 @@ class HybridRetriever:
         topic_id: str | None = None,
         limit: int = 50,
         **extra_scope: Any,
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         full = len(self._corpus.messages)
         kwargs = dict(scope=scope, thread_id=thread_id, topic_id=topic_id, limit=full)
         lex = self._baseline.retrieve(query, **kwargs)
@@ -294,15 +304,15 @@ class HybridRetriever:
 
         rrf: dict[str, float] = {}
         for ranking in (lex, sem):
-            for rank, mid in enumerate(ranking, start=1):
-                rrf[mid] = rrf.get(mid, 0.0) + 1.0 / (self.RRF_K + rank)
+            for item in ranking:
+                rrf[item.source_id] = rrf.get(item.source_id, 0.0) + 1.0 / (self.RRF_K + item.rank)
 
         def sort_key(mid: str) -> tuple[float, object, str]:
             msg = self._msg_by_id[mid]
             return (rrf[mid], msg.sent_at, msg.id)
 
         fused = sorted(rrf.keys(), key=sort_key, reverse=True)
-        return fused[:limit]
+        return _ranked_message_keys(fused[:limit])
 
 
 # ---------------------------------------------------------------------------
@@ -324,7 +334,12 @@ class DbBackedRetriever:
       - all other types default to hybrid
     """
 
-    def __init__(self, corpus: Corpus) -> None:
+    def __init__(
+        self,
+        corpus: Corpus,
+        *,
+        source_weight_map: Mapping[str, float] | None = None,
+    ) -> None:
         self._corpus = corpus  # kept for interface compatibility
 
         # Intentionally read from os.environ here instead of app Settings: eval
@@ -345,6 +360,11 @@ class DbBackedRetriever:
         self._thread.start()
         self._pool: Any | None = None
         self._closed = False
+        self._source_weight_map = (
+            {str(source_type): float(weight) for source_type, weight in source_weight_map.items()}
+            if source_weight_map is not None
+            else None
+        )
 
     def retrieve(
         self,
@@ -355,7 +375,7 @@ class DbBackedRetriever:
         topic_id: str | None = None,
         limit: int = 50,
         **extra_scope: Any,
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         return self._run(
             self._retrieve_async(
                 query=query,
@@ -376,7 +396,7 @@ class DbBackedRetriever:
         topic_id: str | None,
         limit: int,
         extra_scope: dict[str, Any],
-    ) -> list[str]:
+    ) -> list[RankedSourceKey]:
         retrieval = importlib.import_module("app.services.retrieval")
         pool = await self._get_pool()
         request = retrieval.RetrievalQuery(
@@ -393,11 +413,19 @@ class DbBackedRetriever:
             mode=self._mode_for_query_type(extra_scope.get("query_type")),
             limit=limit,
         )
-        results = await retrieval.hybrid_search(pool, request)
+        results = await retrieval.hybrid_search(
+            pool,
+            request,
+            source_weight_map=self._source_weight_map,
+        )
         return [
-            str(result.message_id)
-            for result in results
-            if result.message_id is not None
+            RankedSourceKey(
+                source_type=getattr(result, "source_type", "message"),
+                source_id=str(getattr(result, "source_id", result.message_id)),
+                rank=rank,
+            )
+            for rank, result in enumerate(results, start=1)
+            if getattr(result, "source_id", result.message_id) is not None
         ]
 
     async def _get_pool(self) -> Any:

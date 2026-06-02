@@ -43,6 +43,9 @@ from app.services.live.schemas import PrepRequest, TurnRequest
 from app.services.live.status import canonicalize_status, normalize_row_status
 from app.services.live.stt import select_transcriber
 from app.services.charge import classify_charge
+from app.services.message_embedding_lifecycle import (
+    enqueue_conversation_note_embed,
+)
 from app.services.live.budget import (
     HARD_CAP_CENTS,
     SOFT_CAP_CENTS,
@@ -1923,13 +1926,18 @@ async def live_socket(websocket: WebSocket, session_id: str) -> None:
                             session_id,
                             _CRISIS_UTTERANCE,
                         )
-                        await pool.execute(
+                        note_text = f"[concern] crisis charge detected: {charge.reason}"
+                        note_row = await pool.fetchrow(
                             """
                             INSERT INTO mediator.conversation_notes (conversation_id, text)
                             VALUES ($1, $2)
+                            RETURNING id
                             """,
                             session_id,
-                            f"[concern] crisis charge detected: {charge.reason}",
+                            note_text,
+                        )
+                        await enqueue_conversation_note_embed(
+                            pool, note_id=note_row["id"], text=note_text,
                         )
                         await websocket.send_json({
                             "type": "bot_turn",

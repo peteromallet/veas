@@ -205,6 +205,28 @@ async def test_same_source_id_across_source_types_does_not_collide():
     assert {job["source_type"] for job in conn.jobs} == {"message", "memory"}
 
 
+@pytest.mark.parametrize("source_type", ["conversation_note", "theme"])
+async def test_enqueue_embed_job_accepts_deferred_source_types(source_type: str):
+    conn = FakeEmbedJobsConn()
+    source_id = uuid4()
+    now = datetime(2026, 6, 1, 12, tzinfo=UTC)
+
+    result = await enqueue_embed_job(
+        conn,
+        source_type=source_type,  # type: ignore[arg-type]
+        source_id=source_id,
+        content_hash=_hash(),
+        model="text-embedding-3-small",
+        dimension=1536,
+        now=now,
+    )
+
+    assert result.action == "created"
+    assert result.job.source_type == source_type
+    assert result.job.source_id == source_id
+    assert result.job.message_id is None
+
+
 async def test_new_content_hash_supersede_is_scoped_by_source_type_and_id():
     conn = FakeEmbedJobsConn()
     shared_id = uuid4()

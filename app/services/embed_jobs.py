@@ -10,7 +10,15 @@ from typing import Any, Literal
 from uuid import UUID
 
 
-EmbedSourceType = Literal["message", "memory", "observation", "distillation", "artifact"]
+EmbedSourceType = Literal[
+    "message",
+    "memory",
+    "observation",
+    "distillation",
+    "artifact",
+    "conversation_note",
+    "theme",
+]
 EmbedJobKind = Literal["embed", "reembed", "drop"]
 EmbedJobStatus = Literal["pending", "processing", "succeeded", "failed", "skipped", "superseded", "cancelled"]
 EmbedJobAction = Literal["created", "existing"]

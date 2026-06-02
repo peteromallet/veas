@@ -104,6 +104,8 @@ def test_run_eval_baseline_mini() -> None:
     # Per-query-type keys should be present.
     assert "verbatim_quote" in report.by_query_type
     assert "paraphrase" in report.by_query_type
+    assert report.by_source_type == {"message": report.overall}
+    assert report.by_intent == {"unlabeled": report.overall}
 
     # Fairness / difficulty aggregates: mini cases have no labels, so "unlabeled"
     # group should contain both cases.
@@ -118,6 +120,12 @@ def test_run_eval_baseline_mini() -> None:
     assert len(report.per_case) == 2
     for case_result in report.per_case:
         assert "case_id" in case_result
+        assert "source_type" in case_result
+        assert "intent" in case_result
+        assert "ranked_source_keys" in case_result
+        assert "expected_source_keys" in case_result
+        assert "ranked_ids" in case_result
+        assert "expected_ids" in case_result
         assert "recall_at_1" in case_result
         assert "recall_at_5" in case_result
         assert "recall_at_10" in case_result
@@ -141,6 +149,8 @@ def test_run_eval_stub_all_zero() -> None:
     assert report.overall["recall@10"] == 0.0
     assert report.overall["mrr"] == 0.0
     assert report.overall["n"] == 2
+    assert report.by_source_type["message"]["n"] == 2
+    assert report.by_intent["unlabeled"]["n"] == 2
 
     # All per-case recall values should be zero.
     for case_result in report.per_case:
@@ -169,6 +179,56 @@ def test_run_eval_empty_ks() -> None:
     assert report.overall["recall@1"] == 0.0
     assert report.overall["recall@5"] == 0.0
     assert report.overall["recall@10"] == 0.0
+
+
+def test_run_eval_scores_mixed_source_cases_by_source_key_while_preserving_message_ids() -> None:
+    corpus = _mini_corpus()
+    golden = GoldenSet(
+        cases=[
+            GoldenCase(
+                id="mixed-source-case",
+                query="theme and note context",
+                expected_source_keys=[
+                    {"source_type": "theme", "source_id": "theme-1"},
+                    {"source_type": "conversation_note", "source_id": "note-1"},
+                ],
+                expected_message_ids=["m001"],
+                scope="all",
+                query_type="knowledge_recall",
+                intent="know_about",
+            )
+        ]
+    )
+
+    class MixedRetriever:
+        def retrieve(self, *args, **kwargs):
+            from eval.retrieval.schema import RankedSourceKey
+
+            return [
+                RankedSourceKey(source_type="theme", source_id="theme-1", rank=1),
+                RankedSourceKey(source_type="conversation_note", source_id="note-1", rank=2),
+                RankedSourceKey(source_type="message", source_id="m001", rank=3),
+            ]
+
+    report = run_eval(MixedRetriever(), corpus, golden)
+    case_result = report.per_case[0]
+
+    assert case_result["expected_count"] == 3
+    assert case_result["retrieved_count"] == 3
+    assert case_result["source_type"] == "mixed"
+    assert case_result["intent"] == "know_about"
+    assert case_result["expected_ids"] == ["m001"]
+    assert case_result["ranked_ids"] == ["m001"]
+    assert case_result["recall_at_1"] == 1.0 / 3.0
+    assert case_result["recall_at_5"] == 1.0
+    assert case_result["reciprocal_rank"] == 1.0
+    assert report.by_source_type["mixed"]["n"] == 1
+    assert report.by_intent["know_about"]["n"] == 1
+    assert case_result["ranked_source_keys"] == [
+        {"source_type": "theme", "source_id": "theme-1", "rank": 1},
+        {"source_type": "conversation_note", "source_id": "note-1", "rank": 2},
+        {"source_type": "message", "source_id": "m001", "rank": 3},
+    ]
 
 
 # ---------------------------------------------------------------------------
@@ -266,6 +326,12 @@ def test_e2e_json_roundtrip() -> None:
     assert set(deserialized["by_query_type"].keys()) == set(
         report.by_query_type.keys()
     )
+    assert set(deserialized["by_source_type"].keys()) == set(
+        report.by_source_type.keys()
+    )
+    assert set(deserialized["by_intent"].keys()) == set(
+        report.by_intent.keys()
+    )
     # by_fairness / by_difficulty should round-trip.
     assert deserialized.get("by_fairness") is not None
     assert set(deserialized["by_fairness"].keys()) == set(
@@ -344,6 +410,10 @@ def test_write_markdown_report_creates_parent_dir() -> None:
         assert "## Overall Metrics" in content
         assert "## Per Query-Type Metrics" in content
         # Fairness and difficulty tables render when aggregates are non-empty.
+        assert "## Per Source-Type Metrics" in content
+        assert "### message" in content
+        assert "## Per Intent Metrics" in content
+        assert "### unlabeled" in content
         assert "## Per Fairness Metrics" in content
         assert "### unlabeled" in content
         assert "## Per Difficulty Metrics" in content
@@ -376,6 +446,10 @@ def test_write_markdown_report_stable_ordering() -> None:
                 current_section = "fairness"
             elif line.startswith("## Per Difficulty Metrics"):
                 current_section = "difficulty"
+            elif line.startswith("## Per Source-Type Metrics"):
+                current_section = "source_type"
+            elif line.startswith("## Per Intent Metrics"):
+                current_section = "intent"
             elif line.startswith("### ") and not line.startswith("#### "):
                 sections.setdefault(current_section, []).append(
                     line[4:].strip()
@@ -394,6 +468,8 @@ def test_write_markdown_report_stable_ordering() -> None:
 
         # Fairness and difficulty breakdown sections should be present
         # (shipped golden set has labeled cases).
+        assert "## Per Source-Type Metrics" in content
+        assert "## Per Intent Metrics" in content
         assert "## Per Fairness Metrics" in content
         assert "## Per Difficulty Metrics" in content
 

@@ -7,7 +7,7 @@
     "recall@5": 0.0,
     "recall@10": 0.0,
     "mrr": 0.0,
-    "n": 70
+    "n": 80
   },
   "by_query_type": {
     "verbatim_quote": {
@@ -37,6 +37,73 @@
       "recall@10": 0.0,
       "mrr": 0.0,
       "n": 12
+    },
+    "knowledge_recall": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 8
+    },
+    "exact_source_quote": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 2
+    }
+  },
+  "by_source_type": {
+    "message": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 70
+    },
+    "mixed": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 6
+    },
+    "theme": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 3
+    },
+    "conversation_note": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 1
+    }
+  },
+  "by_intent": {
+    "unlabeled": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 70
+    },
+    "know_about": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 8
+    },
+    "exact_said": {
+      "recall@1": 0.0,
+      "recall@5": 0.0,
+      "recall@10": 0.0,
+      "mrr": 0.0,
+      "n": 2
     }
   },
   "by_fairness": {
@@ -52,21 +119,21 @@
       "recall@5": 0.0,
       "recall@10": 0.0,
       "mrr": 0.0,
-      "n": 42
+      "n": 47
     },
     "adversarial": {
       "recall@1": 0.0,
       "recall@5": 0.0,
       "recall@10": 0.0,
       "mrr": 0.0,
-      "n": 5
+      "n": 9
     },
     "semantic_favored": {
       "recall@1": 0.0,
       "recall@5": 0.0,
       "recall@10": 0.0,
       "mrr": 0.0,
-      "n": 1
+      "n": 2
     }
   },
   "by_difficulty": {
@@ -82,14 +149,14 @@
       "recall@5": 0.0,
       "recall@10": 0.0,
       "mrr": 0.0,
-      "n": 42
+      "n": 47
     },
     "hard": {
       "recall@1": 0.0,
       "recall@5": 0.0,
       "recall@10": 0.0,
       "mrr": 0.0,
-      "n": 6
+      "n": 11
     }
   },
   "per_case": [
@@ -97,11 +164,20 @@
       "case_id": "GC01",
       "query": "I told you so",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m013"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m013"
@@ -116,11 +192,20 @@
       "case_id": "GC02",
       "query": "fine.",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m007"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m007"
@@ -135,11 +220,32 @@
       "case_id": "GC03",
       "query": "osso buco",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m081"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m087"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m090"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m091"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m081",
@@ -157,11 +263,40 @@
       "case_id": "GC04",
       "query": "Blue Ridge",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 6,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m061"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m069"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m073"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m086"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m087"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m077"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m061",
@@ -181,11 +316,24 @@
       "case_id": "GC05",
       "query": "idempotency key",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m021"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m025"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m021",
@@ -201,11 +349,24 @@
       "case_id": "GC06",
       "query": "rate limiting",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m029"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m010",
@@ -221,11 +382,24 @@
       "case_id": "GC07",
       "query": "httpOnly cookies",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m213"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m218"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m213",
@@ -241,11 +415,32 @@
       "case_id": "GC08",
       "query": "worker pool",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m050"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m052"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m054"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m058"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m050",
@@ -263,11 +458,20 @@
       "case_id": "GC09",
       "query": "osso buco",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m090"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m090"
@@ -282,11 +486,24 @@
       "case_id": "GC10",
       "query": "kitchen faucet",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m133"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m142"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m133",
@@ -302,11 +519,24 @@
       "case_id": "GC11",
       "query": "half marathon",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m190"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m191"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m190",
@@ -322,11 +552,20 @@
       "case_id": "GC12",
       "query": "Lisbon flights",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m145"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m145"
@@ -341,11 +580,24 @@
       "case_id": "GC13",
       "query": "running shoes",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m196"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m197"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m196",
@@ -361,11 +613,20 @@
       "case_id": "GC14",
       "query": "sure",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m027"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m027"
@@ -380,11 +641,20 @@
       "case_id": "GC15",
       "query": "login integration",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m004"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m004"
@@ -399,11 +669,20 @@
       "case_id": "GC16",
       "query": "migration scripts blocked",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m006"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m006"
@@ -418,11 +697,20 @@
       "case_id": "GC17",
       "query": "don't forget sunscreen",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m067"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m067"
@@ -437,11 +725,20 @@
       "case_id": "GC18",
       "query": "caching layer",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m008"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m008"
@@ -456,11 +753,24 @@
       "case_id": "GC19",
       "query": "duplicating transaction",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m019"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m025"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m019",
@@ -476,11 +786,24 @@
       "case_id": "GC20",
       "query": "apartment search",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m127"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m128"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m127",
@@ -496,11 +819,28 @@
       "case_id": "GC21",
       "query": "dishes in the sink",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m094"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m096"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m105"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m094",
@@ -517,11 +857,20 @@
       "case_id": "GC22",
       "query": "car repair",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m109"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m109"
@@ -536,11 +885,24 @@
       "case_id": "GC23",
       "query": "query latency",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m036"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m037"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m036",
@@ -556,11 +918,20 @@
       "case_id": "GC24",
       "query": "window seat",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m150"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m150"
@@ -575,11 +946,24 @@
       "case_id": "GC25",
       "query": "rollback plan",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m183"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m185"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m183",
@@ -595,11 +979,20 @@
       "case_id": "GC26",
       "query": "drafty window",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m137"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m137"
@@ -614,11 +1007,20 @@
       "case_id": "GC27",
       "query": "rooftop reservation",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m085"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m085"
@@ -633,11 +1035,24 @@
       "case_id": "GC28",
       "query": "token theft risk",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m212"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m213"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m212",
@@ -653,11 +1068,20 @@
       "case_id": "GC29",
       "query": "sunburn anecdote",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "adversarial",
       "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m068"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m068"
@@ -672,11 +1096,20 @@
       "case_id": "GC30",
       "query": "NPE fix",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "adversarial",
       "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m015"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m015"
@@ -691,11 +1124,20 @@
       "case_id": "GC31",
       "query": "demoralized after the launch",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "adversarial",
       "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m059"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m059"
@@ -710,11 +1152,20 @@
       "case_id": "GC32",
       "query": "UV protection",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "adversarial",
       "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m067"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m067"
@@ -729,11 +1180,20 @@
       "case_id": "GC33",
       "query": "food and drinks to pack",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "adversarial",
       "difficulty": "hard",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m063"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m063"
@@ -748,11 +1208,24 @@
       "case_id": "GC34",
       "query": "hiding money stress",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m111"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m112"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m111",
@@ -768,11 +1241,24 @@
       "case_id": "GC35",
       "query": "brute force",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m216"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m218"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m216",
@@ -788,11 +1274,20 @@
       "case_id": "GC36",
       "query": "partitioning the events table",
       "query_type": "paraphrase",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m040"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m040"
@@ -807,11 +1302,40 @@
       "case_id": "GC37",
       "query": "bring food",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m063"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m080"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m081"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m087"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m090"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m091"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m063",
@@ -831,11 +1355,40 @@
       "case_id": "GC38",
       "query": "deploy",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m006"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m019"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m025"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m028"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m219"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m006",
@@ -855,11 +1408,32 @@
       "case_id": "GC39",
       "query": "overkill for our scale",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m008"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m009"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m012"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m008",
@@ -877,11 +1451,40 @@
       "case_id": "GC40",
       "query": "login flow",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 6,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m003"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m004"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m167"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m168"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m212"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m213"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m003",
@@ -901,11 +1504,36 @@
       "case_id": "GC41",
       "query": "Lisbon",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m145"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m149"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m156"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m158"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m160"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m145",
@@ -924,11 +1552,36 @@
       "case_id": "GC42",
       "query": "rate limiting",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m012"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m171"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m172"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m216"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m010",
@@ -947,11 +1600,32 @@
       "case_id": "GC43",
       "query": "broken",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "semantic_favored",
       "difficulty": "hard",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m133"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m135"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m137"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m138"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m133",
@@ -969,11 +1643,36 @@
       "case_id": "GC44",
       "query": "training plan",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m192"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m194"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m197"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m205"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m206"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m192",
@@ -992,11 +1691,32 @@
       "case_id": "GC45",
       "query": "budget",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m108"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m110"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m111"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m115"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m108",
@@ -1014,11 +1734,32 @@
       "case_id": "GC46",
       "query": "duplicate charge",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m019"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m025"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m176"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m177"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m019",
@@ -1036,11 +1777,36 @@
       "case_id": "GC47",
       "query": "6 AM Saturday",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m061"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m065"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m069"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m073"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m075"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m061",
@@ -1059,11 +1825,32 @@
       "case_id": "GC48",
       "query": "audit findings",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m212"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m216"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m218"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m219"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m212",
@@ -1081,11 +1868,32 @@
       "case_id": "GC49",
       "query": "Atlas is down",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m049"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m052"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m056"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m058"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m049",
@@ -1103,11 +1911,32 @@
       "case_id": "GC50",
       "query": "other apartments",
       "query_type": "cross_thread",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m121"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m122"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m125"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m127"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m121",
@@ -1125,11 +1954,28 @@
       "case_id": "GC51",
       "query": "authentication module",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 3,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m003"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m004"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m014"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m003",
@@ -1146,11 +1992,32 @@
       "case_id": "GC52",
       "query": "payment processor",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m019"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m025"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m032"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m010",
@@ -1168,11 +2035,36 @@
       "case_id": "GC53",
       "query": "Blue Ridge hike",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 5,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m061"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m063"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m069"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m073"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m075"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m061",
@@ -1191,11 +2083,32 @@
       "case_id": "GC54",
       "query": "dinner",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m080"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m081"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m085"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m087"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m080",
@@ -1213,11 +2126,32 @@
       "case_id": "GC55",
       "query": "latency",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m008"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m010"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m036"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m037"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m008",
@@ -1235,11 +2169,32 @@
       "case_id": "GC56",
       "query": "feels equal",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m096"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m098"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m100"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m105"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m096",
@@ -1257,11 +2212,32 @@
       "case_id": "GC57",
       "query": "Belem tower",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m156"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m158"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m159"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m160"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m156",
@@ -1279,11 +2255,32 @@
       "case_id": "GC58",
       "query": "gym membership",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m201"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m205"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m206"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m210"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m201",
@@ -1301,11 +2298,32 @@
       "case_id": "GC59",
       "query": "Atlas launch",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "topic",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m034"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m042"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m044"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m045"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m034",
@@ -1323,11 +2341,32 @@
       "case_id": "GC60",
       "query": "beta rollout",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m179"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m180"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m182"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m185"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m179",
@@ -1345,11 +2384,32 @@
       "case_id": "GC61",
       "query": "call the landlord",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m133"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m135"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m137"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m138"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m133",
@@ -1367,11 +2427,32 @@
       "case_id": "GC62",
       "query": "half marathon training",
       "query_type": "topic_recall",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "thread",
       "fairness": "either",
       "difficulty": "medium",
       "expected_count": 4,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m190"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m192"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m194"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m197"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m190",
@@ -1389,11 +2470,20 @@
       "case_id": "GC63",
       "query": "sprint review",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m002"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m002"
@@ -1408,11 +2498,20 @@
       "case_id": "GC64",
       "query": "first aid kit",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m070"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m070"
@@ -1427,11 +2526,20 @@
       "case_id": "GC65",
       "query": "design doc",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m048"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m048"
@@ -1446,11 +2554,20 @@
       "case_id": "GC66",
       "query": "moving quotes",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m128"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m128"
@@ -1465,11 +2582,20 @@
       "case_id": "GC67",
       "query": "monthly budget",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m115"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m115"
@@ -1484,11 +2610,20 @@
       "case_id": "GC68",
       "query": "audit trail",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 1,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m078"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m078"
@@ -1503,11 +2638,24 @@
       "case_id": "GC69",
       "query": "dishwasher",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m123"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m130"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m123",
@@ -1523,11 +2671,24 @@
       "case_id": "GC70",
       "query": "feature flags",
       "query_type": "verbatim_quote",
+      "source_type": "message",
+      "intent": "unlabeled",
       "scope": "all",
       "fairness": "keyword_favored",
       "difficulty": "easy",
       "expected_count": 2,
       "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "message",
+          "source_id": "m179"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m180"
+        }
+      ],
       "ranked_ids": [],
       "expected_ids": [
         "m179",
@@ -1538,7 +2699,405 @@
       "recall_at_5": 0.0,
       "recall_at_10": 0.0,
       "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC71",
+      "query": "auth token security",
+      "query_type": "knowledge_recall",
+      "source_type": "mixed",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
+      "expected_count": 7,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "artifact",
+          "source_id": "art001"
+        },
+        {
+          "source_type": "distillation",
+          "source_id": "dst001"
+        },
+        {
+          "source_type": "conversation_note",
+          "source_id": "note002"
+        },
+        {
+          "source_type": "theme",
+          "source_id": "thm003"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m004"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m213"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m218"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m004",
+        "m213",
+        "m218"
+      ],
+      "notes": "'auth token' overlaps m004 (OAuth2), m213 (httpOnly), m218; art001/dst001/note002/thm003 are non-message sources the baseline cannot match. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC72",
+      "query": "Blue Ridge hiking plans",
+      "query_type": "knowledge_recall",
+      "source_type": "mixed",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
+      "expected_count": 7,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "distillation",
+          "source_id": "dst003"
+        },
+        {
+          "source_type": "theme",
+          "source_id": "thm004"
+        },
+        {
+          "source_type": "conversation_note",
+          "source_id": "note005"
+        },
+        {
+          "source_type": "memory",
+          "source_id": "mem005"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m061"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m069"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m073"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m061",
+        "m069",
+        "m073"
+      ],
+      "notes": "'Blue Ridge' matches m061/m069/m073 lexically; dst003/thm004/note005/mem005 are semantic. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC73",
+      "query": "household responsibilities and money",
+      "query_type": "knowledge_recall",
+      "source_type": "mixed",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "semantic_favored",
+      "difficulty": "hard",
+      "expected_count": 8,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "theme",
+          "source_id": "thm001"
+        },
+        {
+          "source_type": "theme",
+          "source_id": "thm002"
+        },
+        {
+          "source_type": "distillation",
+          "source_id": "dst004"
+        },
+        {
+          "source_type": "memory",
+          "source_id": "mem006"
+        },
+        {
+          "source_type": "conversation_note",
+          "source_id": "note004"
+        },
+        {
+          "source_type": "observation",
+          "source_id": "obs004"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m108"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m115"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m108",
+        "m115"
+      ],
+      "notes": "'household' matches m108 (friction). Non-message sources span chores (thm001), finances (thm002), budget (note004), car repair (obs004). Baseline can only hit m108/m115. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC74",
+      "query": "what was said about the Atlas outage",
+      "query_type": "exact_source_quote",
+      "source_type": "mixed",
+      "intent": "exact_said",
+      "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
+      "expected_count": 7,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "artifact",
+          "source_id": "art002"
+        },
+        {
+          "source_type": "observation",
+          "source_id": "obs003"
+        },
+        {
+          "source_type": "conversation_note",
+          "source_id": "note003"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m050"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m052"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m054"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m058"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m050",
+        "m052",
+        "m054",
+        "m058"
+      ],
+      "notes": "'Atlas outage' matches m050/m052/m054/m058 (substring). art002 (postmortem), obs003 (worker pool), note003 (partitioning) are non-message. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC75",
+      "query": "chores split",
+      "query_type": "knowledge_recall",
+      "source_type": "theme",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
+      "expected_count": 1,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "theme",
+          "source_id": "thm001"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [],
+      "notes": "[HARD zero-overlap] Deliberate low-weight theme-only case. thm001 (Unequal household labor) has no lexical overlap with 'chores split'. Baseline must score 0.0 — this is a pure-semantic measurement. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC76",
+      "query": "financial surprises",
+      "query_type": "knowledge_recall",
+      "source_type": "theme",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
+      "expected_count": 1,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "theme",
+          "source_id": "thm002"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [],
+      "notes": "[HARD zero-overlap] Deliberate low-weight theme-only case. thm002 (Financial transparency) has 'surprise expenses' in description but the query 'financial surprises' has no exact substring match. Baseline expected near 0.0. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC77",
+      "query": "what decision on auth cookies",
+      "query_type": "exact_source_quote",
+      "source_type": "mixed",
+      "intent": "exact_said",
+      "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
+      "expected_count": 3,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "conversation_note",
+          "source_id": "note002"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m213"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m218"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m213",
+        "m218"
+      ],
+      "notes": "'auth cookies' overlaps m213 (httpOnly cookies), m218. note002 has the canonical decision text. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC78",
+      "query": "apartment features",
+      "query_type": "knowledge_recall",
+      "source_type": "mixed",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "either",
+      "difficulty": "medium",
+      "expected_count": 3,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "artifact",
+          "source_id": "art003"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m123"
+        },
+        {
+          "source_type": "message",
+          "source_id": "m130"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [
+        "m123",
+        "m130"
+      ],
+      "notes": "'apartment' overlaps m123/m130 (dishwasher). art003 has the full listing summary. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC79",
+      "query": "CI pipeline status",
+      "query_type": "knowledge_recall",
+      "source_type": "conversation_note",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
+      "expected_count": 1,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "conversation_note",
+          "source_id": "note001"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [],
+      "notes": "[HARD zero-overlap] Deliberate low-weight note-only case. 'CI pipeline' does not appear in any message content; only note001 has it. Baseline must score 0.0. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
+    },
+    {
+      "case_id": "GC80",
+      "query": "weekly routine hiking",
+      "query_type": "knowledge_recall",
+      "source_type": "theme",
+      "intent": "know_about",
+      "scope": "all",
+      "fairness": "adversarial",
+      "difficulty": "hard",
+      "expected_count": 1,
+      "retrieved_count": 0,
+      "ranked_source_keys": [],
+      "expected_source_keys": [
+        {
+          "source_type": "theme",
+          "source_id": "thm004"
+        }
+      ],
+      "ranked_ids": [],
+      "expected_ids": [],
+      "notes": "[HARD zero-overlap] Deliberate low-weight theme-only case. 'weekly routine' has no lexical overlap with thm004 (Blue Ridge hiking routine). Baseline must score 0.0. [M4 source-aware]",
+      "recall_at_1": 0.0,
+      "recall_at_5": 0.0,
+      "recall_at_10": 0.0,
+      "reciprocal_rank": 0.0
     }
   ],
-  "generated_at": "2026-05-30T03:51:52.849776+00:00"
+  "generated_at": "2026-06-02T03:40:45.878455+00:00"
 }

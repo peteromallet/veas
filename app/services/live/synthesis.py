@@ -23,6 +23,11 @@ import re
 from typing import Any
 from uuid import UUID
 
+from app.services.message_embedding_lifecycle import (
+    enqueue_conversation_note_drop,
+    enqueue_conversation_note_reembed,
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -182,6 +187,7 @@ async def save_review(
     them back to the client.
     """
     counts = {"items_updated": 0, "notes_updated": 0, "notes_deleted": 0, "observations_written": 0}
+    note_lifecycle: list[tuple[str, UUID, str | None]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
             conv = await conn.fetchrow(
@@ -226,6 +232,7 @@ async def save_review(
                         note_id,
                     )
                     counts["notes_deleted"] += 1
+                    note_lifecycle.append(("drop", note_id, None))
                     continue
                 await conn.execute(
                     "UPDATE mediator.conversation_notes SET text = $2 WHERE id = $1",
@@ -233,6 +240,7 @@ async def save_review(
                     text,
                 )
                 counts["notes_updated"] += 1
+                note_lifecycle.append(("reembed", note_id, text))
                 # Write-through: every kept note becomes an observation row.
                 # The note text already includes the [kind] prefix, so it
                 # stays grep-able in the observations stream.
@@ -264,4 +272,12 @@ async def save_review(
                 """,
                 session_id,
             )
+
+    # Enqueue embedding lifecycle jobs after the transaction commits.
+    for action, note_id, note_text in note_lifecycle:
+        if action == "drop":
+            await enqueue_conversation_note_drop(pool, note_id=note_id)
+        elif action == "reembed":
+            await enqueue_conversation_note_reembed(pool, note_id=note_id, text=note_text)
+
     return counts

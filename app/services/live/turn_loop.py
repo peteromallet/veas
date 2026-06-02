@@ -38,6 +38,9 @@ from app.services.live.bot_profile import (
     live_bot_profile_context,
     user_from_live_row,
 )
+from app.services.message_embedding_lifecycle import (
+    enqueue_conversation_note_embed,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -453,6 +456,7 @@ async def apply_emission(pool: Any, session_id: UUID, emission: TurnEmission) ->
     coverage on planned items (the stub uses titles); the real Haiku
     caller will be given UUIDs in its prompt so it returns them directly.
     """
+    inserted_notes: list[tuple[UUID, str]] = []
     async with pool.acquire() as conn:
         async with conn.transaction():
             for delta in emission.coverage:
@@ -513,15 +517,18 @@ async def apply_emission(pool: Any, session_id: UUID, emission: TurnEmission) ->
             for note in emission.notes:
                 # conversation_notes has no `kind` column; encode kind as a
                 # short text prefix so we don't lose it.
-                await conn.execute(
+                note_text = f"[{note.kind}] {note.text}"
+                row = await conn.fetchrow(
                     """
                     INSERT INTO mediator.conversation_notes
                         (conversation_id, text)
                     VALUES ($1, $2)
+                    RETURNING id
                     """,
                     session_id,
-                    f"[{note.kind}] {note.text}",
+                    note_text,
                 )
+                inserted_notes.append((row["id"], note_text))
 
             if emission.session_fields_patch:
                 # Shallow-merge: read current, patch, write back.
@@ -546,6 +553,10 @@ async def apply_emission(pool: Any, session_id: UUID, emission: TurnEmission) ->
                         session_id,
                         target,
                     )
+
+        # Enqueue embedding lifecycle jobs after the transaction commits.
+        for note_id, note_text in inserted_notes:
+            await enqueue_conversation_note_embed(pool, note_id=note_id, text=note_text)
 
 
 def _maybe_uuid(value: str) -> UUID | None:

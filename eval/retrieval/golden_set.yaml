@@ -782,3 +782,188 @@ cases:
   difficulty: easy
   fairness: keyword_favored
   notes: '''feature flags'' substring of m179; ''Flags'' in m180. Orion rollout thread.'
+
+# ===========================================================================
+# Source-aware knowledge-type golden cases (T25)
+# ===========================================================================
+# These cases extend the golden set with non-message source expectations
+# (memories, observations, distillations, artifacts, conversation_notes,
+# themes).  They exercise the source-aware eval contract (expected_source_keys)
+# added in M4.  The ILIKE message-only baseline cannot score on these
+# non-message targets — these are designed for semantic/hybrid retrievers.
+#
+# Intent labels:
+#   know_about  — semantic knowledge recall (answer lives in non-message sources)
+#   exact_said  — exact wording lookup (answer is in messages + notes)
+#
+# Deliberate low-weight theme cases (GC75, GC76, GC80) expect only theme
+# source keys with no message fallback.  The baseline must score 0.0 on these
+# by design; they are a pure-semantic measurement.
+
+- id: GC71
+  query: auth token security
+  expected_message_ids:
+  - m004
+  - m213
+  - m218
+  expected_source_keys:
+  - source_type: artifact
+    source_id: art001
+  - source_type: distillation
+    source_id: dst001
+  - source_type: conversation_note
+    source_id: note002
+  - source_type: theme
+    source_id: thm003
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: medium
+  fairness: either
+  notes: '''auth token'' overlaps m004 (OAuth2), m213 (httpOnly), m218; art001/dst001/note002/thm003 are non-message sources the baseline cannot match. [M4 source-aware]'
+
+- id: GC72
+  query: Blue Ridge hiking plans
+  expected_message_ids:
+  - m061
+  - m069
+  - m073
+  expected_source_keys:
+  - source_type: distillation
+    source_id: dst003
+  - source_type: theme
+    source_id: thm004
+  - source_type: conversation_note
+    source_id: note005
+  - source_type: memory
+    source_id: mem005
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: medium
+  fairness: either
+  notes: '''Blue Ridge'' matches m061/m069/m073 lexically; dst003/thm004/note005/mem005 are semantic. [M4 source-aware]'
+
+- id: GC73
+  query: household responsibilities and money
+  expected_message_ids:
+  - m108
+  - m115
+  expected_source_keys:
+  - source_type: theme
+    source_id: thm001
+  - source_type: theme
+    source_id: thm002
+  - source_type: distillation
+    source_id: dst004
+  - source_type: memory
+    source_id: mem006
+  - source_type: conversation_note
+    source_id: note004
+  - source_type: observation
+    source_id: obs004
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: hard
+  fairness: semantic_favored
+  notes: '''household'' matches m108 (friction). Non-message sources span chores (thm001), finances (thm002), budget (note004), car repair (obs004). Baseline can only hit m108/m115. [M4 source-aware]'
+
+- id: GC74
+  query: what was said about the Atlas outage
+  expected_message_ids:
+  - m050
+  - m052
+  - m054
+  - m058
+  expected_source_keys:
+  - source_type: artifact
+    source_id: art002
+  - source_type: observation
+    source_id: obs003
+  - source_type: conversation_note
+    source_id: note003
+  scope: all
+  query_type: exact_source_quote
+  intent: exact_said
+  difficulty: medium
+  fairness: either
+  notes: '''Atlas outage'' matches m050/m052/m054/m058 (substring). art002 (postmortem), obs003 (worker pool), note003 (partitioning) are non-message. [M4 source-aware]'
+
+- id: GC75
+  query: chores split
+  expected_source_keys:
+  - source_type: theme
+    source_id: thm001
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: hard
+  fairness: adversarial
+  notes: '[HARD zero-overlap] Deliberate low-weight theme-only case. thm001 (Unequal household labor) has no lexical overlap with ''chores split''. Baseline must score 0.0 — this is a pure-semantic measurement. [M4 source-aware]'
+
+- id: GC76
+  query: financial surprises
+  expected_source_keys:
+  - source_type: theme
+    source_id: thm002
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: hard
+  fairness: adversarial
+  notes: '[HARD zero-overlap] Deliberate low-weight theme-only case. thm002 (Financial transparency) has ''surprise expenses'' in description but the query ''financial surprises'' has no exact substring match. Baseline expected near 0.0. [M4 source-aware]'
+
+- id: GC77
+  query: what decision on auth cookies
+  expected_message_ids:
+  - m213
+  - m218
+  expected_source_keys:
+  - source_type: conversation_note
+    source_id: note002
+  scope: all
+  query_type: exact_source_quote
+  intent: exact_said
+  difficulty: medium
+  fairness: either
+  notes: '''auth cookies'' overlaps m213 (httpOnly cookies), m218. note002 has the canonical decision text. [M4 source-aware]'
+
+- id: GC78
+  query: apartment features
+  expected_message_ids:
+  - m123
+  - m130
+  expected_source_keys:
+  - source_type: artifact
+    source_id: art003
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: medium
+  fairness: either
+  notes: '''apartment'' overlaps m123/m130 (dishwasher). art003 has the full listing summary. [M4 source-aware]'
+
+- id: GC79
+  query: CI pipeline status
+  expected_source_keys:
+  - source_type: conversation_note
+    source_id: note001
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: hard
+  fairness: adversarial
+  notes: '[HARD zero-overlap] Deliberate low-weight note-only case. ''CI pipeline'' does not appear in any message content; only note001 has it. Baseline must score 0.0. [M4 source-aware]'
+
+- id: GC80
+  query: weekly routine hiking
+  expected_source_keys:
+  - source_type: theme
+    source_id: thm004
+  scope: all
+  query_type: knowledge_recall
+  intent: know_about
+  difficulty: hard
+  fairness: adversarial
+  notes: '[HARD zero-overlap] Deliberate low-weight theme-only case. ''weekly routine'' has no lexical overlap with thm004 (Blue Ridge hiking routine). Baseline must score 0.0. [M4 source-aware]'

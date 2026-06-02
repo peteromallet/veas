@@ -301,6 +301,8 @@ async def test_fake_pool_searchable_content_projection_matches_m1_source_shapes(
     distillation_id = uuid4()
     artifact_id = uuid4()
     conversation_id = uuid4()
+    note_id = uuid4()
+    theme_id = uuid4()
 
     pool.messages[message_id] = _message(
         message_id=message_id,
@@ -355,9 +357,37 @@ async def test_fake_pool_searchable_content_projection_matches_m1_source_shapes(
         "deleted_at": None,
         "topic_id": topic_id,
     }
+    pool.conversations[conversation_id] = {
+        "id": conversation_id,
+        "user_id": viewer_id,
+        "partner_user_id": recipient_id,
+        "bot_id": "mediator",
+        "topic_id": topic_id,
+        "dyad_id": dyad_id,
+    }
+    pool.conversation_notes[note_id] = {
+        "id": note_id,
+        "text": "source shape conversation note",
+        "conversation_id": conversation_id,
+        "topic_id": topic_id,
+        "bot_id": "mediator",
+        "user_id": viewer_id,
+        "created_at": now - timedelta(minutes=2),
+    }
+    pool.themes[theme_id] = {
+        "id": theme_id,
+        "title": "source shape theme title",
+        "description": "source shape theme description",
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "about_user_id": viewer_id,
+        "created_at": now - timedelta(minutes=3),
+        "updated_at": now - timedelta(minutes=1),
+    }
     pool.link_topic("memories", memory_id, topic_id)
     pool.link_topic("observations", observation_id, topic_id)
     pool.link_topic("distillations", distillation_id, topic_id)
+    pool.link_topic("themes", theme_id, topic_id)
 
     rows = {
         source_type: pool._searchable_content_row(source_type, source_id)
@@ -367,10 +397,15 @@ async def test_fake_pool_searchable_content_projection_matches_m1_source_shapes(
             ("observation", observation_id),
             ("distillation", distillation_id),
             ("artifact", artifact_id),
+            ("conversation_note", note_id),
+            ("theme", theme_id),
         ]
     }
 
-    assert set(rows) == {"message", "memory", "observation", "distillation", "artifact"}
+    assert set(rows) == {
+        "message", "memory", "observation", "distillation", "artifact",
+        "conversation_note", "theme",
+    }
     for source_type, row in rows.items():
         assert row is not None
         assert row["source_type"] == source_type
@@ -393,6 +428,25 @@ async def test_fake_pool_searchable_content_projection_matches_m1_source_shapes(
     assert rows["distillation"]["thread_owner_user_id"] is None
     assert rows["artifact"]["message_id"] is None
     assert rows["artifact"]["media_analysis"]["artifact_type"] == "live_prep_brief"
+
+    # conversation_note source-aware fields
+    assert rows["conversation_note"]["message_id"] is None
+    assert rows["conversation_note"]["direction"] is None
+    assert rows["conversation_note"]["dyad_id"] == dyad_id
+    assert rows["conversation_note"]["bot_id"] == "mediator"
+    assert rows["conversation_note"]["topic_id"] == topic_id
+    assert rows["conversation_note"]["sender_id"] == viewer_id
+    assert rows["conversation_note"]["thread_owner_user_id"] == viewer_id
+
+    # theme source-aware fields
+    assert rows["theme"]["message_id"] is None
+    assert rows["theme"]["direction"] is None
+    assert rows["theme"]["dyad_id"] is None
+    assert rows["theme"]["bot_id"] == "mediator"
+    assert rows["theme"]["topic_id"] == topic_id
+    assert rows["theme"]["sender_id"] == viewer_id
+    assert rows["theme"]["thread_owner_user_id"] == viewer_id
+    assert rows["theme"]["media_analysis"] is None
 
 
 async def test_fake_pool_unified_keyword_ranking_filters_nullable_sources():
@@ -482,3 +536,197 @@ async def test_fake_pool_unified_keyword_ranking_filters_nullable_sources():
     assert ("distillation", distillation_id) not in {
         (result.source_type, result.source_id) for result in results
     }
+
+
+# ── Negative coverage: conversation_note empty text ──────────────────
+
+
+async def test_fake_pool_searchable_content_excludes_empty_note_text():
+    """Empty or whitespace-only conversation note text returns None."""
+    pool = FakePool()
+    note_id = uuid4()
+    empty_id = uuid4()
+    whitespace_id = uuid4()
+    pool.conversation_notes[note_id] = {
+        "id": note_id,
+        "text": "real note",
+        "conversation_id": uuid4(),
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.conversation_notes[empty_id] = {
+        "id": empty_id,
+        "text": "",
+        "conversation_id": uuid4(),
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.conversation_notes[whitespace_id] = {
+        "id": whitespace_id,
+        "text": "   \n\t  ",
+        "conversation_id": uuid4(),
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+
+    assert pool._searchable_content_row("conversation_note", note_id) is not None
+    assert pool._searchable_content_row("conversation_note", empty_id) is None
+    assert pool._searchable_content_row("conversation_note", whitespace_id) is None
+
+
+async def test_fake_pool_searchable_content_excludes_none_note():
+    """None (missing) conversation note returns None."""
+    pool = FakePool()
+    assert pool._searchable_content_row("conversation_note", uuid4()) is None
+
+
+# ── Negative coverage: theme inactive status ─────────────────────────
+
+
+async def test_fake_pool_searchable_content_excludes_inactive_theme():
+    """Theme with status != 'active' returns None."""
+    pool = FakePool()
+    active_id = uuid4()
+    dormant_id = uuid4()
+    resolved_id = uuid4()
+    pool.themes[active_id] = {
+        "id": active_id,
+        "title": "active theme",
+        "status": "active",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.themes[dormant_id] = {
+        "id": dormant_id,
+        "title": "dormant theme",
+        "status": "dormant",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.themes[resolved_id] = {
+        "id": resolved_id,
+        "title": "resolved theme",
+        "status": "resolved",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+
+    assert pool._searchable_content_row("theme", active_id) is not None
+    assert pool._searchable_content_row("theme", dormant_id) is None
+    assert pool._searchable_content_row("theme", resolved_id) is None
+
+
+async def test_fake_pool_searchable_content_excludes_empty_theme_text():
+    """Theme with empty canonical text (no title or description) returns None."""
+    pool = FakePool()
+    empty_id = uuid4()
+    pool.themes[empty_id] = {
+        "id": empty_id,
+        "title": None,
+        "description": None,
+        "status": "active",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+
+    assert pool._searchable_content_row("theme", empty_id) is None
+
+
+# ── Negative coverage: hidden-topic theme ─────────────────────────────
+
+
+async def test_fake_pool_searchable_content_theme_without_topic_still_exposed():
+    """Theme without link_topic or row topic_id is still returned (topic
+    scoping happens at the query level in production, not in the row builder)."""
+    pool = FakePool()
+    theme_id = uuid4()
+    pool.themes[theme_id] = {
+        "id": theme_id,
+        "title": "untargeted theme",
+        "status": "active",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+
+    row = pool._searchable_content_row("theme", theme_id)
+    assert row is not None
+    assert row["source_type"] == "theme"
+    assert row["source_id"] == theme_id
+    assert row["topic_id"] is None
+    assert row["topic_ids"] == []
+
+
+async def test_fake_pool_searchable_content_theme_hidden_topic_visible():
+    """Theme linked to a topic via link_topic is returned with that topic_id,
+    even though the topic may be considered 'hidden' at query time.
+    The row builder itself does not gate on topic visibility."""
+    pool = FakePool()
+    theme_id = uuid4()
+    topic_id = uuid4()
+    pool.themes[theme_id] = {
+        "id": theme_id,
+        "title": "hidden-topic theme",
+        "status": "active",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.link_topic("themes", theme_id, topic_id)
+
+    row = pool._searchable_content_row("theme", theme_id)
+    assert row is not None
+    assert row["source_type"] == "theme"
+    assert row["topic_id"] == topic_id
+    assert row["topic_ids"] == [topic_id]
+
+
+# ── fetchrow integration for conversation_note and theme ─────────────
+
+
+async def test_fake_pool_fetchrow_v_searchable_content_returns_note_and_theme():
+    """fetchrow against v_searchable_content returns conversation_note and
+    theme rows with the expected projection columns."""
+    pool = FakePool()
+    note_id = uuid4()
+    theme_id = uuid4()
+    pool.conversation_notes[note_id] = {
+        "id": note_id,
+        "text": "a note",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    pool.themes[theme_id] = {
+        "id": theme_id,
+        "title": "a theme",
+        "status": "active",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+
+    sql = (
+        "SELECT source_type, source_id, message_id, canonical_text "
+        "FROM mediator.v_searchable_content WHERE source_type=$1 AND source_id=$2"
+    )
+
+    note_row = await pool.fetchrow(sql, "conversation_note", note_id)
+    assert note_row == {
+        "source_type": "conversation_note",
+        "source_id": note_id,
+        "message_id": None,
+        "canonical_text": "a note",
+    }
+
+    theme_row = await pool.fetchrow(sql, "theme", theme_id)
+    assert theme_row == {
+        "source_type": "theme",
+        "source_id": theme_id,
+        "message_id": None,
+        "canonical_text": "a theme",
+    }
+
+    # Negative: empty note returns None via fetchrow
+    empty_note_id = uuid4()
+    pool.conversation_notes[empty_note_id] = {
+        "id": empty_note_id,
+        "text": "",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    assert await pool.fetchrow(sql, "conversation_note", empty_note_id) is None
+
+    # Negative: inactive theme returns None via fetchrow
+    inactive_theme_id = uuid4()
+    pool.themes[inactive_theme_id] = {
+        "id": inactive_theme_id,
+        "title": "dormant",
+        "status": "dormant",
+        "created_at": datetime(2026, 6, 1, 12, tzinfo=UTC),
+    }
+    assert await pool.fetchrow(sql, "theme", inactive_theme_id) is None

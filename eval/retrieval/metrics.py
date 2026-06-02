@@ -8,11 +8,11 @@ from __future__ import annotations
 
 
 def recall_at_k(ranked_ids: list[str], expected: list[str], k: int) -> float:
-    """Fraction of expected message ids appearing in the first k ranked results.
+    """Fraction of expected ranked ids appearing in the first k results.
 
     Args:
-        ranked_ids: Ranked list of retrieved message ids (rank 1 = index 0).
-        expected: List of message ids that should have been retrieved.
+        ranked_ids: Ranked list of retrieved ids (rank 1 = index 0).
+        expected: List of ids that should have been retrieved.
         k: Cutoff rank (1-indexed).
 
     Returns:
@@ -29,8 +29,8 @@ def reciprocal_rank(ranked_ids: list[str], expected: list[str]) -> float:
     """Reciprocal rank of the first expected hit.
 
     Args:
-        ranked_ids: Ranked list of retrieved message ids (rank 1 = index 0).
-        expected: List of message ids that should have been retrieved.
+        ranked_ids: Ranked list of retrieved ids (rank 1 = index 0).
+        expected: List of ids that should have been retrieved.
 
     Returns:
         1/rank of the first expected id found (1-indexed), or 0.0 if none found.
@@ -85,6 +85,18 @@ def aggregate_by_query_type(
         (same shape as aggregate() return, plus 'n').
     """
     return aggregate_by_group(per_case_results, "query_type")
+
+
+def aggregate_by_source_type(per_case_results: list[dict]) -> dict[str, dict]:
+    """Aggregate per-case results grouped by expected source-type bucket."""
+
+    return aggregate_by_group(per_case_results, "source_type")
+
+
+def aggregate_by_intent(per_case_results: list[dict]) -> dict[str, dict]:
+    """Aggregate per-case results grouped by eval intent label."""
+
+    return aggregate_by_group(per_case_results, "intent")
 
 
 def exact_ordered_match(returned: list[str], expected: list[str]) -> bool:

@@ -9,11 +9,13 @@ from pathlib import Path
 import pytest
 import yaml
 
-from eval.retrieval.loader import load_corpus, load_golden_set
+from eval.retrieval.loader import load_golden_set
 from eval.retrieval.metrics import (
     aggregate,
     aggregate_by_group,
+    aggregate_by_intent,
     aggregate_by_query_type,
+    aggregate_by_source_type,
     aggregate_set_metrics,
     contiguous_boundary_ok,
     exact_ordered_match,
@@ -22,7 +24,7 @@ from eval.retrieval.metrics import (
     set_precision,
     set_recall,
 )
-from eval.retrieval.schema import Corpus, CorpusMessage
+from eval.retrieval.schema import Corpus, CorpusMessage, GoldenCase
 
 
 # ---------------------------------------------------------------------------
@@ -387,6 +389,58 @@ def test_aggregate_by_query_type_delegates_to_aggregate_by_group():
     assert pq["mrr"] == 0.0
 
 
+def test_aggregate_by_source_type_groups_message_and_mixed_cases():
+    results = [
+        {
+            "recall_at_1": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0,
+            "source_type": "message",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 0.5,
+            "source_type": "mixed",
+        },
+    ]
+
+    grouped = aggregate_by_source_type(results)
+    assert set(grouped) == {"message", "mixed"}
+    assert grouped["message"]["n"] == 1
+    assert grouped["message"]["recall@1"] == 1.0
+    assert grouped["mixed"]["n"] == 1
+    assert grouped["mixed"]["mrr"] == 0.5
+
+
+def test_aggregate_by_intent_groups_unlabeled_and_exact_said_cases():
+    results = [
+        {
+            "recall_at_1": 1.0,
+            "recall_at_5": 1.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 1.0,
+            "intent": "know_about",
+        },
+        {
+            "recall_at_1": 0.0,
+            "recall_at_5": 0.0,
+            "recall_at_10": 1.0,
+            "reciprocal_rank": 0.25,
+            "intent": "unlabeled",
+        },
+    ]
+
+    grouped = aggregate_by_intent(results)
+    assert set(grouped) == {"know_about", "unlabeled"}
+    assert grouped["know_about"]["n"] == 1
+    assert grouped["know_about"]["mrr"] == 1.0
+    assert grouped["unlabeled"]["n"] == 1
+    assert grouped["unlabeled"]["recall@10"] == 1.0
+
+
 # ---------------------------------------------------------------------------
 # Loader validation unit tests
 # ---------------------------------------------------------------------------
@@ -452,7 +506,7 @@ def test_loader_dangling_ref_raises():
 
 
 def test_loader_empty_expected_raises():
-    """GoldenCase with empty expected_message_ids raises ValueError."""
+    """GoldenCase with no expected source keys after normalization raises."""
     corpus = _make_corpus()
     golden_data = {
         "cases": [
@@ -470,8 +524,168 @@ def test_loader_empty_expected_raises():
         tmp_path = Path(f.name)
 
     try:
-        with pytest.raises(ValueError, match="empty expected_message_ids"):
+        with pytest.raises(ValueError, match="empty expected_source_keys"):
             load_golden_set(tmp_path, corpus=corpus)
+    finally:
+        tmp_path.unlink()
+
+
+def test_golden_case_normalizes_expected_message_ids_to_source_keys():
+    case = GoldenCase(
+        id="g1",
+        query="test",
+        expected_message_ids=["m001", "m002"],
+        scope="all",
+        query_type="verbatim_quote",
+    )
+
+    assert case.expected_message_ids == ["m001", "m002"]
+    assert [(key.source_type, key.source_id) for key in case.expected_source_keys] == [
+        ("message", "m001"),
+        ("message", "m002"),
+    ]
+
+
+def test_golden_case_merges_mixed_expected_source_keys_and_message_ids():
+    case = GoldenCase(
+        id="g1",
+        query="test",
+        expected_source_keys=[
+            {"source_type": "theme", "source_id": "theme-1"},
+            {"source_type": "message", "source_id": "m001"},
+        ],
+        expected_message_ids=["m001", "m002"],
+        scope="all",
+        query_type="knowledge_recall",
+        intent="know_about",
+    )
+
+    assert case.expected_message_ids == ["m001", "m002"]
+    assert [(key.source_type, key.source_id) for key in case.expected_source_keys] == [
+        ("theme", "theme-1"),
+        ("message", "m001"),
+        ("message", "m002"),
+    ]
+    assert case.intent == "know_about"
+
+
+def test_loader_allows_non_message_expected_source_keys_without_corpus_rows():
+    corpus = _make_corpus()
+    golden_data = {
+        "cases": [
+            {
+                "id": "g1",
+                "query": "what do I know",
+                "expected_source_keys": [
+                    {"source_type": "theme", "source_id": "theme-1"},
+                    {"source_type": "conversation_note", "source_id": "note-1"},
+                ],
+                "scope": "all",
+                "query_type": "knowledge_recall",
+                "intent": "know_about",
+            }
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(golden_data, f)
+        tmp_path = Path(f.name)
+
+    try:
+        gs = load_golden_set(tmp_path, corpus=corpus)
+        assert len(gs.cases) == 1
+        assert gs.cases[0].expected_message_ids == []
+        assert [key.source_type for key in gs.cases[0].expected_source_keys] == [
+            "theme",
+            "conversation_note",
+        ]
+    finally:
+        tmp_path.unlink()
+
+
+def test_loader_message_only_fixture_stays_unchanged_after_normalization():
+    corpus = _make_corpus()
+    golden_data = {
+        "cases": [
+            {
+                "id": "legacy-msg-only",
+                "query": "quote the exact words",
+                "expected_message_ids": ["m001", "m002"],
+                "scope": "thread",
+                "thread_id": "thread_1",
+                "query_type": "verbatim_quote",
+            }
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(golden_data, f)
+        tmp_path = Path(f.name)
+
+    try:
+        loaded = load_golden_set(tmp_path, corpus=corpus)
+        case = loaded.cases[0]
+        assert case.expected_message_ids == ["m001", "m002"]
+        assert [(key.source_type, key.source_id) for key in case.expected_source_keys] == [
+            ("message", "m001"),
+            ("message", "m002"),
+        ]
+        assert case.query_type == "verbatim_quote"
+        assert case.intent is None
+    finally:
+        tmp_path.unlink()
+
+
+def test_loader_mixed_source_fixture_normalizes_keys_and_preserves_dimensions():
+    corpus = _make_corpus()
+    golden_data = {
+        "cases": [
+            {
+                "id": "mixed-source-aware",
+                "query": "what do we know about this pattern",
+                "expected_source_keys": [
+                    {"source_type": "theme", "source_id": "theme-1"},
+                    {"source_type": "conversation_note", "source_id": "note-7"},
+                ],
+                "expected_message_ids": ["m001"],
+                "scope": "topic",
+                "topic_id": "topic_a",
+                "query_type": "knowledge_recall",
+                "intent": "know_about",
+            },
+            {
+                "id": "mixed-source-quote",
+                "query": "who said it exactly",
+                "expected_source_keys": [
+                    {"source_type": "message", "source_id": "m002"},
+                    {"source_type": "conversation_note", "source_id": "note-8"},
+                ],
+                "scope": "all",
+                "query_type": "exact_source_quote",
+                "intent": "exact_said",
+            },
+        ]
+    }
+    with tempfile.NamedTemporaryFile(mode="w", suffix=".yaml", delete=False) as f:
+        yaml.dump(golden_data, f)
+        tmp_path = Path(f.name)
+
+    try:
+        loaded = load_golden_set(tmp_path, corpus=corpus)
+        first, second = loaded.cases
+        assert [(key.source_type, key.source_id) for key in first.expected_source_keys] == [
+            ("theme", "theme-1"),
+            ("conversation_note", "note-7"),
+            ("message", "m001"),
+        ]
+        assert first.expected_message_ids == ["m001"]
+        assert first.intent == "know_about"
+        assert first.query_type == "knowledge_recall"
+        assert [(key.source_type, key.source_id) for key in second.expected_source_keys] == [
+            ("message", "m002"),
+            ("conversation_note", "note-8"),
+        ]
+        assert second.expected_message_ids == ["m002"]
+        assert second.intent == "exact_said"
+        assert second.query_type == "exact_source_quote"
     finally:
         tmp_path.unlink()
 

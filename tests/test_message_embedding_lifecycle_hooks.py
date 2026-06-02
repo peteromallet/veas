@@ -4,7 +4,11 @@ from uuid import uuid4
 import pytest
 
 from app.models.user import User
-from app.services.embeddings import canonical_content_hash, content_hash
+from app.services.embeddings import (
+    canonical_content_hash,
+    canonical_conversation_note_embedding_text,
+    content_hash,
+)
 from app.services import hooks
 from app.services import message_embedding_lifecycle as lifecycle
 from app.services.live import artifacts as live_artifacts
@@ -260,6 +264,48 @@ async def test_content_lifecycle_wrappers_enqueue_by_source_identity(monkeypatch
         ("embed", "memory", source_id, None, canonical_content_hash("memory text")),
         ("reembed", "memory", source_id, None, canonical_content_hash("changed memory text")),
         ("drop", "memory", source_id, None, ""),
+    ]
+
+
+async def test_content_lifecycle_wrappers_accept_deferred_source_types(monkeypatch, app_env) -> None:
+    source_id = uuid4()
+    calls: list[tuple[str, str, object, str | None, str]] = []
+
+    async def record_embed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        calls.append(("embed", source_type, source_id, message_id, content_hash))
+
+    async def record_reembed_job(pool, *, source_type, source_id, content_hash, model, dimension, message_id=None):
+        calls.append(("reembed", source_type, source_id, message_id, content_hash))
+
+    async def record_drop_job(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_type, source_id, message_id, ""))
+
+    monkeypatch.setattr(lifecycle, "enqueue_embed_job", record_embed_job)
+    monkeypatch.setattr(lifecycle, "enqueue_reembed_job", record_reembed_job)
+    monkeypatch.setattr(lifecycle, "enqueue_drop_embedding_job", record_drop_job)
+
+    await lifecycle.enqueue_content_embed(
+        object(),
+        source_type="conversation_note",
+        source_id=source_id,
+        content_hash=content_hash("note text"),
+    )
+    await lifecycle.enqueue_content_reembed(
+        object(),
+        source_type="theme",
+        source_id=source_id,
+        content_hash=content_hash("theme text"),
+    )
+    await lifecycle.enqueue_content_embedding_drop(
+        object(),
+        source_type="theme",
+        source_id=source_id,
+    )
+
+    assert calls == [
+        ("embed", "conversation_note", source_id, None, content_hash("note text")),
+        ("reembed", "theme", source_id, None, content_hash("theme text")),
+        ("drop", "theme", source_id, None, ""),
     ]
 
 
@@ -1026,3 +1072,677 @@ async def test_cross_path_enqueue_and_search_suppression_contract(
         ("reembed", visible_tool_message_id, canonical_content_hash("visible tool edited needle")),
         ("drop", visible_tool_message_id, None),
     ]
+
+
+# ---------------------------------------------------------------------------
+# Theme lifecycle tests (T8)
+# ---------------------------------------------------------------------------
+
+
+async def test_theme_create_enqueues_embed_when_searchable(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme create enqueues embed when status=active, has active topic, and non-empty canonical text."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+    topic_id = ctx.primary_topic_id
+
+    # Build a searchable theme row: active status, has topic, non-empty title+description.
+    theme_row = {
+        "id": theme_id,
+        "title": "Communication gap",
+        "description": "Partner avoids difficult conversations.",
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": True,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "theme"
+        calls.append(("embed", source_id, content_hash))
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("searchable theme create must not enqueue reembed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("searchable theme create must not enqueue drop")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", fail_drop)
+
+    await write_tools._sync_theme_embedding_after_create(ctx, theme_id)
+
+    expected_hash = write_tools._theme_content_hash(theme_row)
+    assert calls == [("embed", theme_id, expected_hash)]
+
+
+async def test_theme_update_reembeds_when_still_searchable(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme update reembeds when post-update state is still searchable."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    theme_row = {
+        "id": theme_id,
+        "title": "Updated theme",
+        "description": "Revised description.",
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": True,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "theme"
+        calls.append(("reembed", source_id, content_hash))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("searchable theme update must not enqueue embed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("searchable theme update must not enqueue drop")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", fail_drop)
+
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+
+    expected_hash = write_tools._theme_content_hash(theme_row)
+    assert calls == [("reembed", theme_id, expected_hash)]
+
+
+async def test_theme_update_drops_when_inactive(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme update enqueues drop when status is not 'active'."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    # Theme became dormant — not searchable.
+    theme_row = {
+        "id": theme_id,
+        "title": "Resolved theme",
+        "description": "No longer active.",
+        "status": "dormant",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": True,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "theme"
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("inactive theme must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("inactive theme must not enqueue reembed")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+
+    assert calls == [("drop", theme_id)]
+
+
+async def test_theme_update_drops_when_hidden_topic(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme update enqueues drop when no active artifact_topic link exists."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    # Theme has active status but no active topic link.
+    theme_row = {
+        "id": theme_id,
+        "title": "Orphan theme",
+        "description": "No topic assigned.",
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": False,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "theme"
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("hidden-topic theme must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("hidden-topic theme must not enqueue reembed")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+
+    assert calls == [("drop", theme_id)]
+
+
+async def test_theme_create_skips_when_empty_canonical_text(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme create skips enqueue when canonical text (title + description) is empty."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    # Both title and description are empty/None — _theme_is_searchable returns False.
+    theme_row = {
+        "id": theme_id,
+        "title": "",
+        "description": None,
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": True,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("empty-canonical-text theme create must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("empty-canonical-text theme create must not enqueue reembed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("empty-canonical-text theme create must not enqueue drop")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", fail_drop)
+
+    # Should silently skip — no calls.
+    await write_tools._sync_theme_embedding_after_create(ctx, theme_id)
+
+
+async def test_theme_update_drops_when_empty_canonical_text(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme update enqueues drop when canonical text becomes empty."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    # Both title and description are empty/None.
+    theme_row = {
+        "id": theme_id,
+        "title": "",
+        "description": None,
+        "status": "active",
+        "recorded_by_bot_id": "mediator",
+        "_has_active_topic": True,
+    }
+
+    async def fetch_state(pool, tid):
+        assert tid == theme_id
+        return theme_row
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "theme"
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("empty-canonical-text theme update must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("empty-canonical-text theme update must not enqueue reembed")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+
+    assert calls == [("drop", theme_id)]
+
+
+async def test_theme_create_skips_when_null_fetch_state(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme create skips enqueue when theme row cannot be fetched (returns None)."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    async def fetch_state(pool, tid):
+        return None  # row not found
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("null-fetch theme create must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("null-fetch theme create must not enqueue reembed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("null-fetch theme create must not enqueue drop")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", fail_drop)
+
+    await write_tools._sync_theme_embedding_after_create(ctx, theme_id)
+
+
+async def test_theme_composed_status_and_topic_transitions(
+    fake_pool,
+    monkeypatch,
+    app_env,
+) -> None:
+    """Theme update transitions through searchable→inactive→searchable→hidden states."""
+    user = _user(fake_pool)
+    partner = _partner(fake_pool)
+    ctx = _turn_ctx(fake_pool, user, partner)
+    theme_id = uuid4()
+
+    states = [
+        # Start: active, has topic, non-empty — searchable → reembed
+        {
+            "id": theme_id,
+            "title": "Active theme",
+            "description": "Has content.",
+            "status": "active",
+            "recorded_by_bot_id": "mediator",
+            "_has_active_topic": True,
+        },
+        # Become dormant — not searchable → drop
+        {
+            "id": theme_id,
+            "title": "Dormant theme",
+            "description": "Still has content but inactive.",
+            "status": "dormant",
+            "recorded_by_bot_id": "mediator",
+            "_has_active_topic": True,
+        },
+        # Reactivate — searchable again → reembed
+        {
+            "id": theme_id,
+            "title": "Reactivated theme",
+            "description": "Back to active with updated content.",
+            "status": "active",
+            "recorded_by_bot_id": "mediator",
+            "_has_active_topic": True,
+        },
+        # Lose topic — hidden → drop
+        {
+            "id": theme_id,
+            "title": "Active but hidden",
+            "description": "No topic.",
+            "status": "active",
+            "recorded_by_bot_id": "mediator",
+            "_has_active_topic": False,
+        },
+    ]
+
+    async def fetch_state(pool, tid):
+        return states.pop(0)
+
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        assert source_type == "theme"
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        assert source_type == "theme"
+        calls.append(("drop", source_id, None))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("update path must only enqueue reembeds/drops")
+
+    monkeypatch.setattr(write_tools, "_fetch_theme_embedding_state", fetch_state)
+    monkeypatch.setattr(write_tools, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(write_tools, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(write_tools, "enqueue_content_embedding_drop", record_drop)
+
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+    await write_tools._sync_theme_embedding_after_update(ctx, theme_id)
+
+    assert len(calls) == 4
+    assert calls[0][0] == "reembed"  # active+topic+content
+    assert calls[1][0] == "drop"     # dormant
+    assert calls[2][0] == "reembed"  # reactivated
+    assert calls[3][0] == "drop"     # no topic
+
+
+# ---------------------------------------------------------------------------
+# Conversation-note lifecycle tests (T11)
+# ---------------------------------------------------------------------------
+
+
+async def test_conversation_note_embed_nonempty_text(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_embed with non-empty text calls enqueue_content_embed.
+
+    Covers crisis insert (live_voice.py) and live-turn insert (turn_loop.py).
+    """
+    note_id = uuid4()
+    note_text = "[decision] Use httpOnly cookies for auth tokens."
+
+    calls: list[tuple[str, object, str]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("embed", source_id, content_hash))
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("non-empty note embed must not enqueue reembed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("non-empty note embed must not enqueue drop")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", fail_drop)
+
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text=note_text,
+    )
+
+    expected_hash = content_hash(canonical_conversation_note_embedding_text(note_text))
+    assert calls == [("embed", note_id, expected_hash)]
+
+
+async def test_conversation_note_embed_empty_text_skips(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_embed with empty/None text skips without any call."""
+    note_id = uuid4()
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("empty note embed must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("empty note embed must not enqueue reembed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("empty note embed must not enqueue drop")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", fail_drop)
+
+    # None text
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text=None,
+    )
+
+    # Empty-string text
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text="",
+    )
+
+    # Whitespace-only text
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text="   \t\n",
+    )
+
+
+async def test_conversation_note_reembed_nonempty_text(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_reembed with non-empty text calls enqueue_content_reembed.
+
+    Covers synthesis update/rewrite.
+    """
+    note_id = uuid4()
+    note_text = "[decision] Revised: monthly budget set at $4000."
+
+    calls: list[tuple[str, object, str]] = []
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("reembed", source_id, content_hash))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("non-empty note reembed must not enqueue embed")
+
+    async def fail_drop(*args, **kwargs):
+        raise AssertionError("non-empty note reembed must not enqueue drop")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", fail_drop)
+
+    await lifecycle.enqueue_conversation_note_reembed(
+        object(), note_id=note_id, text=note_text,
+    )
+
+    expected_hash = content_hash(canonical_conversation_note_embedding_text(note_text))
+    assert calls == [("reembed", note_id, expected_hash)]
+
+
+async def test_conversation_note_reembed_empty_text_drops(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_reembed with empty text enqueues drop."""
+    note_id = uuid4()
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("empty note reembed must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("empty note reembed must not enqueue reembed")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", record_drop)
+
+    await lifecycle.enqueue_conversation_note_reembed(
+        object(), note_id=note_id, text="",
+    )
+
+    assert calls == [("drop", note_id)]
+
+
+async def test_conversation_note_reembed_whitespace_only_drops(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_reembed with whitespace-only text enqueues drop."""
+    note_id = uuid4()
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("whitespace-only note reembed must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("whitespace-only note reembed must not enqueue reembed")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", record_drop)
+
+    await lifecycle.enqueue_conversation_note_reembed(
+        object(), note_id=note_id, text="  \t\n ",
+    )
+
+    assert calls == [("drop", note_id)]
+
+
+async def test_conversation_note_drop(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_drop calls enqueue_content_embedding_drop.
+
+    Covers synthesis delete/drop.
+    """
+    note_id = uuid4()
+
+    calls: list[tuple[str, object]] = []
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_id))
+
+    async def fail_embed(*args, **kwargs):
+        raise AssertionError("note drop must not enqueue embed")
+
+    async def fail_reembed(*args, **kwargs):
+        raise AssertionError("note drop must not enqueue reembed")
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", fail_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", fail_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", record_drop)
+
+    await lifecycle.enqueue_conversation_note_drop(
+        object(), note_id=note_id,
+    )
+
+    assert calls == [("drop", note_id)]
+
+
+async def test_conversation_note_embed_has_correct_source_type(
+    monkeypatch,
+    app_env,
+) -> None:
+    """enqueue_conversation_note_embed passes source_type='conversation_note'."""
+    note_id = uuid4()
+    note_text = "[fact] The CI pipeline is green again."
+
+    calls: list[tuple[str, object, str, str]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("embed", source_type, source_id, content_hash))
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", record_embed)
+
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text=note_text,
+    )
+
+    assert len(calls) == 1
+    assert calls[0][1] == "conversation_note"
+    assert calls[0][2] == note_id
+
+
+async def test_conversation_note_lifecycle_full_cycle(
+    monkeypatch,
+    app_env,
+) -> None:
+    """Full lifecycle: create (embed) → update (reembed) → empty (drop)."""
+    note_id = uuid4()
+
+    calls: list[tuple[str, object, str | None]] = []
+
+    async def record_embed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("embed", source_id, content_hash))
+
+    async def record_reembed(pool, *, source_type, source_id, content_hash, message_id=None):
+        calls.append(("reembed", source_id, content_hash))
+
+    async def record_drop(pool, *, source_type, source_id, message_id=None):
+        calls.append(("drop", source_id, None))
+
+    monkeypatch.setattr(lifecycle, "enqueue_content_embed", record_embed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_reembed", record_reembed)
+    monkeypatch.setattr(lifecycle, "enqueue_content_embedding_drop", record_drop)
+
+    # Crisis insert: create with text.
+    text_v1 = "[decision] Initial note text."
+    await lifecycle.enqueue_conversation_note_embed(
+        object(), note_id=note_id, text=text_v1,
+    )
+
+    # Synthesis update: revise text.
+    text_v2 = "[decision] Updated note text after review."
+    await lifecycle.enqueue_conversation_note_reembed(
+        object(), note_id=note_id, text=text_v2,
+    )
+
+    # Synthesis delete: empty note.
+    await lifecycle.enqueue_conversation_note_reembed(
+        object(), note_id=note_id, text="",
+    )
+
+    assert len(calls) == 3
+    assert calls[0][0] == "embed"
+    assert calls[0][1] == note_id
+    assert calls[0][2] == content_hash(canonical_conversation_note_embedding_text(text_v1))
+
+    assert calls[1][0] == "reembed"
+    assert calls[1][1] == note_id
+    assert calls[1][2] == content_hash(canonical_conversation_note_embedding_text(text_v2))
+
+    assert calls[2][0] == "drop"
+    assert calls[2][1] == note_id

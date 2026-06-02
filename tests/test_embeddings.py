@@ -15,12 +15,14 @@ from app.services.embeddings import (
     LocalBgeSmallEmbedder,
     OpenAIEmbedder,
     canonical_artifact_embedding_text,
+    canonical_conversation_note_embedding_text,
     canonical_content_hash,
     canonical_distillation_embedding_text,
     canonical_embedding_text,
     canonical_memory_embedding_text,
     canonical_observation_embedding_text,
     canonical_raw_content_text,
+    canonical_theme_embedding_text,
     content_hash,
     embedder_from_settings,
     validate_vectors,
@@ -89,9 +91,41 @@ def test_non_message_raw_content_builders_return_content_and_empty_text_for_miss
     assert canonical_memory_embedding_text("memory text") == "memory text"
     assert canonical_observation_embedding_text("observation text") == "observation text"
     assert canonical_distillation_embedding_text("private synthesis") == "private synthesis"
+    assert canonical_conversation_note_embedding_text("note text") == "note text"
+    assert canonical_theme_embedding_text("Theme title", "Theme description") == (
+        "Theme title\nTheme description"
+    )
     assert canonical_memory_embedding_text(None) == ""
     assert canonical_observation_embedding_text(None) == ""
     assert canonical_distillation_embedding_text(None) == ""
+    assert canonical_conversation_note_embedding_text(None) == ""
+    assert canonical_theme_embedding_text(None, None) == ""
+
+
+def test_deferred_type_builders_match_0059_sql_contract_without_theme_status_fields() -> None:
+    sql = Path("migrations/0059_content_embeddings_deferred_source_types.sql").read_text(
+        encoding="utf-8"
+    )
+
+    assert "cn.text AS canonical_text" in sql
+    assert "btrim(concat_ws(E'\\n', t.title, t.description)) AS canonical_text" in sql
+    assert "t.recorded_by_bot_id AS bot_id" in sql
+    assert "t.status = 'active'" in sql
+    assert "btrim(COALESCE(cn.text, '')) <> ''" in sql
+    assert "t.sentiment" not in sql
+    assert "t.health" not in sql
+
+    assert canonical_conversation_note_embedding_text("  Keep this exact.  ") == "  Keep this exact.  "
+    assert canonical_theme_embedding_text("Repair", "Talk slower") == "Repair\nTalk slower"
+    assert canonical_theme_embedding_text("Repair", None) == "Repair"
+
+
+def test_deferred_type_builders_cover_trim_and_empty_string_behavior() -> None:
+    assert canonical_conversation_note_embedding_text("") == ""
+    assert canonical_conversation_note_embedding_text("   ") == "   "
+    assert canonical_theme_embedding_text("Repair", "") == "Repair"
+    assert canonical_theme_embedding_text("", "Talk slower") == "Talk slower"
+    assert canonical_theme_embedding_text("", "") == ""
 
 
 def test_message_canonical_text_behavior_is_preserved_with_non_message_builders() -> None:
@@ -188,6 +222,43 @@ def test_artifact_canonical_text_matches_representative_sql_view_fixtures() -> N
 
     for artifact_type, payload, expected in fixtures:
         assert canonical_artifact_embedding_text(artifact_type, payload) == expected
+
+
+def test_artifact_canonical_text_trims_empty_selected_payload_fields_without_reordering() -> None:
+    live_prep = canonical_artifact_embedding_text(
+        "live_prep_brief",
+        {
+            "agenda": {
+                "prep_summary": "",
+                "items": [
+                    {
+                        "id": "ignore-id",
+                        "title": "Start softer",
+                        "intent": "",
+                        "ask": "What landed badly?",
+                        "done_when": "",
+                    }
+                ],
+            },
+            "notes": "",
+        },
+    )
+    live_debrief = canonical_artifact_embedding_text(
+        "live_debrief",
+        {
+            "review_summary": "Debrief summary",
+            "what_heard": ["One"],
+            "what_decided": "",
+            "still_open": "Question remains",
+            "what_to_remember": "",
+            "durable_write_summary": "",
+            "open_questions": "",
+            "references": [{"transcript_turn_id": "ignore-id"}],
+        },
+    )
+
+    assert live_prep == "Start softer\n\nWhat landed badly?"
+    assert live_debrief == "Debrief summary\nOne\n\nQuestion remains"
 
 
 def test_artifact_python_builder_stays_in_parity_with_sql_contract() -> None:

@@ -6,7 +6,7 @@ from pathlib import Path
 
 import yaml
 
-from eval.retrieval.schema import Corpus, GoldenCase, GoldenSet
+from eval.retrieval.schema import Corpus, GoldenSet
 
 
 def load_corpus(path: Path) -> Corpus:
@@ -39,8 +39,8 @@ def load_golden_set(path: Path, *, corpus: Corpus | None = None) -> GoldenSet:
 
     Raises:
         ValueError: If validation fails for any reason:
-            - Dangling expected_message_ids (referencing an id not in corpus).
-            - Empty expected_message_ids (SD6 / correctness-4).
+            - Empty expected_source_keys after normalization.
+            - Dangling message source keys / expected_message_ids.
             - scope=='thread' with thread_id is None (correctness-3).
             - scope=='topic' with topic_id is None (callers-1).
     """
@@ -55,19 +55,23 @@ def load_golden_set(path: Path, *, corpus: Corpus | None = None) -> GoldenSet:
         corpus_ids = {m.id for m in corpus.messages}
 
     for case in golden_set.cases:
-        # (b) Empty expected_message_ids
-        if not case.expected_message_ids:
+        # (b) Empty expected_source_keys after backward-compatible normalization
+        if not case.expected_source_keys:
             raise ValueError(
-                f"GoldenCase '{case.id}' has empty expected_message_ids"
+                f"GoldenCase '{case.id}' has empty expected_source_keys"
             )
 
-        # (a) Dangling refs
+        # (a) Dangling refs are only checkable for message source keys against
+        # the current synthetic message corpus. Non-message source keys are
+        # accepted here; later milestones add source-aware corpora/adapters.
         if corpus_ids is not None:
-            for msg_id in case.expected_message_ids:
-                if msg_id not in corpus_ids:
+            for source_key in case.expected_source_keys:
+                if source_key.source_type != "message":
+                    continue
+                if source_key.source_id not in corpus_ids:
                     raise ValueError(
                         f"GoldenCase '{case.id}' references message id "
-                        f"'{msg_id}' which is not in the corpus"
+                        f"'{source_key.source_id}' which is not in the corpus"
                     )
 
         # (c) Scope / id consistency

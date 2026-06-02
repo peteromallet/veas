@@ -275,6 +275,38 @@ def _semantic_prior_metadata(result: RetrievalResult) -> dict[str, Any]:
     }
 
 
+def _hot_context_source_item_from_row(
+    row: dict[str, Any],
+    *,
+    timezone_name: str | None,
+    now_utc: datetime,
+    source: str | None = None,
+    retrieval: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    sent_at = (
+        row.get("sent_at")
+        or row.get("source_updated_at")
+        or row.get("source_created_at")
+        or row.get("sort_at")
+    )
+    item = {
+        "id": row["source_id"],
+        "source_type": row["source_type"],
+        "source_id": row["source_id"],
+        "message_id": row.get("message_id"),
+        "content": row.get("content") or row.get("canonical_text"),
+        "sent_at": _iso(sent_at),
+        "sent_at_time": _time_context(sent_at, timezone_name, now_utc),
+        "created_at": _iso(row.get("source_created_at")),
+        "updated_at": _iso(row.get("source_updated_at")),
+    }
+    if source is not None:
+        item["source"] = source
+    if retrieval is not None:
+        item["retrieval"] = retrieval
+    return item
+
+
 def _semantic_query_text(
     trigger_rows: list[dict[str, Any]],
     *,
@@ -344,46 +376,110 @@ async def _fetch_semantic_prior(
     ranked_results = [
         result
         for result in retrieval_results
-        if result.message_id is not None
-        and result.message_id not in excluded_message_ids
-        and result.source_type not in _DEDICATED_SOURCE_TYPES
+        if result.source_type not in _DEDICATED_SOURCE_TYPES
+        and (
+            result.message_id is None
+            or result.message_id not in excluded_message_ids
+        )
     ][:HOT_CONTEXT_SEMANTIC_PRIOR_CAP]
     if not ranked_results:
         return []
     try:
-        hydrated_rows = await pool.fetch(
-            """
-            SELECT id, direction, sender_id, recipient_id, content, media_type,
-                   media_duration_seconds, media_analysis, sent_at,
-                   COALESCE(charge, 'routine') AS charge, bot_id, topic_id,
-                   processing_state, handling_result, handled_at, processing_error
-            FROM messages
-            WHERE deleted_at IS NULL
-              AND id = ANY($1::uuid[])
-              AND (sender_id = ANY($2::uuid[]) OR recipient_id = ANY($2::uuid[]))
-              AND bot_id = $3
-              AND topic_id = $4
-            """,
-            [result.message_id for result in ranked_results],
-            [user.id, partner.id],
-            bot_id,
-            primary_topic,
-        )
-        rows_by_id = {row["id"]: dict(row) for row in hydrated_rows}
+        message_results = [result for result in ranked_results if result.message_id is not None]
+        source_results = [result for result in ranked_results if result.message_id is None]
+        rows_by_id: dict[UUID, dict[str, Any]] = {}
+        if message_results:
+            hydrated_rows = await pool.fetch(
+                """
+                SELECT id, direction, sender_id, recipient_id, content, media_type,
+                       media_duration_seconds, media_analysis, sent_at,
+                       COALESCE(charge, 'routine') AS charge, bot_id, topic_id,
+                       processing_state, handling_result, handled_at, processing_error
+                FROM messages
+                WHERE deleted_at IS NULL
+                  AND id = ANY($1::uuid[])
+                  AND (sender_id = ANY($2::uuid[]) OR recipient_id = ANY($2::uuid[]))
+                  AND bot_id = $3
+                  AND topic_id = $4
+                """,
+                [result.message_id for result in message_results],
+                [user.id, partner.id],
+                bot_id,
+                primary_topic,
+            )
+            rows_by_id = {row["id"]: dict(row) for row in hydrated_rows}
+
+        rows_by_source: dict[tuple[str, UUID], dict[str, Any]] = {}
+        if source_results:
+            params: list[Any] = [bot_id, primary_topic]
+            dyad_clause = ""
+            if dyad_id is not None:
+                dyad_clause = "AND (sc.dyad_id = $3 OR sc.dyad_id IS NULL)"
+                params.append(dyad_id)
+            source_types_param = len(params) + 1
+            params.append([result.source_type for result in source_results])
+            source_ids_param = len(params) + 1
+            params.append([result.source_id for result in source_results])
+            hydrated_source_rows = await pool.fetch(
+                f"""
+                WITH ranked_sources AS (
+                    SELECT ranked.source_type, ranked.source_id, ranked.ordinality
+                    FROM unnest(
+                        ${source_types_param}::text[],
+                        ${source_ids_param}::uuid[]
+                    ) WITH ORDINALITY AS ranked(source_type, source_id, ordinality)
+                )
+                SELECT
+                    sc.source_type,
+                    sc.source_id,
+                    sc.message_id,
+                    sc.sent_at,
+                    sc.source_created_at,
+                    sc.source_updated_at,
+                    sc.sort_at,
+                    sc.canonical_text AS content
+                FROM ranked_sources
+                JOIN mediator.v_searchable_content sc
+                  ON sc.source_type = ranked_sources.source_type
+                 AND sc.source_id = ranked_sources.source_id
+                WHERE sc.source_type <> 'message'
+                  AND sc.bot_id = $1
+                  AND sc.topic_id = $2
+                  {dyad_clause}
+                ORDER BY ranked_sources.ordinality ASC
+                """,
+                *params,
+            )
+            rows_by_source = {
+                (str(row["source_type"]), row["source_id"]): dict(row)
+                for row in hydrated_source_rows
+            }
         semantic_prior: list[dict[str, Any]] = []
         for result in ranked_results:
-            row = rows_by_id.get(result.message_id)
-            if row is None:
-                continue
-            item = _hot_context_message_from_row(
-                row,
-                viewer_user_id=user.id,
-                partner_share_by_user=partner_share_by_user,
-                timezone_name=user_timezone,
-                now_utc=now_utc,
-                source="semantic",
-                retrieval=_semantic_prior_metadata(result),
-            )
+            if result.message_id is not None:
+                row = rows_by_id.get(result.message_id)
+                if row is None:
+                    continue
+                item = _hot_context_message_from_row(
+                    row,
+                    viewer_user_id=user.id,
+                    partner_share_by_user=partner_share_by_user,
+                    timezone_name=user_timezone,
+                    now_utc=now_utc,
+                    source="semantic",
+                    retrieval=_semantic_prior_metadata(result),
+                )
+            else:
+                row = rows_by_source.get((result.source_type, result.source_id))
+                if row is None:
+                    continue
+                item = _hot_context_source_item_from_row(
+                    row,
+                    timezone_name=user_timezone,
+                    now_utc=now_utc,
+                    source="semantic",
+                    retrieval=_semantic_prior_metadata(result),
+                )
             if item is not None:
                 semantic_prior.append(item)
         return semantic_prior
@@ -1639,9 +1735,27 @@ def _source_handle(
     # ---- dedicated types ---------------------------------------------------
     if source_type in ("memory", "observation", "distillation"):
         return source_type
+    # ---- non-message knowledge items (conversation_note / theme / artifact) -
+    # Produce a readable type label enriched with any retrieval metadata.
+    if source_type in ("conversation_note", "theme", "artifact"):
+        label = f"[{source_type}]"
+        retrieval = item.get("retrieval")
+        if isinstance(retrieval, dict):
+            match = str(retrieval.get("match_type", ""))
+            score = retrieval.get("rrf_score")
+            retrieval_parts: list[str] = []
+            if match:
+                retrieval_parts.append(match)
+            if score is not None:
+                retrieval_parts.append(f"rrf={float(score):.4f}")
+            if retrieval_parts:
+                label = f"{label} [{', '.join(retrieval_parts)}]"
+        return label
 
     # ---- message-like items ------------------------------------------------
     parts: list[str] = []
+    if source_type and source_type != "message":
+        parts.append(source_type)
     source = str(item.get("source", ""))
     if source:
         parts.append(f"source={source}")
@@ -2027,7 +2141,7 @@ def _render_with_counts(
                 f"- +{truncations['relevant_prior']} more \u2014 search() for older relevant context"
             )
         lines.append(
-            "- Use message ids below as cursor anchors with read tools to explore further back."
+            "- Use ids below as cursor anchors with read tools to explore further back."
         )
         for item in reversed(hc.relevant_prior):
             lines.append(_render_relevant_prior_line(item, clip_limit, name_map))

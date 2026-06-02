@@ -100,6 +100,29 @@ def canonical_distillation_embedding_text(content: Any | None = None) -> str:
     return canonical_raw_content_text(content)
 
 
+def canonical_conversation_note_embedding_text(text: Any | None = None) -> str:
+    """Return M4 canonical text for a conversation note row."""
+
+    return canonical_raw_content_text(text)
+
+
+def canonical_theme_embedding_text(
+    title: Any | None = None,
+    description: Any | None = None,
+) -> str:
+    """Return M4 canonical text for a theme row.
+
+    This mirrors the SQL searchable-content contract exactly: only the human
+    readable ``title`` + ``description`` fields participate, in that order.
+    Theme status / sentiment / health stay out of the embedding payload.
+    """
+
+    return _join_artifact_fields([
+        _coerce_text(title) if title is not None else None,
+        _coerce_text(description) if description is not None else None,
+    ])
+
+
 def _payload_text_at(payload: Mapping[str, Any], path: Sequence[str]) -> str | None:
     value: Any = payload
     for key in path:
