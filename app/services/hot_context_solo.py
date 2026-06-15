@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
 from typing import Any
 from uuid import UUID
+import logging
 
 from app.config import get_settings
 from app.models.user import User
@@ -978,16 +979,25 @@ async def build_hot_context_solo(
                 "allowed_compass_topic_slugs + primary_topic_slug"
             )
 
-        slug_list: list[str] = sorted(resolved_slugs)
-        topic_id_map = await _resolve_ids(pool, slug_list)
-        compass_topic_ids: frozenset[UUID] = frozenset(topic_id_map.values())
+        try:
+            slug_list: list[str] = sorted(resolved_slugs)
+            topic_id_map = await _resolve_ids(pool, slug_list)
+            compass_topic_ids: frozenset[UUID] = frozenset(topic_id_map.values())
 
-        store = UserOrientationStore(pool)
-        compass_snapshot = await _build_compass(
-            store,
-            user_id=user.id,
-            topic_ids=compass_topic_ids,
-        )
+            store = UserOrientationStore(pool)
+            compass_snapshot = await _build_compass(
+                store,
+                user_id=user.id,
+                topic_ids=compass_topic_ids,
+            )
+        except Exception:
+            _logger = logging.getLogger(__name__)
+            _logger.warning(
+                "Compass snapshot build failed for user %s; continuing without Compass section.",
+                user.id,
+                exc_info=True,
+            )
+            compass_snapshot = None
 
     return HotContextSolo(
         current_user=current_user,
@@ -1183,18 +1193,42 @@ def _render_solo_with_counts(
         f"- partner_sharing_state: {_clip(hc.current_user.get('partner_sharing_state', 'unavailable'), clip_limit)}",
         f"- style_notes: {_clip(hc.current_user.get('style_notes', ''), clip_limit)}",
     ]
-    open_asks = render_open_asks(
-        _get_bot_asks(hc.bot_id),
-        {
+    # ── Open asks (with SuperPOM pacing) ────────────────────────────
+    if hc.bot_id == "superpom":
+        # SuperPOM: derive calibration booleans from Compass, pace one ask at a time.
+        from app.services.open_asks import (
+            _derive_superpom_calibration_state,
+            _first_missing_superpom_calibration_ask,
+        )
+
+        calib_state = _derive_superpom_calibration_state(hc.compass_snapshot)
+        base_state: dict[str, Any] = {
             "pregnancy_edd": hc.current_user.get("pregnancy_edd")
             or (hc.partner_user or {}).get("pregnancy_edd"),
             "partner_share": hc.current_user.get("partner_share"),
             "has_partner": bool(hc.partner_user),
             "partner_name": hc.partner_user.get("name") if hc.partner_user else None,
-        },
-    )
-    if open_asks:
-        lines += ["", open_asks]
+        }
+        # Merge calibration booleans into the state dict.
+        state = {**base_state, **calib_state}
+        first_ask = _first_missing_superpom_calibration_ask(state)
+        if first_ask is not None:
+            open_asks = render_open_asks([first_ask], state)
+            if open_asks:
+                lines += ["", open_asks]
+    else:
+        open_asks = render_open_asks(
+            _get_bot_asks(hc.bot_id),
+            {
+                "pregnancy_edd": hc.current_user.get("pregnancy_edd")
+                or (hc.partner_user or {}).get("pregnancy_edd"),
+                "partner_share": hc.current_user.get("partner_share"),
+                "has_partner": bool(hc.partner_user),
+                "partner_name": hc.partner_user.get("name") if hc.partner_user else None,
+            },
+        )
+        if open_asks:
+            lines += ["", open_asks]
 
     # ── Partner identity block (S1) ────────────────────────────────────
     # Identity-only by invariant 1: name, id, timezone, plus the

@@ -303,6 +303,10 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         from app.bots.registry import populate_habits_spec_from_db
 
         await populate_habits_spec_from_db(pool)
+        # SuperPOM: check for SuperPOM bots row (prod-registration gate, migration 0061)
+        from app.bots.registry import populate_superpom_spec_from_db
+
+        await populate_superpom_spec_from_db(pool)
         # Sprint 2a: cache relationship topic id for scope fallbacks
         from app.bots.registry import populate_topic_ids_from_db
 

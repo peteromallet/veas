@@ -9,7 +9,7 @@ from typing import Any
 from uuid import UUID
 
 from app.bots.base import BotSpec, ReadScopes, WriteScopes
-from app.bots.ids import HABITS_BOT_ID, HECTOR_BOT_ID, MEDIATOR_BOT_ID, TANTE_ROSI_BOT_ID
+from app.bots.ids import HABITS_BOT_ID, HECTOR_BOT_ID, MEDIATOR_BOT_ID, SUPERPOM_BOT_ID, TANTE_ROSI_BOT_ID
 from app.bots.mediator import MEDIATOR_BOT
 
 logger = logging.getLogger(__name__)
@@ -57,6 +57,11 @@ def _maybe_register_staging_bots() -> None:
 
         habits = build_habits_spec()
         BOT_SPECS[habits.bot_id] = habits
+
+        from app.bots.superpom import build_superpom_spec
+
+        superpom = build_superpom_spec()
+        BOT_SPECS[superpom.bot_id] = superpom
 
         # Patch mediator's tool_allowlist now that TOOL_DISPATCH is available.
         # MEDIATOR_BOT was constructed at module level before the tools module
@@ -263,6 +268,38 @@ async def populate_habits_spec_from_db(pool: Any) -> None:
     BOT_SPECS[spec.bot_id] = spec
     logger.info(
         "populate_habits_spec_from_db: habits spec registered from bots table"
+    )
+
+
+async def populate_superpom_spec_from_db(pool: Any) -> None:
+    """Check for a SuperPOM row in the bots table and register if present.
+
+    Mirrors populate_habits_spec_from_db. Row existence is the enablement
+    gate. The prod bots row is inserted by migration 0061. Restart is
+    required after row insertion because registration runs once at startup.
+    """
+    try:
+        row = await pool.fetchrow("SELECT 1 FROM bots WHERE id = $1", SUPERPOM_BOT_ID)
+    except Exception:
+        logger.warning(
+            "populate_superpom_spec_from_db: could not query bots table — "
+            "keeping staging-only registration",
+            exc_info=True,
+        )
+        return
+    if row is None:
+        logger.debug(
+            "populate_superpom_spec_from_db: no superpom row in bots table — "
+            "bot available only via STAGING=1"
+        )
+        return
+
+    from app.bots.superpom import build_superpom_spec
+
+    spec = build_superpom_spec()
+    BOT_SPECS[spec.bot_id] = spec
+    logger.info(
+        "populate_superpom_spec_from_db: superpom spec registered from bots table"
     )
 
 

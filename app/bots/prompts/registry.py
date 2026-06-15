@@ -31,7 +31,7 @@ from typing import Literal
 # ── Known bot identifiers ──────────────────────────────────────────────────
 
 ALL_BOTS: frozenset[str] = frozenset(
-    {"mediator", "coach", "hector", "habits", "tante_rosi"}
+    {"mediator", "coach", "hector", "habits", "tante_rosi", "superpom"}
 )
 
 

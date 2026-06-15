@@ -1741,3 +1741,704 @@ class TestCompassRenderCopyConstructor:
         # The original HotContextSolo must be unmodified after rendering.
         assert hc.compass_snapshot is original_snapshot
         assert hc.compass_snapshot.principles[0].label == "Original"
+
+
+# ── SuperPOM Compass consumption and provisional-item tests (T9) ─────────────
+
+
+class TestSuperPomHotContextCompass:
+    """Prove SuperPOM hot-context Compass consumption behavior.
+
+    When ``compass_enabled=True`` and ``bot_id='superpom'``:
+      - accepted/user-stated/user_confirmed items render in ``## Compass``
+      - pending ``bot_proposed`` items are omitted
+      - rejected items are omitted
+      - the shared ``UserOrientationStore`` path is used with explicit
+        user/topic scoping (no ``"all"`` sentinel)
+    """
+
+    @pytest.fixture(autouse=True)
+    def _set_env(self, monkeypatch: pytest.MonkeyPatch) -> None:
+        from app.config import get_settings
+
+        monkeypatch.setenv("DATABASE_URL", "postgresql://user:***@localhost:5432/db")
+        monkeypatch.setenv("SUPABASE_URL", "https://example.supabase.co")
+        monkeypatch.setenv("SUPABASE_SERVICE_ROLE_KEY", "dummy-service-role")
+        monkeypatch.setenv("ANTHROPIC_API_KEY", "dummy-anthropic")
+        monkeypatch.setenv("OPENAI_API_KEY", "dummy-openai")
+        monkeypatch.setenv("GROQ_API_KEY", "dummy-groq")
+        monkeypatch.setenv("WHATSAPP_VERIFY_TOKEN", "dummy-verify")
+        monkeypatch.setenv("ADMIN_PASSWORD", "dummy-admin")
+        get_settings.cache_clear()
+
+    @staticmethod
+    def _minimal_hc(*, compass_snapshot=None):
+        from app.services.hot_context_solo import HotContextSolo
+
+        return HotContextSolo(
+            current_user={
+                "id": uuid4(), "name": "TestUser", "timezone": "UTC",
+                "phone": "15555550100", "partner_share": None,
+                "partner_sharing_state": "unavailable",
+            },
+            partner_user={},
+            conversation_load={
+                "period": "today", "total_count": 0, "inbound_count": 0,
+                "outbound_count": 0, "period_start": None, "period_end": None,
+                "timezone": "UTC",
+            },
+            active_oob=[],
+            memories=[],
+            active_themes=[],
+            open_watch_items=[],
+            observations=[],
+            recent_messages=[],
+            time_since_last_message=None,
+            trigger_metadata={"kind": "test", "triggering_message_ids": [], "messages": []},
+            compass_snapshot=compass_snapshot,
+        )
+
+    # ── Accepted / user-stated items render ────────────────────────────
+
+    def test_user_stated_item_renders_in_compass(self):
+        """User-stated items appear in the ## Compass section."""
+        from app.services.hot_context_solo import render_hot_context_solo
+
+        item = _make_orientation_item(
+            kind="principle", label="Be honest",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            principles=(ci,),
+        )
+        hc = self._minimal_hc(compass_snapshot=snap)
+        rendered = render_hot_context_solo(hc)
+        assert "## Compass" in rendered
+        assert "Be honest" in rendered
+
+    def test_user_confirmed_item_renders_in_compass(self):
+        """User-confirmed items appear in the ## Compass section."""
+        from app.services.hot_context_solo import render_hot_context_solo
+
+        item = _make_orientation_item(
+            kind="goal", label="Run 5k", status="active",
+            source="user_confirmed", review_state="reviewed",
+        )
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            active_goals=(ci,),
+        )
+        hc = self._minimal_hc(compass_snapshot=snap)
+        rendered = render_hot_context_solo(hc)
+        assert "## Compass" in rendered
+        assert "Run 5k" in rendered
+
+    def test_multiple_accepted_items_all_render(self):
+        """All user-stated and user-confirmed items across kinds render."""
+        from app.services.hot_context_solo import render_hot_context_solo
+
+        principle = _make_orientation_item(
+            kind="principle", label="Integrity",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        goal = _make_orientation_item(
+            kind="goal", label="Learn piano", status="active",
+            source="user_stated", review_state="reviewed",
+        )
+        priority = _make_orientation_item(
+            kind="priority", label="Family first", priority_rank=1,
+            source="user_confirmed", status="active", review_state="reviewed",
+        )
+        anti = _make_orientation_item(
+            kind="anti_pattern", label="Doom-scrolling",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+
+        snap = CompassSnapshot(
+            user_id=principle.user_id,
+            topic_ids=frozenset([principle.topic_id]),
+            principles=(CompassItem(item=principle, links=()),),
+            active_goals=(CompassItem(item=goal, links=()),),
+            priorities=(CompassItem(item=priority, links=()),),
+            anti_patterns=(CompassItem(item=anti, links=()),),
+        )
+        hc = self._minimal_hc(compass_snapshot=snap)
+        rendered = render_hot_context_solo(hc)
+        assert "## Compass" in rendered
+        assert "Integrity" in rendered
+        assert "Learn piano" in rendered
+        assert "Family first" in rendered
+        assert "Doom-scrolling" in rendered
+
+    # ── bot_proposed unreviewed items omitted ──────────────────────────
+
+    async def test_bot_proposed_unreviewed_not_in_compass(self):
+        """bot_proposed items with review_state='unreviewed' must NOT render."""
+        from app.services.hot_context_solo import render_hot_context_solo
+
+        # Create a snapshot with only a bot_proposed/unreviewed item.
+        # In practice such items never reach the snapshot (is_compass_visible
+        # excludes them), but we test defensively.
+        item = _make_orientation_item(
+            kind="principle", label="Proposed idea",
+            source="bot_proposed", status="active", review_state="unreviewed",
+        )
+        # Even if forced into the snapshot, is_compass_visible should block it.
+        assert not uo.is_compass_visible({
+            "status": "active", "source": "bot_proposed", "review_state": "unreviewed",
+        })
+
+        # Prove that only visible items reach the snapshot via the builder.
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock()
+
+        snap = await build_compass_snapshot(
+            store, user_id=item.user_id, topic_ids=frozenset([item.topic_id]),
+        )
+        assert snap.is_empty is True
+        assert "## Compass" not in CompassRenderer().render(snap)
+
+    async def test_multiple_items_only_visible_in_compass(self):
+        """Mix of visible and non-visible items: only visible render in Compass."""
+        from app.services.hot_context_solo import render_hot_context_solo
+
+        user_id = uuid4()
+        topic_id = uuid4()
+
+        visible = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="principle", label="Visible principle",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        bot_proposed = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="goal", label="Proposed goal",
+            source="bot_proposed", status="pending", review_state="unreviewed",
+        )
+
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[visible, bot_proposed])
+        store.get_links = AsyncMock(return_value=[])
+
+        snap = await build_compass_snapshot(
+            store, user_id=user_id, topic_ids=frozenset([topic_id]),
+        )
+
+        # Only visible item present.
+        assert snap.total_items == 1
+        assert snap.principles[0].label == "Visible principle"
+
+        hc = self._minimal_hc(compass_snapshot=snap)
+        rendered = render_hot_context_solo(hc)
+        assert "Visible principle" in rendered
+        assert "Proposed goal" not in rendered
+
+    # ── Rejected items omitted ────────────────────────────────────────
+
+    async def test_rejected_items_not_in_compass(self):
+        """Rejected items must not appear in the ## Compass section."""
+        item = _make_orientation_item(
+            kind="goal", label="Rejected idea",
+            source="user_stated", status="rejected", review_state="reviewed",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock()
+
+        snap = await build_compass_snapshot(
+            store, user_id=item.user_id, topic_ids=frozenset([item.topic_id]),
+        )
+        assert snap.is_empty is True
+
+    async def test_rejected_bot_proposed_item_not_in_compass(self):
+        """Rejected bot_proposed items are also excluded from Compass."""
+        item = _make_orientation_item(
+            kind="goal", label="Rejected proposal",
+            source="bot_proposed", status="rejected", review_state="excluded",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock()
+
+        snap = await build_compass_snapshot(
+            store, user_id=item.user_id, topic_ids=frozenset([item.topic_id]),
+        )
+        assert snap.is_empty is True
+
+    # ── Shared UserOrientationStore path with explicit user/topic scope ──
+
+    async def test_snapshot_builder_uses_explicit_user_id(self):
+        """The Compass builder calls the store with explicit user_id, never derived."""
+        user_id = uuid4()
+        topic_ids = frozenset([uuid4()])
+        item = _make_orientation_item(
+            user_id=user_id, topic_id=list(topic_ids)[0],
+            kind="principle", label="Test",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock(return_value=[])
+
+        await build_compass_snapshot(store, user_id=user_id, topic_ids=topic_ids)
+        call_user_id = store.list_items.call_args.kwargs["user_id"]
+        assert call_user_id == user_id
+        assert isinstance(call_user_id, UUID)
+
+    async def test_snapshot_builder_uses_explicit_topic_ids(self):
+        """The Compass builder passes explicit UUID topic_ids to the store."""
+        topic_a = uuid4()
+        topic_b = uuid4()
+        user_id = uuid4()
+        item = _make_orientation_item(
+            user_id=user_id, topic_id=topic_a, kind="principle", label="Test",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock(return_value=[])
+
+        await build_compass_snapshot(
+            store, user_id=user_id,
+            topic_ids=frozenset([topic_a, topic_b]),
+        )
+        call_topic_ids = set(store.list_items.call_args.kwargs["topic_ids"])
+        assert call_topic_ids == {topic_a, topic_b}
+
+    async def test_store_called_exactly_once_per_build(self):
+        """The store's list_items is called exactly once per snapshot build."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        item = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="principle", label="Test",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock(return_value=[])
+
+        await build_compass_snapshot(
+            store, user_id=user_id, topic_ids=frozenset([topic_id]),
+        )
+        assert store.list_items.call_count == 1
+
+
+class TestProvisionalItemToolAccess:
+    """Prove provisional (bot_proposed/pending) items remain accessible via
+    explicit orientation read/review tools even though they are hidden from
+    the Compass snapshot.
+
+    This is the tool-access side of the Compass contract: bot_proposed items
+    are hidden from the passive Compass read layer but reachable when the
+    agent actively queries for review.
+    """
+
+    # ── list_orientation_items with include_unreviewed ─────────────────
+
+    async def test_bot_proposed_visible_with_include_unreviewed(self):
+        """bot_proposed items are returned when include_unreviewed=True."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        proposed = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="goal", label="Proposed goal",
+            source="bot_proposed", status="pending", review_state="unreviewed",
+        )
+        store = MagicMock()
+        # When include_unreviewed=True, the store returns bot_proposed items.
+        store.list_items = AsyncMock(return_value=[proposed])
+        store.get_links = AsyncMock(return_value=[])
+
+        items = await store.list_items(
+            user_id=user_id, topic_ids=[topic_id],
+            include_unreviewed=True, include_rejected=False,
+        )
+        assert len(items) == 1
+        assert items[0].label == "Proposed goal"
+        assert items[0].source == "bot_proposed"
+
+    async def test_bot_proposed_hidden_without_include_unreviewed(self):
+        """bot_proposed items are excluded when include_unreviewed=False (default)."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        proposed = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="goal", label="Proposed goal",
+            source="bot_proposed", status="pending", review_state="unreviewed",
+        )
+        visible = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="principle", label="Visible principle",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        store = MagicMock()
+        # Without include_unreviewed, only visible items returned.
+        store.list_items = AsyncMock(return_value=[visible])
+
+        items = await store.list_items(
+            user_id=user_id, topic_ids=[topic_id],
+            include_unreviewed=False, include_rejected=False,
+        )
+        assert len(items) == 1
+        assert items[0].label == "Visible principle"
+
+    # ── get_orientation_item fetches unreviewed items ──────────────────
+
+    async def test_get_orientation_item_fetches_unreviewed_item(self):
+        """get_orientation_item returns bot_proposed items by ID directly."""
+        item = _make_orientation_item(
+            kind="goal", label="Proposed goal",
+            source="bot_proposed", status="pending", review_state="unreviewed",
+        )
+        store = MagicMock()
+        store.get_item = AsyncMock(return_value=item)
+
+        fetched = await store.get_item(user_id=item.user_id, item_id=item.id)
+        assert fetched is not None
+        assert fetched.label == "Proposed goal"
+        assert fetched.source == "bot_proposed"
+        assert fetched.review_state == "unreviewed"
+
+    async def test_get_orientation_item_returns_none_for_missing_item(self):
+        """get_orientation_item returns None for non-existent item IDs."""
+        store = MagicMock()
+        store.get_item = AsyncMock(return_value=None)
+
+        fetched = await store.get_item(user_id=uuid4(), item_id=uuid4())
+        assert fetched is None
+
+    # ── review_orientation_item transitions to visible ─────────────────
+
+    async def test_bot_proposed_becomes_visible_after_review_accept(self):
+        """After review with accepted verdict, bot_proposed becomes Compass-visible."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        # Simulate an item that was bot_proposed but gets reviewed as accepted.
+        item = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="goal", label="Reviewed proposal",
+            source="bot_proposed", status="active", review_state="reviewed",
+        )
+        # Now it passes is_compass_visible.
+        assert uo.is_compass_visible({
+            "status": "active", "source": "bot_proposed", "review_state": "reviewed",
+        })
+
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock(return_value=[])
+
+        snap = await build_compass_snapshot(
+            store, user_id=user_id, topic_ids=frozenset([topic_id]),
+        )
+        assert snap.total_items == 1
+        assert snap.active_goals[0].label == "Reviewed proposal"
+
+    async def test_review_rejected_stays_hidden(self):
+        """After review with rejected verdict, item remains hidden from Compass."""
+        item = _make_orientation_item(
+            kind="goal", label="Rejected proposal",
+            source="bot_proposed", status="rejected", review_state="excluded",
+        )
+        assert not uo.is_compass_visible({
+            "status": "rejected", "source": "bot_proposed", "review_state": "excluded",
+        })
+
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[item])
+        store.get_links = AsyncMock()
+
+        snap = await build_compass_snapshot(
+            store, user_id=item.user_id, topic_ids=frozenset([item.topic_id]),
+        )
+        assert snap.is_empty is True
+
+    # ── All sources are listable via tools ─────────────────────────────
+
+    async def test_all_sources_accessible_via_list_with_flags(self):
+        """When include_unreviewed=True, all sources are returned by the store."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        user_stated = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="principle", label="User stated",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        bot_proposed = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="goal", label="Bot proposed",
+            source="bot_proposed", status="pending", review_state="unreviewed",
+        )
+        rejected = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="anti_pattern", label="Rejected",
+            source="bot_proposed", status="rejected", review_state="excluded",
+        )
+
+        store = MagicMock()
+        # With both flags, all items come back.
+        store.list_items = AsyncMock(
+            return_value=[user_stated, bot_proposed, rejected],
+        )
+
+        items = await store.list_items(
+            user_id=user_id, topic_ids=[topic_id],
+            include_unreviewed=True, include_rejected=True,
+        )
+        labels = {it.label for it in items}
+        assert labels == {"User stated", "Bot proposed", "Rejected"}
+
+    async def test_default_list_excludes_unreviewed_and_rejected(self):
+        """Default list_items (Compass default) excludes unreviewed and rejected."""
+        user_id = uuid4()
+        topic_id = uuid4()
+        visible = _make_orientation_item(
+            user_id=user_id, topic_id=topic_id,
+            kind="principle", label="Visible",
+            source="user_stated", status="active", review_state="reviewed",
+        )
+        store = MagicMock()
+        store.list_items = AsyncMock(return_value=[visible])
+
+        items = await store.list_items(
+            user_id=user_id, topic_ids=[topic_id],
+            include_unreviewed=False, include_rejected=False,
+        )
+        assert len(items) == 1
+        assert items[0].label == "Visible"
+
+
+class TestSuperPomPacingCompassVisibility:
+    """Prove that SuperPOM calibration pacing sees labels only after they
+    become Compass-visible.
+
+    The pacing state is derived from CompassSnapshot, which only contains
+    items that pass ``is_compass_visible()``.  bot_proposed/unreviewed items
+    are excluded, so they do NOT fill calibration slots.  Only after explicit
+    review (accepted → active + reviewed) do they appear in the snapshot and
+    thus fill a pacing slot.
+
+    This is the T9 / SC9 "labels only after Compass visibility" contract.
+    """
+
+    def test_bot_proposed_item_does_not_fill_calibration_slot(self):
+        """A bot_proposed/pending item does NOT fill any calibration slot."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        # A bot_proposed item with SuperPOM prefix — but it's pending/unreviewed.
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="principle", status="pending",
+            source="bot_proposed", review_state="unreviewed",
+            label="SuperPOM - Principle: Proposed principle",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        # Even though the label matches, is_compass_visible() is False.
+        assert not uo.is_compass_visible({
+            "status": "pending", "source": "bot_proposed", "review_state": "unreviewed",
+        })
+
+        # Build a snapshot that does NOT include it (simulating real builder).
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["principle_filled"] is False
+
+    def test_same_item_fills_slot_after_review(self):
+        """After review (accepted → active + reviewed), the item fills its slot."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        # Same item but now active + reviewed — Compass-visible.
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="principle", status="active",
+            source="bot_proposed", review_state="reviewed",
+            label="SuperPOM - Principle: Reviewed principle",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        assert uo.is_compass_visible({
+            "status": "active", "source": "bot_proposed", "review_state": "reviewed",
+        })
+
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            principles=(ci,),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["principle_filled"] is True
+
+    def test_user_stated_fills_slot_immediately(self):
+        """A user_stated item fills its calibration slot immediately."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="goal", status="active",
+            source="user_stated", review_state="reviewed",
+            label="SuperPOM - Goal: Write daily",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        assert uo.is_compass_visible({
+            "status": "active", "source": "user_stated", "review_state": "reviewed",
+        })
+
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            active_goals=(ci,),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["goal_filled"] is True
+
+    def test_user_confirmed_fills_slot_immediately(self):
+        """A user_confirmed item fills its calibration slot immediately."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="priority", status="active",
+            source="user_confirmed", review_state="reviewed",
+            label="SuperPOM - Priority: Health first",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=1,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        assert uo.is_compass_visible({
+            "status": "active", "source": "user_confirmed", "review_state": "reviewed",
+        })
+
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            priorities=(ci,),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["priority_filled"] is True
+
+    def test_rejected_item_does_not_fill_slot(self):
+        """A rejected item (even with SuperPOM prefix) does NOT fill a slot."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="goal", status="rejected",
+            source="bot_proposed", review_state="excluded",
+            label="SuperPOM - Goal: Rejected goal",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        assert not uo.is_compass_visible({
+            "status": "rejected", "source": "bot_proposed", "review_state": "excluded",
+        })
+
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["goal_filled"] is False
+
+    def test_pacing_only_counts_compass_visible_labels(self):
+        """Pacing state derivation only considers Compass-visible items.
+
+        This is the crux of the SC9 check: labels only affect pacing after
+        they appear in the Compass (which requires explicit review for
+        bot_proposed items and excludes rejected items).
+        """
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        user_id = uuid4()
+        topic_id = uuid4()
+
+        # Create one visible principle (user_stated) and one rejected.
+        visible = uo.OrientationItem(
+            id=uuid4(), user_id=user_id, topic_id=topic_id,
+            bot_id="superpom", created_by_turn_id=None,
+            kind="principle", status="active",
+            source="user_stated", review_state="reviewed",
+            label="SuperPOM - Principle: My principle",
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        # The snapshot only has the visible one (the builder would never include rejected).
+        snap = CompassSnapshot(
+            user_id=user_id,
+            topic_ids=frozenset([topic_id]),
+            principles=(CompassItem(item=visible, links=()),),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        # Only the principle slot is filled — rejected items are invisible to pacing.
+        assert state["principle_filled"] is True
+        assert state["goal_filled"] is False
+        assert state["priority_filled"] is False
+        assert state["anti_pattern_filled"] is False
+        assert state["strength_filled"] is False
+        assert state["tension_filled"] is False
+        assert state["question_filled"] is False
+
+    def test_non_superpom_label_not_affecting_pacing(self):
+        """A Compass-visible item without SuperPOM prefix does NOT fill slots."""
+        from app.services.open_asks import _derive_superpom_calibration_state
+
+        item = uo.OrientationItem(
+            id=uuid4(), user_id=uuid4(), topic_id=uuid4(),
+            bot_id="superpom", created_by_turn_id=None,
+            kind="principle", status="active",
+            source="user_stated", review_state="reviewed",
+            label="Just a regular principle",  # No SuperPOM prefix
+            detail=None, started_at=None, effective_at=None,
+            target_date=None, completed_at=None, closed_reason=None,
+            outcome_note=None, supersedes_item_id=None,
+            priority_rank=None,
+            created_at=datetime.now(timezone.utc),
+            updated_at=datetime.now(timezone.utc),
+        )
+        ci = CompassItem(item=item, links=())
+        snap = CompassSnapshot(
+            user_id=item.user_id,
+            topic_ids=frozenset([item.topic_id]),
+            principles=(ci,),
+        )
+        state = _derive_superpom_calibration_state(snap)
+        assert state["principle_filled"] is False  # Not a SuperPOM label

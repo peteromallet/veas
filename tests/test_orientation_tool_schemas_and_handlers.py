@@ -1024,3 +1024,606 @@ class TestOrientationScopeGuard:
         require_reason_for_cross_topic(
             ["primary_topic"], "primary_topic", None,
         )
+
+
+# ── T8: Review transition contract tests ────────────────────────────────────
+#
+# These tests exercise the review_orientation_item and close_orientation_item
+# handlers with mocked store layers.  Each test verifies that the handler
+# correctly computes the output status, review_state, and preserves source
+# through the transition.  Visibility via is_compass_visible() is also
+# checked where relevant.
+
+
+class TestOrientationReviewTransitions:
+    """Focused review transition tests: accept, reject, correct/revise.
+
+    Each test mocks UserOrientationStore at the pool level so the handler
+    path (get_item → review_item) is exercised end-to-end.
+    """
+
+    @staticmethod
+    def _pending_item(
+        item_id: UUID,
+        user_id: UUID,
+        topic_id: UUID,
+        *,
+        source: str = "bot_proposed",
+        kind: str = "principle",
+        label: str = "Test item",
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        return {
+            "id": item_id,
+            "user_id": user_id,
+            "topic_id": topic_id,
+            "bot_id": "mediator",
+            "created_by_turn_id": None,
+            "kind": kind,
+            "status": "pending",
+            "source": source,
+            "review_state": "unreviewed",
+            "label": label,
+            "detail": None,
+            "started_at": None,
+            "effective_at": None,
+            "target_date": None,
+            "completed_at": None,
+            "closed_reason": None,
+            "outcome_note": None,
+            "supersedes_item_id": None,
+            "priority_rank": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def _reviewed_item(
+        base: dict[str, Any],
+        *,
+        status: str,
+        review_state: str = "reviewed",
+    ) -> dict[str, Any]:
+        """Return a copy of *base* with updated status and review_state."""
+        result = dict(base)
+        result["status"] = status
+        result["review_state"] = review_state
+        result["updated_at"] = datetime.now(timezone.utc)
+        return result
+
+    # ── accept ──────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_review_accept_sets_active_reviewed(self) -> None:
+        """Verdict 'accepted' → status='active', review_state='reviewed'."""
+        from app.services.tools.write_tools import (
+            review_orientation_item,
+        )
+        from tool_schemas import ReviewOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        pending = self._pending_item(item_id, user_id, topic_id)
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            # Call 1: handler get_item
+            # Call 2: store.review_item internal get
+            if call_count[0] <= 2:
+                return dict(pending)
+            # Call 3: store.review_item update returning
+            return self._reviewed_item(pending, status="active")
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = ReviewOrientationItemInput(
+            item_id=item_id, verdict="accepted",
+            reason="User confirmed during onboarding",
+        )
+        result = await review_orientation_item(ctx, args)
+
+        assert result.verdict.value == "accepted"
+        assert result.status.value == "active"
+        assert result.review_state.value == "reviewed"
+        # Source should remain bot_proposed through the transition.
+        from app.services.user_orientation import is_compass_visible
+
+        reviewed = self._reviewed_item(pending, status="active")
+        assert is_compass_visible(reviewed) is True
+
+    # ── reject ───────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_review_reject_sets_rejected_reviewed(self) -> None:
+        """Verdict 'rejected' → status='rejected', review_state='reviewed'."""
+        from app.services.tools.write_tools import (
+            review_orientation_item,
+        )
+        from tool_schemas import ReviewOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        pending = self._pending_item(item_id, user_id, topic_id)
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(pending)
+            return self._reviewed_item(pending, status="rejected")
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = ReviewOrientationItemInput(
+            item_id=item_id, verdict="rejected",
+            reason="User declined the suggestion",
+        )
+        result = await review_orientation_item(ctx, args)
+
+        assert result.verdict.value == "rejected"
+        assert result.status.value == "rejected"
+        assert result.review_state.value == "reviewed"
+
+        from app.services.user_orientation import is_compass_visible
+
+        rejected = self._reviewed_item(pending, status="rejected")
+        assert is_compass_visible(rejected) is False
+
+    # ── correct / revise ─────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_review_correct_sets_active_reviewed(self) -> None:
+        """Verdict 'corrected' → status='active', review_state='reviewed'.
+
+        This models the revise/correct flow where the user adjusts the
+        bot_proposed item content and then marks it corrected.
+        """
+        from app.services.tools.write_tools import (
+            review_orientation_item,
+        )
+        from tool_schemas import ReviewOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        pending = self._pending_item(
+            item_id, user_id, topic_id,
+            source="bot_proposed", kind="goal",
+            label="Original label",
+        )
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(pending)
+            return self._reviewed_item(pending, status="active")
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = ReviewOrientationItemInput(
+            item_id=item_id, verdict="corrected",
+            note="User revised the label via update then corrected",
+            reason="Correction after user edit",
+        )
+        result = await review_orientation_item(ctx, args)
+
+        assert result.verdict.value == "corrected"
+        assert result.status.value == "active"
+        assert result.review_state.value == "reviewed"
+
+        from app.services.user_orientation import is_compass_visible
+
+        corrected = self._reviewed_item(pending, status="active")
+        assert is_compass_visible(corrected) is True
+
+    # ── source preservation ──────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_review_preserves_bot_proposed_source(self) -> None:
+        """After accept, source remains 'bot_proposed' even though
+        review_state flips to 'reviewed'."""
+        from app.services.tools.write_tools import (
+            review_orientation_item,
+        )
+        from tool_schemas import ReviewOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        pending = self._pending_item(
+            item_id, user_id, topic_id, source="bot_proposed",
+        )
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(pending)
+            # Return reviewed item — source must still be bot_proposed.
+            reviewed = self._reviewed_item(pending, status="active")
+            assert reviewed["source"] == "bot_proposed"
+            return reviewed
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = ReviewOrientationItemInput(
+            item_id=item_id, verdict="accepted",
+        )
+        result = await review_orientation_item(ctx, args)
+        assert result.verdict.value == "accepted"
+        assert result.status.value == "active"
+
+    @pytest.mark.asyncio
+    async def test_review_user_stated_stays_visible(self) -> None:
+        """user_stated items reviewed as accepted remain Compass-visible."""
+        from app.services.tools.write_tools import (
+            review_orientation_item,
+        )
+        from tool_schemas import ReviewOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        pending = self._pending_item(
+            item_id, user_id, topic_id, source="user_stated",
+        )
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(pending)
+            return self._reviewed_item(pending, status="active")
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = ReviewOrientationItemInput(
+            item_id=item_id, verdict="accepted",
+        )
+        result = await review_orientation_item(ctx, args)
+
+        from app.services.user_orientation import is_compass_visible
+
+        reviewed = self._reviewed_item(pending, status="active")
+        assert is_compass_visible(reviewed) is True
+
+
+class TestOrientationCloseTransitions:
+    """Focused close transition tests: retire, complete, supersede.
+
+    Each test exercises close_orientation_item using the actual *new_status*
+    field from CloseOrientationItemInput and asserts the output status,
+    closed_reason, outcome_note, and completed_at where relevant.
+    """
+
+    @staticmethod
+    def _active_item(
+        item_id: UUID,
+        user_id: UUID,
+        topic_id: UUID,
+        *,
+        source: str = "user_stated",
+        kind: str = "goal",
+        label: str = "Active goal",
+        review_state: str = "reviewed",
+    ) -> dict[str, Any]:
+        now = datetime.now(timezone.utc)
+        return {
+            "id": item_id,
+            "user_id": user_id,
+            "topic_id": topic_id,
+            "bot_id": "mediator",
+            "created_by_turn_id": None,
+            "kind": kind,
+            "status": "active",
+            "source": source,
+            "review_state": review_state,
+            "label": label,
+            "detail": None,
+            "started_at": None,
+            "effective_at": None,
+            "target_date": None,
+            "completed_at": None,
+            "closed_reason": None,
+            "outcome_note": None,
+            "supersedes_item_id": None,
+            "priority_rank": None,
+            "created_at": now,
+            "updated_at": now,
+        }
+
+    @staticmethod
+    def _closed_item(
+        base: dict[str, Any],
+        *,
+        status: str,
+        closed_reason: str | None = None,
+        outcome_note: str | None = None,
+        completed_at: datetime | None = None,
+    ) -> dict[str, Any]:
+        result = dict(base)
+        result["status"] = status
+        result["closed_reason"] = closed_reason
+        result["outcome_note"] = outcome_note
+        result["completed_at"] = completed_at
+        result["updated_at"] = datetime.now(timezone.utc)
+        return result
+
+    # ── retire ───────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_close_retire_sets_retired(self) -> None:
+        """new_status='retired' → status='retired' with closed_reason."""
+        from app.services.tools.write_tools import (
+            close_orientation_item,
+        )
+        from tool_schemas import CloseOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        active = self._active_item(item_id, user_id, topic_id)
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            # Call 1: handler get_item
+            # Call 2: store.close_item internal get
+            if call_count[0] <= 2:
+                return dict(active)
+            # Call 3: store.close_item update returning
+            return self._closed_item(
+                active, status="retired",
+                closed_reason="No longer relevant",
+            )
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = CloseOrientationItemInput(
+            item_id=item_id,
+            new_status="retired",
+            closed_reason="No longer relevant",
+            reason="User decided to retire this",
+        )
+        result = await close_orientation_item(ctx, args)
+
+        assert result.status.value == "retired"
+        assert result.closed_reason == "No longer relevant"
+        assert result.completed_at is None
+
+    # ── complete ─────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_close_complete_sets_completed_with_timestamp(self) -> None:
+        """new_status='completed' → status='completed', completed_at set."""
+        from app.services.tools.write_tools import (
+            close_orientation_item,
+        )
+        from tool_schemas import CloseOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        active = self._active_item(item_id, user_id, topic_id)
+        now = datetime.now(timezone.utc)
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(active)
+            return self._closed_item(
+                active, status="completed",
+                outcome_note="Achieved the goal",
+                completed_at=now,
+            )
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = CloseOrientationItemInput(
+            item_id=item_id,
+            new_status="completed",
+            outcome_note="Achieved the goal",
+            completed_at=now,
+            reason="Goal was met",
+        )
+        result = await close_orientation_item(ctx, args)
+
+        assert result.status.value == "completed"
+        assert result.outcome_note == "Achieved the goal"
+        assert result.completed_at is not None
+
+        from app.services.user_orientation import is_compass_visible
+
+        closed = self._closed_item(
+            active, status="completed",
+            outcome_note="Achieved the goal",
+            completed_at=now,
+        )
+        assert is_compass_visible(closed) is True
+
+    # ── supersede ────────────────────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_close_supersede_sets_superseded(self) -> None:
+        """new_status='superseded' → status='superseded'."""
+        from app.services.tools.write_tools import (
+            close_orientation_item,
+        )
+        from tool_schemas import CloseOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        active = self._active_item(item_id, user_id, topic_id)
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                return dict(active)
+            return self._closed_item(
+                active, status="superseded",
+                closed_reason="Replaced by newer item",
+            )
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = CloseOrientationItemInput(
+            item_id=item_id,
+            new_status="superseded",
+            closed_reason="Replaced by newer item",
+            reason="Superseded by a newer goal",
+        )
+        result = await close_orientation_item(ctx, args)
+
+        assert result.status.value == "superseded"
+        assert result.closed_reason == "Replaced by newer item"
+
+        from app.services.user_orientation import is_compass_visible
+
+        superseded = self._closed_item(
+            active, status="superseded",
+            closed_reason="Replaced by newer item",
+        )
+        assert is_compass_visible(superseded) is False
+
+    # ── close preserves source ───────────────────────────────────────────
+
+    @pytest.mark.asyncio
+    async def test_close_preserves_source_and_review_state(self) -> None:
+        """Closing an active item does not mutate source or review_state."""
+        from app.services.tools.write_tools import (
+            close_orientation_item,
+        )
+        from tool_schemas import CloseOrientationItemInput
+
+        item_id = uuid4()
+        user_id = uuid4()
+        topic_id = uuid4()
+        active = self._active_item(
+            item_id, user_id, topic_id,
+            source="bot_proposed", review_state="reviewed",
+        )
+
+        pool = MagicMock()
+        call_count = [0]
+
+        async def _fetchrow(_query, *args):
+            call_count[0] += 1
+            if call_count[0] <= 2:
+                pass  # increment counter
+                return dict(active)
+            closed = self._closed_item(
+                active, status="completed",
+                outcome_note="Done",
+                completed_at=datetime.now(timezone.utc),
+            )
+            # source and review_state are untouched.
+            assert closed["source"] == "bot_proposed"
+            assert closed["review_state"] == "reviewed"
+            return closed
+
+        pool.fetchrow = _fetchrow
+        pool.execute = AsyncMock()
+        pool.fetch = AsyncMock(return_value=[])
+
+        ctx = _mediator_ctx(pool=pool, user_id=user_id, topic_id=topic_id)
+        args = CloseOrientationItemInput(
+            item_id=item_id,
+            new_status="completed",
+            completed_at=datetime.now(timezone.utc),
+            reason="Completed the goal",
+        )
+        result = await close_orientation_item(ctx, args)
+        assert result.status.value == "completed"
+
+
+# ── T8: READ_BEFORE_WRITE contract smoke ────────────────────────────────────
+
+class TestOrientationReadBeforeWrite:
+    """Verify the READ_BEFORE_WRITE contract is wired for all orientation
+    write tools so the agent cannot write without a prior read."""
+
+    ORIENTATION_WRITES = [
+        "create_orientation_item",
+        "update_orientation_item",
+        "review_orientation_item",
+        "close_orientation_item",
+        "link_orientation_evidence",
+    ]
+
+    def test_all_orientation_writes_have_read_before_write(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        for name in self.ORIENTATION_WRITES:
+            assert name in READ_BEFORE_WRITE, (
+                f"{name} missing from READ_BEFORE_WRITE"
+            )
+            required = READ_BEFORE_WRITE[name]
+            assert len(required) >= 1, (
+                f"{name} has no read prerequisites in READ_BEFORE_WRITE"
+            )
+
+    def test_create_orientation_item_requires_list(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        assert "list_orientation_items" in READ_BEFORE_WRITE["create_orientation_item"]
+
+    def test_update_orientation_item_requires_get(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        assert "get_orientation_item" in READ_BEFORE_WRITE["update_orientation_item"]
+
+    def test_review_orientation_item_requires_get(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        assert "get_orientation_item" in READ_BEFORE_WRITE["review_orientation_item"]
+
+    def test_close_orientation_item_requires_get(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        assert "get_orientation_item" in READ_BEFORE_WRITE["close_orientation_item"]
+
+    def test_link_orientation_evidence_requires_get(self) -> None:
+        from app.services.tools.registry import READ_BEFORE_WRITE
+        assert "get_orientation_item" in READ_BEFORE_WRITE["link_orientation_evidence"]

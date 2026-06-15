@@ -96,3 +96,132 @@ def test_registry_resolves_tante_rosi_mediator_and_unknown() -> None:
     assert _get_bot_asks("tante_rosi") is ROSI_ASKS
     assert _get_bot_asks("mediator") is VEAS_ASKS
     assert _get_bot_asks("unknown") is SOLO_ASKS
+
+
+# ── T6: SuperPOM calibration asks ──────────────────────────────────────
+
+def test_superpom_receives_superpom_asks_not_solo_asks():
+    from app.services.open_asks import SUPERPOM_ASKS, _get_bot_asks
+    from app.services.prompts_solo import ASKS as SOLO_ASKS
+
+    result = _get_bot_asks("superpom")
+    assert result is SUPERPOM_ASKS
+    assert result is not SOLO_ASKS
+
+
+def test_superpom_asks_has_exactly_seven_items():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    assert len(SUPERPOM_ASKS) == 7
+
+
+def test_superpom_asks_keys_match_calibration_slots():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    expected_keys = {
+        "principle",
+        "goal",
+        "priority",
+        "anti_pattern",
+        "strength",
+        "tension",
+        "question",
+    }
+    actual_keys = {ask.key for ask in SUPERPOM_ASKS}
+    assert actual_keys == expected_keys
+
+
+def test_superpom_asks_all_have_example_and_resolves_with():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    for ask in SUPERPOM_ASKS:
+        assert ask.example, f"Ask {ask.key} has no example"
+        assert len(ask.example) > 20, (
+            f"Ask {ask.key} example too short: {len(ask.example)} chars"
+        )
+        assert ask.resolves_with, f"Ask {ask.key} has no resolves_with"
+        assert "create_orientation_item" in ask.resolves_with, (
+            f"Ask {ask.key} resolves_with missing create_orientation_item"
+        )
+
+
+def test_superpom_asks_mention_source_user_stated():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    for ask in SUPERPOM_ASKS:
+        assert "source='user_stated'" in ask.example or "source=user_stated" in ask.example, (
+            f"Ask {ask.key} missing source='user_stated' guidance"
+        )
+
+
+def test_superpom_asks_mention_source_bot_proposed():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    for ask in SUPERPOM_ASKS:
+        assert "source='bot_proposed'" in ask.example or "source=bot_proposed" in ask.example, (
+            f"Ask {ask.key} missing source='bot_proposed' guidance"
+        )
+
+
+def test_superpom_asks_mention_label_prefix():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    for ask in SUPERPOM_ASKS:
+        assert "SuperPOM -" in ask.example, (
+            f"Ask {ask.key} missing SuperPOM label prefix in example"
+        )
+
+
+def test_superpom_asks_all_open_when_nothing_filled():
+    from app.services.open_asks import SUPERPOM_ASKS, render_open_asks
+
+    # Empty state — no calibration slots filled.
+    state = {}
+    rendered = render_open_asks(SUPERPOM_ASKS, state)
+    # All seven should be open.
+    assert rendered.count("is not set.") == 7
+
+
+def test_superpom_asks_principle_filled_suppresses_principle_ask():
+    from app.services.open_asks import SUPERPOM_ASKS, render_open_asks
+
+    state = {"principle_filled": True}
+    rendered = render_open_asks(SUPERPOM_ASKS, state)
+    assert "`principle` is not set." not in rendered
+    # Other six should still be open.
+    assert rendered.count("is not set.") == 6
+
+
+def test_superpom_asks_all_filled_returns_empty():
+    from app.services.open_asks import SUPERPOM_ASKS, render_open_asks
+
+    state = {
+        "principle_filled": True,
+        "goal_filled": True,
+        "priority_filled": True,
+        "anti_pattern_filled": True,
+        "strength_filled": True,
+        "tension_filled": True,
+        "question_filled": True,
+    }
+    rendered = render_open_asks(SUPERPOM_ASKS, state)
+    assert rendered == ""
+
+
+def test_unknown_bot_still_falls_back_to_solo():
+    from app.services.open_asks import _get_bot_asks
+    from app.services.prompts_solo import ASKS as SOLO_ASKS
+
+    # Unknown bots should still receive SOLO_ASKS.
+    assert _get_bot_asks("unknown_bot") is SOLO_ASKS
+    assert _get_bot_asks("coach") is SOLO_ASKS
+
+
+def test_superpom_asks_each_has_review_guidance():
+    from app.services.open_asks import SUPERPOM_ASKS
+
+    for ask in SUPERPOM_ASKS:
+        example = ask.example.lower()
+        assert "review" in example or "ask for review" in example, (
+            f"Ask {ask.key} missing review guidance"
+        )
