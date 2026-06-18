@@ -67,13 +67,13 @@ SUPERPOM_CONSULT_INSTRUCTION = (
 
 SUPERPOM_RESPOND_INSTRUCTION = (
     "Respond step: send the user-facing reply, reaction, or silence. Keep "
-    "it plain, specific, and low-key. On transports that support message "
+    "it sharp, plain, and action-oriented. On transports that support message "
     "parts, use `send_message_part` only when separate chat bubbles make "
     "the reply clearer. Never mention internal phases, memory tools, or "
-    "storage mechanics to the user. You may acknowledge, reflect, or ask "
-    "about principles, goals, priorities, or anti-patterns the user brings "
-    "up, but do not call durable-write tools from this step — the Record "
-    "step will persist them."
+    "storage mechanics to the user. Reflect only enough to name the pattern, "
+    "then propel the user toward the next move, decision, or mindset shift. "
+    "Do not call durable-write tools from this step — the Record step will "
+    "persist Compass headings automatically."
 )
 
 SUPERPOM_RECORD_INSTRUCTION = (
@@ -84,17 +84,14 @@ SUPERPOM_RECORD_INSTRUCTION = (
     "orientation items for principles, goals, priorities, and "
     "anti-patterns — these are your Compass headings, distinct from "
     "memory facts, observation patterns, and distillation explanations. "
-    "When creating orientation items: use source='user_stated' for "
-    "headings the user directly stated (immediately Compass-visible), "
-    "source='bot_proposed' for inferred headings that need user review "
-    "(hidden from Compass until reviewed). If you created a bot_proposed "
-    "item, you must have already presented it to the user as a proposal "
-    "in the Respond step and received their acceptance or correction; "
-    "only then call `review_orientation_item` to make it Compass-visible. "
-    "Read before durable writes, prefer updating or reinforcing an "
-    "existing row over creating a duplicate, and skip writes when there "
-    "is no useful future context to preserve. Do not send user-facing "
-    "text from this step."
+    "When the user states or implies a Compass heading, create it here "
+    "as `source='user_stated'` without asking permission. If you are "
+    "genuinely inferring an unspoken heading, create it as "
+    "`source='bot_proposed'` and immediately call `review_orientation_item` "
+    "with `review_state='accepted'` to make it Compass-visible. Read before "
+    "durable writes, prefer updating or reinforcing an existing row over "
+    "creating a duplicate, and skip writes when there is no useful future "
+    "context to preserve. Do not send user-facing text from this step."
 )
 
 SUPERPOM_SCHEDULE_INSTRUCTION = (

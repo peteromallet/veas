@@ -34,16 +34,16 @@ def test_prompt_contains_assistant_name():
     assert "Alice" in rendered
 
 
-def test_prompt_frames_as_loyal_adviser_and_decision_mirror():
+def test_prompt_frames_as_action_catalyst():
     rendered = _rendered()
+    assert "action catalyst" in rendered.lower()
     assert "loyal adviser" in rendered.lower()
-    assert "decision mirror" in rendered.lower()
 
 
 def test_prompt_contains_role_summary():
     rendered = _rendered()
     assert "Role And Identity" in rendered
-    assert "orientation companion" in rendered.lower()
+    assert "action catalyst" in rendered.lower()
 
 
 # ── Decision-flow contract assertions ────────────────────────────────────
@@ -58,15 +58,11 @@ def test_prompt_mentions_orientation_as_source():
     assert "Orientation is source" in rendered or "orientation is source" in rendered.lower()
 
 
-def test_prompt_contains_review_is_the_gate():
-    rendered = _rendered()
-    assert "Review is the gate" in rendered or "review is the gate" in rendered.lower()
-
-
-def test_prompt_mentions_bot_proposed_hidden():
+def test_prompt_mentions_auto_review_for_bot_proposed():
     rendered = _rendered()
     assert "bot_proposed" in rendered
-    assert "hidden from Compass" in rendered or "hidden from compass" in rendered.lower()
+    assert "review_orientation_item" in rendered
+    assert "review_state='accepted'" in rendered
 
 
 def test_prompt_mentions_user_stated_immediate():
